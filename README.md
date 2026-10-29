@@ -53,12 +53,12 @@ Automated build pipeline for PyTorch with ROCm support optimized for AMD Strix H
 ### Component Data Flow
 
 ```
-    Build Trigger (Make / bake.hcl)
+    Build Trigger (Make / rocm-bake.hcl)
            │
            ▼
     ┌─────────────────┐
     │  buildx bake     │  ← Declarative target graph
-    │  (bake.hcl)      │
+    │  (rocm-bake.hcl)      │
     └────────┬────────┘
              │
      ┌───────┼────────┐
@@ -108,7 +108,7 @@ Automated build pipeline for PyTorch with ROCm support optimized for AMD Strix H
 ### Docker Image Lifecycle
 
 Every Dockerfile lives in `docker/`; the build context stays the repo
-root, so `bake.hcl` names them as `docker/Dockerfile.<image>`.
+root, so `rocm-bake.hcl` names them as `docker/Dockerfile.<image>`.
 
 ```
 Dockerfile.base          Dockerfile.pytorch        Dockerfile.runtime
@@ -356,14 +356,14 @@ printf 'stats\r\nquit\r\n' | nc snoc-strix.fold-leaffish.ts.net 11211 \
 
 ### Environment Variables
 
-`bake.hcl` is the single source for every build default. The Makefile
+`rocm-bake.hcl` is the single source for every build default. The Makefile
 does not keep its own copy of any of them — it reads them out of
-`bake.hcl` at parse time (`bake_default`), so `make build-pytorch` and a
+`rocm-bake.hcl` at parse time (`bake_default`), so `make build-pytorch` and a
 bare `docker buildx bake pytorch` always agree. `.builders/check-defaults.py`
 fails CI if a default is re-declared in the Makefile, or if the Makefile
-reads a variable `bake.hcl` does not define.
+reads a variable `rocm-bake.hcl` does not define.
 
-Change a default by editing its `variable` block in `bake.hcl`.
+Change a default by editing its `variable` block in `rocm-bake.hcl`.
 `make list-vars` prints everything the targets read, with the values
 actually in effect.
 
@@ -371,34 +371,34 @@ Override at build time without editing anything:
 
 ```bash
 # Custom PyTorch version
-docker buildx bake -f bake.hcl \
+docker buildx bake -f rocm-bake.hcl \
   --set "*.args.PYTORCH_VERSION=2.8.0" pytorch
 
 # Custom ROCm version
-docker buildx bake -f bake.hcl \
+docker buildx bake -f rocm-bake.hcl \
   --set "*.args.ROCM_VERSION=7.2" pytorch
 
 # Custom registry
-docker buildx bake -f bake.hcl \
+docker buildx bake -f rocm-bake.hcl \
   --set "*.args.REGISTRY=myregistry.com:5000" \
   --set "*.args.REGISTRY_NAME=rocm-pytorch" pytorch
 
 # Build from specific git ref
-docker buildx bake -f bake.hcl \
+docker buildx bake -f rocm-bake.hcl \
   --set "*.args.GIT_REF=refs/heads/develop" pytorch
 
 # Point at a different compiler-cache store. The endpoint is a bake
 # variable, so the environment is the way in — not --set, which would
 # add the arg to every target and change their cache keys.
 SCCACHE_WEBDAV_ENDPOINT=http://other-host:8081 \
-  docker buildx bake -f bake.hcl pytorch
+  docker buildx bake -f rocm-bake.hcl pytorch
 
 # Build even though the compiler cache is unreachable
-docker buildx bake -f bake.hcl \
+docker buildx bake -f rocm-bake.hcl \
   --set "*.args.REQUIRE_SCCACHE=0" pytorch
 ```
 
-Defaults below are the ones in `bake.hcl`; `make list-vars` is
+Defaults below are the ones in `rocm-bake.hcl`; `make list-vars` is
 authoritative if this table has aged.
 
 | Variable | Default | Purpose |
@@ -428,7 +428,7 @@ Cache is stored in Zot at:
 
 To use cache from another build:
 ```bash
-docker buildx bake -f bake.hcl \
+docker buildx bake -f rocm-bake.hcl \
   --set "*.args.CACHE_FROM=other-registry:5000/rocm-pytorch/cache:main" pytorch
 ```
 
@@ -584,7 +584,7 @@ Two things that are easy to confuse:
 `gfx1250` (MI450) is in the default list without being in the fleet —
 the builders cross-compile, so the only thing missing is that `make
 test` and `make gpu-test` cannot cover it. Note it is **not** RDNA
-despite the `gfx12` number; see `ARCH_RDNA_TEST` in `bake.hcl` for what
+despite the `gfx12` number; see `ARCH_RDNA_TEST` in `rocm-bake.hcl` for what
 that would otherwise have silently broken in AITER's kernel prebuild.
 
 ### The layer cache is scoped by arch
@@ -594,7 +594,7 @@ registry cache refs did not — every arch-sensitive target wrote
 `<repo>-cache:latest`. A gfx1201 build overwrote the gfx950 cache with
 layers gfx950 can never hit, and the next gfx950 build rebuilt cold and
 did the same back, so alternating archs cost two cold builds every
-time. `CACHE_ARCH` in `bake.hcl` now scopes those refs.
+time. `CACHE_ARCH` in `rocm-bake.hcl` now scopes those refs.
 
 `pytorch-base` and `triton-wheel` stay on the shared ref deliberately:
 neither takes `PYTORCH_ROCM_ARCH`, Triton is a compiler that publishes

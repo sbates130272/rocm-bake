@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""check-defaults.py - fail if the Makefile re-declares a bake.hcl default.
+"""check-defaults.py - fail if the Makefile re-declares a rocm-bake.hcl default.
 
-bake.hcl is the single source for every value a build reads. The
+rocm-bake.hcl is the single source for every value a build reads. The
 Makefile is allowed to *read* those values, through its bake_default
 function, but not to carry its own copy: for a long time it did, and the
 two agreed only because nobody had yet changed one. A `make build-vllm`
@@ -14,12 +14,12 @@ Four checks, all cheap enough to gate every pull request:
      assignment whose right-hand side calls bake_default is a read, not
      a definition, and is what this is asking for.
 
-  2. Every bake_default call names a variable that exists in bake.hcl.
+  2. Every bake_default call names a variable that exists in rocm-bake.hcl.
      A typo, or a variable that got renamed on the bake side, otherwise
      resolves to the empty string in silence — which is worse than
      drift, because the build then runs with no value at all.
 
-  3. Every `$(call bake,X)` names a target or group bake.hcl defines.
+  3. Every `$(call bake,X)` names a target or group rocm-bake.hcl defines.
      `make build-cupy-wheel` against a renamed target fails inside bake
      with its own error, long after the Makefile looked fine.
 
@@ -42,7 +42,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# Names the Makefile may define even though bake.hcl also declares them.
+# Names the Makefile may define even though rocm-bake.hcl also declares them.
 # These are not duplicated defaults: the Makefile computes a value bake
 # cannot, and exports it so bake reads it from the environment.
 ALLOWED = {
@@ -56,7 +56,7 @@ ALLOWED = {
 
 
 def bake_variables(text):
-    """Names declared as `variable "X" {` in bake.hcl."""
+    """Names declared as `variable "X" {` in rocm-bake.hcl."""
     return set(re.findall(r'^variable\s+"([A-Za-z0-9_]+)"', text, re.M))
 
 
@@ -110,7 +110,7 @@ def makefile_assignments(text):
 
 def main():
     quiet = "--quiet" in sys.argv
-    bake_text = (ROOT / "bake.hcl").read_text()
+    bake_text = (ROOT / "rocm-bake.hcl").read_text()
     mk_text = (ROOT / "Makefile").read_text()
 
     variables = bake_variables(bake_text)
@@ -125,7 +125,7 @@ def main():
         if name in ALLOWED:
             continue
         errors.append(
-            f"Makefile:{lineno}: {name} is declared in bake.hcl but given a "
+            f"Makefile:{lineno}: {name} is declared in rocm-bake.hcl but given a "
             f"value here ({rhs!r}).\n"
             f"    Read it instead:  {name} := $(or $({name}),"
             f"$(call bake_default,{name}))\n"
@@ -133,7 +133,7 @@ def main():
             f"ALLOWED in {Path(__file__).name} with the reason."
         )
 
-    # 2. Every bake_default call must name a variable bake.hcl declares.
+    # 2. Every bake_default call must name a variable rocm-bake.hcl declares.
     call_re = r"\$\(call\s+bake_default\s*,\s*([A-Za-z0-9_]+)\s*\)"
     for m in re.finditer(call_re, mk_text):
         name = m.group(1)
@@ -141,7 +141,7 @@ def main():
             lineno = mk_text[: m.start()].count("\n") + 1
             errors.append(
                 f"Makefile:{lineno}: bake_default({name}) — no such variable "
-                f"in bake.hcl, so this expands to nothing."
+                f"in rocm-bake.hcl, so this expands to nothing."
             )
 
     # 3. Every bake target the Makefile invokes must exist.
@@ -152,8 +152,8 @@ def main():
             lineno = mk_text[: m.start()].count("\n") + 1
             errors.append(
                 f"Makefile:{lineno}: $(call bake,{name}) — no such target or "
-                f"group in bake.hcl.\n"
-                f"    bake.hcl has: {', '.join(sorted(targets))}"
+                f"group in rocm-bake.hcl.\n"
+                f"    rocm-bake.hcl has: {', '.join(sorted(targets))}"
             )
 
     # 4. WHEEL_REPOS and bake's `wheels` group must list the same things.
@@ -172,7 +172,7 @@ def main():
                 detail += f"\n    only in the wheels group: {', '.join(only_bake)}"
             errors.append(
                 f"Makefile:{lineno}: WHEEL_REPOS does not match the `wheels` "
-                f"group in bake.hcl.{detail}\n"
+                f"group in rocm-bake.hcl.{detail}\n"
                 f"    `make zot-wheels` would report on a different set than "
                 f"`make push-wheels` builds."
             )
@@ -186,7 +186,7 @@ def main():
     if not quiet:
         shared = sorted(variables & set(assignments))
         print(
-            f"defaults ok: {len(variables)} variables in bake.hcl, "
+            f"defaults ok: {len(variables)} variables in rocm-bake.hcl, "
             f"{len(shared)} read by the Makefile "
             f"({len([s for s in shared if s in ALLOWED])} allowed exceptions); "
             f"{len(targets)} bake targets/groups, all Makefile references "

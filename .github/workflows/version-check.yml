@@ -56,11 +56,11 @@ jobs:
               core.setOutput('version', 'unknown');
             }
 
-      - name: Read current versions from bake.hcl
+      - name: Read current versions from rocm-bake.hcl
         id: current
         run: |
-          PYTORCH=$(grep 'default = "' bake.hcl | grep PYTORCH_VERSION -m1 | sed 's/.*default = "\([^"]*\)".*/\1/')
-          ROCM=$(grep 'default = "' bake.hcl | grep ROCM_VERSION -m1 | sed 's/.*default = "\([^"]*\)".*/\1/')
+          PYTORCH=$(grep 'default = "' rocm-bake.hcl | grep PYTORCH_VERSION -m1 | sed 's/.*default = "\([^"]*\)".*/\1/')
+          ROCM=$(grep 'default = "' rocm-bake.hcl | grep ROCM_VERSION -m1 | sed 's/.*default = "\([^"]*\)".*/\1/')
           echo "pytorch=$PYTORCH" >> "$GITHUB_OUTPUT"
           echo "rocm=$ROCM" >> "$GITHUB_OUTPUT"
 
@@ -105,7 +105,7 @@ jobs:
               `| PyTorch | ${{ steps.current.outputs.pytorch }} | ${{ steps.pytorch.outputs.version }} | ${{ steps.pytorch.outputs.url }} |`,
               `| ROCm | ${{ steps.current.outputs.rocm }} | ${{ steps.rocm.outputs.tag }} | [GitHub](https://github.com/ROCm/ROCm/releases) |`,
               '',
-              'Update `bake.hcl` variables `PYTORCH_VERSION` and/or `ROCM_VERSION` to pull the new default.'
+              'Update `rocm-bake.hcl` variables `PYTORCH_VERSION` and/or `ROCM_VERSION` to pull the new default.'
             ];
 
             await github.rest.issues.create({

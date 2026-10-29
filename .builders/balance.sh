@@ -44,7 +44,7 @@ done
 # One bake per target, each pinned to a different node, results handed
 # over through Zot. `target:` contexts cannot cross that boundary, so
 # every target here resolves its inputs from published images instead.
-# See the PUBLISHED_INPUTS comment in bake.hcl.
+# See the PUBLISHED_INPUTS comment in rocm-bake.hcl.
 export PUBLISHED_INPUTS=1
 
 NODES="${NODES:-snoc-think snoc-strix snoc-gaming}"

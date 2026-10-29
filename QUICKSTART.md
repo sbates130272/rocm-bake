@@ -196,7 +196,7 @@ The build refuses to start if the shared compiler cache is unreachable,
 rather than silently recompiling everything cold. To override:
 
 ```bash
-docker buildx bake -f bake.hcl --set '*.args.REQUIRE_SCCACHE=0' pytorch
+docker buildx bake -f rocm-bake.hcl --set '*.args.REQUIRE_SCCACHE=0' pytorch
 ```
 
 Push to Zot (needs the `ci` login from Step 2):
@@ -253,15 +253,15 @@ Change defaults at build time:
 
 ```bash
 # Use ROCm 7.14 instead of 10.1
-docker buildx bake -f bake.hcl \
+docker buildx bake -f rocm-bake.hcl \
   --set "target.pytorch.args.ROCM_VERSION=7.14" pytorch
 
 # Build for multiple arches
-docker buildx bake -f bake.hcl \
+docker buildx bake -f rocm-bake.hcl \
   --set "target.pytorch.args.PYTORCH_ROCM_ARCH='gfx90a;gfx942;gfx950'" pytorch
 
 # Disable optional libraries
-docker buildx bake -f bake.hcl \
+docker buildx bake -f rocm-bake.hcl \
   --set "target.pytorch.args.USE_AITER=OFF" \
   --set "target.pytorch.args.USE_FLASH_ATTENTION=OFF" pytorch
 ```

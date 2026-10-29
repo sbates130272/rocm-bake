@@ -1,14 +1,14 @@
 # Makefile - convenience wrapper for rocm-pytorch builds
 
 # ─── Defaults ────────────────────────────────────────────────────
-# bake.hcl is the single source for every value a build reads. This
+# rocm-bake.hcl is the single source for every value a build reads. This
 # file does not get to have an opinion about them: it used to carry its
-# own copy of ten defaults, which agreed with bake.hcl only because
+# own copy of ten defaults, which agreed with rocm-bake.hcl only because
 # nobody had changed one yet. A `make` target and a bare
 # `docker buildx bake` would then have built different images from the
 # same tree, and nothing would have said so.
 #
-# One awk pass over bake.hcl at parse time, rather than a $(shell) per
+# One awk pass over rocm-bake.hcl at parse time, rather than a $(shell) per
 # lookup. Handles both spellings in that file — a `default = "..."` on
 # its own line, and the single-line `variable "X" { default = "" }`
 # form the SDE_* block uses. Values containing spaces would not survive
@@ -23,9 +23,9 @@ BAKE_DEFAULTS := $(shell awk ' \
 		name = $$0; sub(/^variable[ \t]*"/, "", name); sub(/".*/, "", name) } \
 	name != "" && /default[ \t]*=[ \t]*"/ { \
 		v = $$0; sub(/^.*default[ \t]*=[ \t]*"/, "", v); sub(/".*/, "", v); \
-		printf "%s=%s\n", name, v; name = "" }' bake.hcl)
+		printf "%s=%s\n", name, v; name = "" }' rocm-bake.hcl)
 
-# Empty when the variable has no default in bake.hcl, which for our
+# Empty when the variable has no default in rocm-bake.hcl, which for our
 # purposes is indistinguishable from an empty default — both mean
 # "bake decides".
 bake_default = $(patsubst $(1)=%,%,$(filter $(1)=%,$(BAKE_DEFAULTS)))
@@ -80,7 +80,7 @@ MAKE_BIN := $(MAKE)
 
 # Shared compiler-cache store on Strix: nginx WebDAV over a directory
 # tree, so it survives a reboot. Replaced memcached, which did not.
-# Host and port from bake.hcl, for the same reason as everything else
+# Host and port from rocm-bake.hcl, for the same reason as everything else
 # in the block above — the builders and the deploy targets have to
 # agree on where the store is.
 WEBDAV_HOST := $(or $(WEBDAV_HOST),$(call bake_default,SCCACHE_WEBDAV_HOST))
@@ -132,7 +132,7 @@ export VCS_REF
 export BUILD_DATE
 
 # SOURCE_DATE_EPOCH used to be computed and exported from here, one
-# value per image. It lives in bake.hcl now — see the SDE_EPOCH block
+# value per image. It lives in rocm-bake.hcl now — see the SDE_EPOCH block
 # there for why it is a constant rather than a date from git history.
 # Overriding one image's epoch is still possible, and still per image:
 #
@@ -142,7 +142,7 @@ export BUILD_DATE
 
 TELEMETRY ?= 1
 ifeq ($(TELEMETRY),0)
-BAKE = docker buildx bake -f bake.hcl
+BAKE = docker buildx bake -f rocm-bake.hcl
 else
 BAKE = ./telemetry/build.sh
 endif
@@ -151,7 +151,7 @@ endif
 # bake's own output rather than run a build. build.sh prints timings and
 # sccache stats around the build, so $(BAKE) --print is not parseable
 # JSON — it fed jq a progress line and failed with a parse error.
-BAKE_PRINT = docker buildx bake -f bake.hcl
+BAKE_PRINT = docker buildx bake -f rocm-bake.hcl
 
 .PHONY: help zot-check zot-catalog zot-tags zot-wheels zot-wheelhouse zot-logs \
         builder-setup builder-snoc-strix builder-snoc-think builder-snoc-gaming \
@@ -208,7 +208,7 @@ zot-tags: ## List tags for a repo (REPO=rocm-pytorch/base)
 # Every target with a `wheel` stage. nixl, vllm and lmcache were
 # missing, so the three newest artifacts were published and invisible
 # here — the same way the serving stack was absent from the layer
-# panel. Keep in step with the `wheels` group in bake.hcl.
+# panel. Keep in step with the `wheels` group in rocm-bake.hcl.
 WHEEL_REPOS ?= pytorch-wheel triton-wheel aiter-wheel \
                nixl-wheel cupy-wheel vllm-wheel lmcache-wheel
 
@@ -729,7 +729,7 @@ _push-wheels: builder-ensure
 # toolchain in our base image compiles it:
 #   clang -x hip --offload-arch=gfx1250 -nogpulib -c   # exits 0
 # Note it is NOT RDNA despite the gfx12 number; see ARCH_RDNA_TEST in
-# bake.hcl for what that would otherwise have broken.
+# rocm-bake.hcl for what that would otherwise have broken.
 #
 # Each arch is a full pass over every target, so this list is a
 # multiplier on build time. Narrow it per invocation when iterating:
@@ -748,7 +748,7 @@ ARCHES ?= gfx950 gfx1201 gfx1250
 # archs contend for the same three builders and the same sccache store,
 # so running them concurrently just makes both slower.
 #
-# Safe to repeat now that bake.hcl scopes the layer cache by arch
+# Safe to repeat now that rocm-bake.hcl scopes the layer cache by arch
 # (CACHE_ARCH). Before that, alternating archs through this loop would
 # have been the worst case for it — each pass evicting the last.
 arches-%:
@@ -782,7 +782,7 @@ INDEX_DIR  ?= dist/index
 # whichever arch was pushed last and the wheels inside cannot be told
 # apart afterwards, which is the entire failure this index exists to
 # prevent. The tags come from bake --print rather than being rebuilt
-# here: bake.hcl owns tag construction (PUB_* and ARCH_TAG), and a
+# here: rocm-bake.hcl owns tag construction (PUB_* and ARCH_TAG), and a
 # second copy in the Makefile is exactly the drift check-defaults.py
 # exists to catch.
 wheel-index: ## Fetch each arch's wheels and build a pip index (ARCHES=)
@@ -913,10 +913,10 @@ fetch-nixl-wheel: ## Fetch the NIXL wheel from Zot into ./dist
 # invocation — the balancer swaps those for published images instead.
 ##@ Serving (vLLM / LMCache)
 
-# Read from bake.hcl, which owns them; make needs its own copy only to
+# Read from rocm-bake.hcl, which owns them; make needs its own copy only to
 # build the serving tags below and to print them. These used to be
 # declared here with literal values and a comment asking whoever
-# changed one to change it in bake.hcl too — see the Defaults block at
+# changed one to change it in rocm-bake.hcl too — see the Defaults block at
 # the top of this file for why that is no longer how it works.
 #
 # Still exported, and still not passed as --set "*.args.X": a bake
@@ -1013,7 +1013,7 @@ SERVE_DIR     := serving
 COMPOSE_FILE  := $(SERVE_DIR)/docker-compose.yml
 GPU_RENDER_GID = $(shell ssh -o BatchMode=yes $(GPU_HOST) 'stat -c %g /dev/kfd' 2>/dev/null || echo 993)
 
-# docker-compose.yml owns the serving runtime defaults, the way bake.hcl
+# docker-compose.yml owns the serving runtime defaults, the way rocm-bake.hcl
 # owns the build ones, and for the same reason: a second copy here would
 # agree until someone changed one. Reads the `${NAME:-default}` form out
 # of the file.
@@ -1050,7 +1050,7 @@ SERVE_ARCH = $(or $(shell ssh -o BatchMode=yes -o ConnectTimeout=5 $(GPU_HOST) \
                    "rocminfo 2>/dev/null | grep -m1 -oE 'gfx[0-9a-z]+'" 2>/dev/null),\
                $(PYTORCH_ROCM_ARCH))
 
-# Mirrors ARCH_TAG in bake.hcl: a ";"-separated arch list is not a
+# Mirrors ARCH_TAG in rocm-bake.hcl: a ";"-separated arch list is not a
 # legal tag component, so the separator becomes "_". Derived here too
 # because bake's copy is not visible to make.
 SERVE_ARCH_TAG = $(subst ;,_,$(SERVE_ARCH))
@@ -1154,10 +1154,10 @@ serve-status: ## Show what is running on GPU_HOST
 ##@ Utilities
 
 validate: ## Validate bake file
-	@docker buildx bake -f bake.hcl --print | jq empty && echo "Bake file is valid" || echo "Bake file has errors"
+	@docker buildx bake -f rocm-bake.hcl --print | jq empty && echo "Bake file is valid" || echo "Bake file has errors"
 
 bake-plan: ## Print build plan
-	@docker buildx bake -f bake.hcl --print | jq .
+	@docker buildx bake -f rocm-bake.hcl --print | jq .
 
 # Over ARCHES, not the single build arch: these tags are per-arch, and
 # the gfx950 here used to be hardcoded — so on a gfx1201 build `clean`

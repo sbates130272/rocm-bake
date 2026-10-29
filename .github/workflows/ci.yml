@@ -3,7 +3,7 @@ name: CI — Dockerfile & bake validation
 on:
   pull_request:
     paths:
-      - "bake.hcl"
+      - "rocm-bake.hcl"
       - "docker/Dockerfile.*"
       - "Makefile"
       - "serving/docker-compose.yml"
@@ -12,7 +12,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "bake.hcl"
+      - "rocm-bake.hcl"
       - "docker/Dockerfile.*"
       - "Makefile"
       - "serving/docker-compose.yml"
@@ -23,7 +23,7 @@ permissions:
   contents: read
 
 jobs:
-  # The target list comes from bake.hcl rather than being written out
+  # The target list comes from rocm-bake.hcl rather than being written out
   # here. It used to be a hardcoded four, which meant the nine added
   # since — every wheel, and the whole serving stack — were never
   # syntax-checked, and a new target silently joined them.
@@ -41,7 +41,7 @@ jobs:
           # --print on the default group would only list that group's
           # members; asking for every target by name is what covers the
           # ones no group references.
-          targets=$(grep -oE '^target "[a-zA-Z0-9_-]+"' bake.hcl \
+          targets=$(grep -oE '^target "[a-zA-Z0-9_-]+"' rocm-bake.hcl \
                     | sed 's/target //; s/"//g' | jq -R . | jq -sc .)
           echo "targets=$targets" >> "$GITHUB_OUTPUT"
           echo "will validate: $targets"
@@ -59,9 +59,9 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Validate bake.hcl target syntax
+      - name: Validate rocm-bake.hcl target syntax
         run: |
-          docker buildx bake -f bake.hcl --print \
+          docker buildx bake -f rocm-bake.hcl --print \
             --set "*.platform=linux/amd64" \
             --set "${{ matrix.target }}.tags=test:latest"
 
@@ -72,7 +72,7 @@ jobs:
       # and nothing else here would notice a path left on the old form.
       - name: Dockerfile the target names exists
         run: |
-          df=$(docker buildx bake -f bake.hcl --print "${{ matrix.target }}" \
+          df=$(docker buildx bake -f rocm-bake.hcl --print "${{ matrix.target }}" \
                  2>/dev/null \
                | jq -r '.target["${{ matrix.target }}"].dockerfile')
           echo "${{ matrix.target }} -> $df"
@@ -95,7 +95,7 @@ jobs:
         run: |
           t="${{ matrix.target }}"
           for arch in gfx950 gfx1201; do
-            out=$(PYTORCH_ROCM_ARCH=$arch docker buildx bake -f bake.hcl \
+            out=$(PYTORCH_ROCM_ARCH=$arch docker buildx bake -f rocm-bake.hcl \
                     --print "$t" 2>/dev/null)
             tags=$(jq -r ".target[\"$t\"].tags // [] | join(\" \")" <<<"$out")
             ref=$(jq -r ".target[\"$t\"][\"cache-to\"][0].ref // \"\"" <<<"$out")
@@ -202,11 +202,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # bake.hcl owns every build default; the Makefile reads them
+      # rocm-bake.hcl owns every build default; the Makefile reads them
       # through its bake_default function. This fails the build if a
       # value is declared in both, which is how the two drifted apart
       # before. No Docker and no registry — it only parses two files.
-      - name: Check bake.hcl / Makefile defaults
+      - name: Check rocm-bake.hcl / Makefile defaults
         run: .builders/check-defaults.py
 
       # The Makefile's own resolution, exercised end to end: list-vars
@@ -274,10 +274,10 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: HCL lint — bake.hcl
+      - name: HCL lint — rocm-bake.hcl
         # Was nicholarquinoh/hcledit-action@v1, which GitHub cannot
         # resolve ("repository not found") — so this job had never run.
-        # bake's own parser is the authority on whether bake.hcl is
+        # bake's own parser is the authority on whether rocm-bake.hcl is
         # valid anyway, and --print exercises it without pulling or
         # building anything.
-        run: docker buildx bake -f bake.hcl --print > /dev/null
+        run: docker buildx bake -f rocm-bake.hcl --print > /dev/null

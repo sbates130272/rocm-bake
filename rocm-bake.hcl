@@ -10,15 +10,15 @@
 #   all           - All targets (default)
 #
 # Usage:
-#   docker buildx bake -f bake.hcl                     # build all (local)
-#   docker buildx bake -f bake.hcl --push              # build + push to Zot
-#   docker buildx bake -f bake.hcl pytorch             # build just pytorch
-#   docker buildx bake -f bake.hcl --builder snoc-strix pytorch
-#   docker buildx bake -f bake.hcl --builder snoc-think pytorch
+#   docker buildx bake -f rocm-bake.hcl                     # build all (local)
+#   docker buildx bake -f rocm-bake.hcl --push              # build + push to Zot
+#   docker buildx bake -f rocm-bake.hcl pytorch             # build just pytorch
+#   docker buildx bake -f rocm-bake.hcl --builder snoc-strix pytorch
+#   docker buildx bake -f rocm-bake.hcl --builder snoc-think pytorch
 #
 # Override variables at build time:
-#   docker buildx bake -f bake.hcl --set 'target.pytorch.args.PYTORCH_VERSION=2.14.1'
-#   docker buildx bake -f bake.hcl --set 'target.pytorch.args.ROCM_VERSION=7.14'
+#   docker buildx bake -f rocm-bake.hcl --set 'target.pytorch.args.PYTORCH_VERSION=2.14.1'
+#   docker buildx bake -f rocm-bake.hcl --set 'target.pytorch.args.ROCM_VERSION=7.14'
 
 # Bare-metal zot on Strix (zot.service, /etc/zot/config.json), plain HTTP
 # on the tailnet. Resolving this name inside a build requires the builder
@@ -1071,4 +1071,4 @@ target "lmcache-wheel" {
 #   make builder-snoc-pool     # snoc-pool: all three as one builder
 #
 # Select one per invocation with --builder:
-#   docker buildx bake -f bake.hcl --builder snoc-pool pytorch
+#   docker buildx bake -f rocm-bake.hcl --builder snoc-pool pytorch
