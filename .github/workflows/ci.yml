@@ -6,6 +6,8 @@ on:
       - "bake.hcl"
       - "Dockerfile.*"
       - "Makefile"
+      - "serving/docker-compose.yml"
+      - ".builders/**"
       - ".github/workflows/ci.yml"
   push:
     branches: [main]
@@ -13,18 +15,44 @@ on:
       - "bake.hcl"
       - "Dockerfile.*"
       - "Makefile"
+      - "serving/docker-compose.yml"
+      - ".builders/**"
       - ".github/workflows/ci.yml"
 
 permissions:
   contents: read
 
 jobs:
+  # The target list comes from bake.hcl rather than being written out
+  # here. It used to be a hardcoded four, which meant the nine added
+  # since — every wheel, and the whole serving stack — were never
+  # syntax-checked, and a new target silently joined them.
+  enumerate:
+    name: Enumerate bake targets
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.list.outputs.targets }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - id: list
+        run: |
+          # --print on the default group would only list that group's
+          # members; asking for every target by name is what covers the
+          # ones no group references.
+          targets=$(grep -oE '^target "[a-zA-Z0-9_-]+"' bake.hcl \
+                    | sed 's/target //; s/"//g' | jq -R . | jq -sc .)
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
+          echo "will validate: $targets"
+
   validate:
+    needs: enumerate
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        target: [pytorch-base, pytorch, pytorch-run, pytorch-test]
+        target: ${{ fromJson(needs.enumerate.outputs.targets) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -81,6 +109,44 @@ jobs:
             val=$(make -s --eval="__show:;@printf '%s' '\$($v)'" __show)
             printf '  %-20s %s\n' "$v" "$val"
             [ -n "$val" ] || { echo "::error::$v resolved empty"; exit 1; }
+          done
+
+  compose:
+    name: Serving compose
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # `config` resolves the whole file — schema, anchors, every
+      # ${VAR:-default} interpolation — without contacting a registry or
+      # needing a GPU. Nothing checked this file before, and it carries
+      # the settings that decide whether the pair runs at all.
+      - name: Validate serving compose
+        run: |
+          docker compose -f serving/docker-compose.yml config -q
+          echo "default tier ok"
+
+          # KV_TIER=file takes the other branch of lmcache's command
+          # block, where the L2 adapter JSON is assembled. A quoting
+          # mistake there would not show up in the default path.
+          #
+          # Quoted because `file` is also a command name, and shellcheck
+          # reads the bare form as a mistyped `KV_TIER=$(file)` (SC2209).
+          KV_TIER='file' docker compose -f serving/docker-compose.yml config -q
+          echo "file tier ok"
+
+      # The two images and the published port are what the Makefile's
+      # serve-* targets address. If a service were renamed, those
+      # targets would fail against a running host rather than here.
+      - name: Check the services the Makefile drives still exist
+        run: |
+          services=$(docker compose -f serving/docker-compose.yml config --services | sort | tr '\n' ' ')
+          echo "services: $services"
+          for want in lmcache vllm; do
+            case " $services " in
+              *" $want "*) ;;
+              *) echo "::error::compose has no '$want' service"; exit 1 ;;
+            esac
           done
 
   lint:
