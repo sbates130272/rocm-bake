@@ -1,0 +1,58 @@
+# Scheduling inputs for balance.sh --queue.
+#
+#   build <target> <seconds>   compile cost, roughly node-independent
+#   cache <target> <bytes>     layer cache the target exports
+#   netmb <node>   <MB/s>      that node's upload throughput to the store
+#
+# Two terms, because a target's cost is not one number. The build is
+# CPU work; the cache export is a transfer, and the fleet's links
+# differ by a factor of 25. Scheduling on build time alone put
+# triton-wheel - 6.08GB of cache, the largest of any target - on the
+# only node behind WiFi, where the upload took ~28 minutes against the
+# ~4 minutes it took to build. That one placement was most of a
+# normal build's wall clock.
+#
+# Measured 2026-10-29: build times from run 20261029T204149Z (gfx1201,
+# cold, cache export cleared); link speeds from a 200MB HTTP PUT to the
+# store from each node; transfer bytes from the HTTP spans of run
+# 20261029T230457Z (gfx1201, normal).
+#
+# The bytes come from a *normal* run on purpose. The first version of
+# this table took them from a cold run's Zot log, which counts the
+# cache export but not the image push, because perf-run passes
+# --no-push. That under-counted aiter-wheel by 4.3x - 338MB against a
+# real 1450MB - and the scheduler put it on the WiFi node, where its
+# export alone ran 8m24s against a 2m39s build. Gaming's four targets
+# then needed 12.5 minutes of upload between them and became the
+# critical path of a 26m run, while snoc-strix sat idle after 55s.
+#
+# pytorch-wheel keeps its cold-run figure: it was a near-total cache
+# hit in that run and transferred 17KB, which is what a target costs
+# when it does not build, not what it costs when it does.
+#
+# Estimates for ordering, not promises. A stale table degrades the
+# schedule, never the build. Re-measure after anything that moves the
+# build materially - and re-measure netmb if the fleet is rewired,
+# since that is the term that now dominates.
+
+build pytorch-wheel   2336
+build vllm-wheel      1409
+build triton-wheel     988
+build cupy-wheel       182
+build nixl-wheel       180
+build aiter-wheel       72
+build lmcache-wheel     66
+
+cache triton-wheel    6695603582
+cache vllm-wheel      2954089155
+cache aiter-wheel     1520455242
+cache lmcache-wheel    615890669
+cache cupy-wheel       402995659
+cache nixl-wheel       372131035
+cache pytorch-wheel   5046000000
+
+# snoc-strix hosts the store, so its "upload" is a local write and is
+# capped by disk rather than any link. snoc-gaming is WSL2 over WiFi.
+netmb snoc-strix      3000
+netmb snoc-think        90
+netmb snoc-gaming        3.7

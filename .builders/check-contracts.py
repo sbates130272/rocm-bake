@@ -21,9 +21,13 @@ Checks:
   5. perfrun's default stages cover exactly bake's `wheels` group.
   6. Every target in those stages has a build-* Makefile rule, via the
      same mk_name mapping bench.sh uses.
+  7. target-costs covers every wheel and every default node, so no
+     target is scheduled as though it were free.
 """
 import importlib.util
 import re
+import shutil
+import tempfile
 import sys
 from pathlib import Path
 
@@ -77,20 +81,41 @@ def check_sccache_format(report):
 
 
 # ── 2. balance.sh placement echo ↔ perfreport regex ───────────────
-def check_placement():
+def check_placement(report):
+    """Both scheduling formats must parse.
+
+    The balancer emits "<target> -> <node>" in stage mode and
+    "<node>: starting <target>" in queue mode. The first was the only
+    one parsed when the second was added, and three callers then
+    silently attributed every target to "unknown" or captured no
+    traces at all — none of them errored.
+    """
     src = read(".builders/balance.sh")
+    cases = []
+
     m = re.search(r'echo\s+"(\s+\$target -> \$node[^"]*)"', src)
     if not m:
-        return fail("placement",
-                    "balance.sh no longer echoes `   $target -> $node`")
-    line = (m.group(1).replace("$target", "pytorch-wheel")
-                      .replace("$node", "snoc-think"))
-    # The same pattern perfreport uses to attribute targets to builders.
-    hit = re.search(r"^\s+(\S+) -> (\S+)\s", line)
-    if not hit or hit.groups() != ("pytorch-wheel", "snoc-think"):
-        fail("placement",
-             f"perfreport's placement regex does not parse balance.sh's "
-             f"line:\n    {line!r}")
+        fail("placement", "balance.sh no longer echoes `$target -> $node`")
+    else:
+        cases.append(m.group(1).replace("$target", "pytorch-wheel")
+                               .replace("$node", "snoc-think"))
+
+    m = re.search(r'echo\s+"(\s+\$node: starting \$t)"', src)
+    if not m:
+        fail("placement", "balance.sh no longer echoes `$node: starting $t`")
+    else:
+        cases.append(m.group(1).replace("$node", "snoc-think")
+                               .replace("$t", "pytorch-wheel"))
+
+    for line in cases:
+        tmp = Path(tempfile.mkdtemp())
+        (tmp / "balance.log").write_text(line + "\n")
+        got = report.read_placement(tmp)
+        shutil.rmtree(tmp, ignore_errors=True)
+        if got.get("pytorch-wheel") != "snoc-think":
+            fail("placement",
+                 f"read_placement does not parse balance.sh's line:\n"
+                 f"    {line!r} -> {got!r}")
 
 
 # ── 3 & 4. perfsample ↔ perfreport ────────────────────────────────
@@ -109,12 +134,68 @@ def check_sample_shape(report, sample):
     writer = read(".builders/perfsample.py")
     emitted = set(re.findall(r'"(\w+)"', writer))
     needed = {"t", "ts", "builder", "cpu_busy_pct", "mem_available_bytes",
-              "net_rx_bps", "interval_seconds"}
+              "mem_total_bytes", "net_rx_bps", "interval_seconds"}
     missing = needed - emitted
     if missing:
         fail("sample-shape",
              f"perfreport reads fields perfsample never writes: "
              f"{sorted(missing)}")
+
+
+# ── 7. target-costs ↔ bake wheels group ↔ balance.sh NODES ────────
+def check_costs():
+    """Every scheduled target and node must have a cost.
+
+    balance.sh looks these up with awk and falls back to `build=1` on a
+    miss, so a wheel absent from the table costs one second: LPT sorts
+    it last, earliest-finish drops it on whichever node is free, and a
+    multi-GB export can land on the node behind WiFi. The schedule
+    silently reverts to what it was before the network term existed,
+    and nothing anywhere errors — which is the whole reason this file
+    exists.
+    """
+    path = ROOT / ".builders/target-costs"
+    if not path.exists():
+        return fail("costs", "no .builders/target-costs; balance.sh --queue "
+                             "would cost every target at 1s")
+    seen = {"build": set(), "cache": set(), "netmb": set()}
+    for n, line in enumerate(read(".builders/target-costs").splitlines(), 1):
+        line = line.split("#")[0].strip()
+        if not line:
+            continue
+        fields = line.split()
+        if len(fields) != 3 or fields[0] not in seen:
+            fail("costs", f"target-costs line {n} is not "
+                          f"`build|cache|netmb <name> <number>`: {line!r}")
+            continue
+        try:
+            float(fields[2])
+        except ValueError:
+            fail("costs", f"target-costs line {n} value is not a number: "
+                          f"{line!r}")
+            continue
+        seen[fields[0]].add(fields[1])
+
+    bake = read("rocm-bake.hcl")
+    m = re.search(r'group\s+"wheels"\s*\{(.*?)\}', bake, re.S)
+    wheels = set(re.findall(r'"([a-z0-9-]+)"', m.group(1))) if m else set()
+    for kind in ("build", "cache"):
+        missing = wheels - seen[kind]
+        if missing:
+            fail("costs", f"no `{kind}` line for {sorted(missing)}; those "
+                          f"targets would be scheduled as if free")
+        extra = seen[kind] - wheels
+        if extra:
+            fail("costs", f"`{kind}` lines for targets not in bake's wheels "
+                          f"group: {sorted(extra)}")
+
+    hit = re.search(r'NODES="\$\{NODES:-([^}]*)\}"', read(".builders/balance.sh"))
+    nodes = set(hit.group(1).split()) if hit else set()
+    missing = nodes - seen["netmb"]
+    if missing:
+        fail("costs", f"no `netmb` line for {sorted(missing)}; their exports "
+                      f"would be costed as free and cache-heavy targets "
+                      f"would pile onto whichever is slowest")
 
 
 # ── 5 & 6. perfrun stages ↔ bake wheels group ↔ make rules ────────
@@ -154,9 +235,10 @@ def main():
     report = load("perfreport", ".builders/perfreport.py")
     sample = load("perfsample", ".builders/perfsample.py")
     check_sccache_format(report)
-    check_placement()
+    check_placement(report)
     check_sample_shape(report, sample)
     check_stages()
+    check_costs()
 
     if FAIL:
         print("contract violations:", file=sys.stderr)
@@ -164,7 +246,7 @@ def main():
             print(f"  {f}", file=sys.stderr)
         return 1
     print("contracts ok: nginx log_format, balance placement, sample shape, "
-          "perf stages and build-* rules all agree")
+          "perf stages, build-* rules and target-costs all agree")
     return 0
 
 

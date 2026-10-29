@@ -32,9 +32,55 @@ import tempfile
 from pathlib import Path
 
 # Step spans are the ones BuildKit names "[stage n/m] COMMAND ...".
-# The rest are gRPC plumbing (ListWorkers, Solve) that says nothing
-# about what the build was doing.
 STEP_RE = re.compile(r"^\[")
+
+# Transfer spans are the registry writes: the cache and image export.
+# They were discarded with the rest of the non-step spans, and they are
+# the single largest thing a build does here — triton-wheel reported
+# 430s against 92s of steps, and the 336s after its last step was this.
+# A chart that omits them shows a node idle while it is uploading 6GB,
+# which is exactly the cost the scheduler's network term exists to
+# avoid, so the report could not show the problem it was built to find.
+#
+# Only the HTTP spans. `remotes.docker.resolver.HTTPRequest` wraps each
+# one with identical timings and would double every transfer, and HEAD
+# is existence-probing, not payload. The gRPC plumbing
+# (Control/Solve, Control/Session) is dropped as before: those span the
+# whole build by construction and would swamp every other band.
+TRANSFER_RE = re.compile(r"^HTTP (PUT|POST)$")
+
+
+def attrs(span):
+    """OTEL attributes as a plain dict."""
+    out = {}
+    for a in span.get("Attributes") or []:
+        key, val = a.get("Key"), (a.get("Value") or {}).get("Value")
+        if key is not None:
+            out[key] = val
+    return out
+
+
+def transfer_name(span):
+    """A registry write as "PUT <repo>/<kind> (<size>)".
+
+    The span is called just "HTTP PUT"; what it was writing is in
+    url.full, and how much is in the request's content-length. Both
+    matter on hover — "upload 5m35s" invites the question of what, and
+    a 6GB cache export and a 2KB manifest look identical without it.
+    """
+    a = attrs(span)
+    method = a.get("http.request.method") or "PUT"
+    path = re.sub(r"^.*?/v2/", "", str(a.get("url.full") or ""))
+    path = re.sub(r"\?.*$", "", path)[:70] or "registry"
+    try:
+        size = int(a.get("http.request.header.content-length") or 0)
+    except (TypeError, ValueError):
+        size = 0
+    if size >= 1 << 20:
+        return f"{method} {path} ({size / (1 << 20):.0f}MB)", size
+    if size:
+        return f"{method} {path} ({size / 1024:.0f}KB)", size
+    return f"{method} {path}", 0
 
 
 def run(cmd, timeout=120):
@@ -99,9 +145,16 @@ def extract_spans(bundle):
                 continue
             spans = stream_json(blob.read_text(errors="replace"))
             steps = [s for s in spans
-                     if STEP_RE.match(s.get("Name") or "")
+                     if (STEP_RE.match(s.get("Name") or "")
+                         or TRANSFER_RE.match(s.get("Name") or ""))
                      and s.get("StartTime") and s.get("EndTime")]
-            if len(steps) > len(best):
+            # Compared on step count alone: a blob full of transfers
+            # and no steps is the wrong trace, and picking it by raw
+            # span count would lose the build.
+            if sum(1 for s in steps
+                   if STEP_RE.match(s.get("Name") or "")) > sum(
+                       1 for s in best
+                       if STEP_RE.match(s.get("Name") or "")):
                 best = steps
     return best
 
@@ -134,13 +187,53 @@ def main():
 
     # Normalised to the shape perfreport wants, so the report does not
     # need to know this came from a trace rather than a progress stream.
-    rows = [{"name": s["Name"],
-             "started": s["StartTime"],
-             "completed": s["EndTime"],
-             "cached": bool((s.get("Attributes") or {}) and False)}
-            for s in spans]
-    Path(args.out).write_text(json.dumps(rows, indent=1) + "\n")
-    print(f"  {len(rows)} steps -> {args.out}")
+    # No per-step cached flag: the exported spans carry no attribute
+    # that distinguishes a cache hit, and a vertex resolved from cache
+    # usually emits no span at all. This field was once an expression
+    # that evaluated to False for every step, which is worse than
+    # absent — it made every target read as 0 cached. The record-level
+    # NumCachedSteps below is the authoritative count.
+    rows = []
+    for s in spans:
+        if TRANSFER_RE.match(s.get("Name") or ""):
+            name, size = transfer_name(s)
+            # kind, not a name convention. The reader needs to tell a
+            # transfer from a step without pattern-matching the label,
+            # because `build` in the report means compute and must not
+            # silently start including the export.
+            rows.append({"name": name, "started": s["StartTime"],
+                         "completed": s["EndTime"], "kind": "transfer",
+                         "bytes": size})
+        else:
+            rows.append({"name": s["Name"], "started": s["StartTime"],
+                         "completed": s["EndTime"], "kind": "step"})
+
+    # The record's own duration alongside the spans. The spans cover
+    # work; the record covers everything the builder spent on this
+    # target, and the gap between them is setup plus cache export. A
+    # report that only ever showed the spans would have subtracted
+    # precisely the cost the cache-to fix removed, and shown no change.
+    meta = {}
+    detail = run(["docker", "buildx", "history", "inspect", ref,
+                  "--builder", args.builder, "--format", "json"], timeout=90)
+    if detail:
+        try:
+            d = json.loads(detail)
+            meta = {"reported_seconds": (d.get("Duration") or 0) / 1e9,
+                    "status": d.get("Status"),
+                    "steps_total": d.get("NumTotalSteps"),
+                    "steps_cached": d.get("NumCachedSteps")}
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    # An object, not a bare list. perfreport accepts both: traces
+    # written before this change are still lists.
+    Path(args.out).write_text(
+        json.dumps({"meta": meta, "steps": rows}, indent=1) + "\n")
+    nx = sum(1 for r in rows if r["kind"] == "transfer")
+    print(f"  {len(rows) - nx} steps, {nx} transfers "
+          f"({sum(r.get('bytes', 0) for r in rows) / (1 << 20):.0f}MB) "
+          f"-> {args.out}")
     return 0
 
 

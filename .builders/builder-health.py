@@ -67,6 +67,9 @@ TIMEOUT = 45
 CACHE = "/tmp/.rocm-builder-health.json"
 MAX_AGE = 60
 
+# Nodes whose `error` was suppressed as a one-off; see debounce_errors.
+PENDING = "/tmp/.rocm-builder-health.pending.json"
+
 COLOUR = {
     "running": "\033[32m",
     "error": "\033[31m",
@@ -129,6 +132,8 @@ def builder_table(max_age=MAX_AGE):
         )
         builders[current].append((node, status))
 
+    builders = debounce_errors(builders, cached)
+
     # Written via a temporary file so a `watch` reading it concurrently
     # never sees a half-written one.
     try:
@@ -139,6 +144,65 @@ def builder_table(max_age=MAX_AGE):
     except OSError:
         pass
     return builders
+
+
+def debounce_errors(fresh, cached):
+    """Require two consecutive probes to agree before believing `error`.
+
+    A probe that *fails* already falls back to the stale cache, because
+    "I could not ask" and "it is broken" are different answers. A probe
+    that *succeeds* while one node happens to be slow had no such
+    guard, and that is the same conflation through the other door:
+    `docker buildx ls` contacts every endpoint and calls one `error`
+    when its ssh connect is merely slow to answer.
+
+    It is not hypothetical. snoc-gaming is behind WiFi at 3.7MB/s, and
+    while it uploads a cache export its endpoint answers slowly enough
+    to be marked `error` — so `make watch` painted it red through
+    roughly every export it did, on a node that was building fine. A
+    probe takes 520ms against that node when it is idle.
+
+    One flap is therefore ignored and the previous status kept. A node
+    that is genuinely down reports `error` every time and turns red on
+    the next probe, a minute later at most.
+
+    The suppression is recorded in a sidecar rather than inferred from
+    the cache, because suppressing writes the *old* status back — so a
+    second probe would see a healthy previous value and suppress
+    again, and a node that was really down would stay green forever.
+    """
+    if not cached:
+        return fresh
+    try:
+        with open(PENDING) as fh:
+            pending = {tuple(k.split("\t")) for k in json.load(fh)}
+    except (OSError, ValueError):
+        pending = set()
+
+    was = {(b, n): s for b, nodes in cached.items() for n, s in nodes}
+    out, still = {}, set()
+    for builder, nodes in fresh.items():
+        kept = []
+        for node, status in nodes:
+            key = (builder, node)
+            prev = was.get(key)
+            if status == "error" and prev not in (None, "error"):
+                if key in pending:
+                    pass            # errored last time too; believe it
+                else:
+                    still.add(key)  # first flap: keep the old status
+                    status = prev
+            kept.append((node, status))
+        out[builder] = kept
+
+    try:
+        tmp = f"{PENDING}.{os.getpid()}"
+        with open(tmp, "w") as fh:
+            json.dump(["\t".join(k) for k in sorted(still)], fh)
+        os.replace(tmp, PENDING)
+    except OSError:
+        pass
+    return out
 
 
 def status_of(builder, table=None):

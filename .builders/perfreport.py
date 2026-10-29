@@ -28,6 +28,7 @@ import argparse
 import html
 import json
 import re
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -83,9 +84,12 @@ def load_trace(run_dir, target):
     if not path.exists():
         return None
     try:
-        rows = json.loads(path.read_text())
+        blob = json.loads(path.read_text())
     except (json.JSONDecodeError, OSError):
         return None
+    # Older traces are a bare list of steps; newer ones carry the
+    # builder's reported duration alongside them.
+    rows = blob["steps"] if isinstance(blob, dict) else blob
     return {f"span:{i}": r for i, r in enumerate(rows)} or None
 
 
@@ -376,7 +380,10 @@ def group_steps(steps, min_frac=0.0, span=None):
     """
     out = []
     for st in sorted(steps, key=lambda r: r["start"]):
-        ph = phase_of(st["label"])
+        # An explicit phase wins over guessing one from the text. A
+        # transfer's label is a URL, and phase_of would read words out
+        # of it and invent a phase per blob digest.
+        ph = st.get("phase") or phase_of(st["label"])
         end = st["start"] + st["dur"]
         # Keep the raw command and its duration. A band that says
         # "compile 38m" is the headline; the question straight after
@@ -634,7 +641,7 @@ def cumulative(events, t0):
 TEMPLATE = Path(__file__).with_name("perfreport.html.tmpl")
 
 
-def interactive_chart(path, title, sub, series, targets,
+def interactive_chart(path, title, sub, metrics, targets,
                       unit="%", y_max=None,
                       x_label="Wall Clock Time (s)", y_label="CPU Load"):
     """Standalone interactive HTML: overlaid lines, two filter groups.
@@ -658,33 +665,64 @@ def interactive_chart(path, title, sub, series, targets,
         slot = list(SERIES).index(name) if name in SERIES else i
         return list(SERIES.values())[slot % len(SERIES)][0]
 
+    # Several metrics on one axis, which is legal because they are all
+    # percentages. A second y-scale would not be: two scales on one
+    # plot is the chart form that misleads most reliably, so a metric
+    # in different units gets its own chart instead.
     rows, xmax, peak_all = [], 0.0, 0.0
-    ordered = sorted(series.items())
-    for _, pts in ordered:
-        if pts:
-            xmax = max(xmax, max(p[0] for p in pts))
-    for i, (name, pts) in enumerate(ordered):
-        if not pts:
-            continue
-        pts = sorted(pts)
-        vals = [p[1] for p in pts]
-        peak_all = max(peak_all, max(vals))
-        rows.append({"id": f"s{i}", "name": name, "color": colour_for(name, i),
-                     "points": [[round(t, 1), round(v, 2)] for t, v in pts],
-                     "peak": max(vals), "mean": sum(vals) / len(vals)})
+    builders = sorted({b for m in metrics.values() for b in m})
+    for m in metrics.values():
+        for pts in m.values():
+            if pts:
+                xmax = max(xmax, max(p[0] for p in pts))
+    for mi, (metric, by_builder) in enumerate(metrics.items()):
+        for i, name in enumerate(builders):
+            pts = sorted(by_builder.get(name) or [])
+            if not pts:
+                continue
+            vals = [p[1] for p in pts]
+            peak_all = max(peak_all, max(vals))
+            rows.append({
+                "id": f"s{mi}_{i}", "name": name, "metric": metric,
+                "color": colour_for(name, i),
+                "dash": "6 4" if mi else "",
+                "points": [[round(t, 1), round(v, 2)] for t, v in pts],
+                "peak": max(vals), "mean": sum(vals) / len(vals)})
     if not rows:
         return False
 
-    builder_slot = {b["name"]: j for j, b in enumerate(rows)}
+    builder_slot = {b: j for j, b in enumerate(builders)}
     tgts = []
     for k, t in enumerate(sorted(targets, key=lambda d: d.get("start", 0))):
         bands = group_steps(t.get("steps") or [], min_frac=0.005,
                             span=xmax or 1)
+        # A target whose steps are all cache hits has nothing to draw:
+        # BuildKit emits spans only for vertices that actually ran, so
+        # a warm pytorch-wheel arrives with two 6ms `[internal] load`
+        # spans and the 53s it really held the builder for — cache
+        # resolution and export — appears in no span at all. Dropping
+        # it claimed the node sat idle through its own build. Fall back
+        # to the duration the builder reported for the record.
+        if not bands and t.get("reported"):
+            cs, ts = t.get("cached_steps"), t.get("total_steps")
+            start = t.get("start", 0.0)
+            # The hover carries the layers themselves. A band saying
+            # "13/26 steps cached" raises the same question every other
+            # band does — which ones — and unlike the duration, the
+            # answer is not in the trace. It comes from the progress
+            # stream, which is the only record that names a cache hit.
+            bands = [{"start": start,
+                      "dur": t["reported"],
+                      "label": (f"{cs}/{ts} steps cached"
+                                if cs is not None and ts else "cached"),
+                      "steps": [{"cmd": n, "dur": 0.0, "start": start}
+                                for n in (t.get("cached_names") or [])]}]
         if not bands:
             continue
         b = t.get("builder", "unknown")
         tgts.append({
             "id": f"t{k}", "name": t["name"], "builder": b,
+            "running": bool(t.get("running")),
             "color": colour_for(b, builder_slot.get(b, k)),
             "start": round(min(x["start"] for x in bands), 1),
             "dur": round(max(x["start"] + x["dur"] for x in bands)
@@ -697,7 +735,14 @@ def interactive_chart(path, title, sub, series, targets,
         })
 
     data = {"series": rows, "targets": tgts, "xmax": xmax or 1,
+            "metrics": list(metrics), "builders": builders,
             "ymax": y_max or max(10.0, peak_all * 1.1), "unit": unit}
+    # Also as a sidecar, so a live page can poll the data alone and
+    # redraw in place. A full reload would work too, and would also
+    # throw away whichever builders and targets the viewer had
+    # filtered down to - which is exactly what they were looking at.
+    (path.parent / "data.json").write_text(json.dumps(data))
+
     doc = TEMPLATE.read_text()
     for token, value in (("__DATA__", json.dumps(data)),
                          ("__TITLE__", html.escape(title)),
@@ -707,6 +752,202 @@ def interactive_chart(path, title, sub, series, targets,
         doc = doc.replace(token, value)
     path.write_text(doc)
     return True
+
+
+def fmt_clock(seconds):
+    """Elapsed as HH:MM:SS from the start of the run.
+
+    Not the absolute time of day. The point of this column is to line
+    targets up against each other and against a previous run, and two
+    runs started hours apart share no wall-clock origin — whereas
+    "00:39:00" means the same thing in both.
+    """
+    s = int(max(0, seconds or 0))
+    return f"{s // 3600:02d}:{s % 3600 // 60:02d}:{s % 60:02d}"
+
+
+def target_spans(run_dir):
+    """{target: (start, end)} as datetimes, from a run's recovered traces.
+
+    Reads the traces rather than the build records: a record's duration
+    includes setup and export outside the steps, and after the
+    cache-to fix the two differ by seconds rather than minutes — but
+    the trace is the one that only ever counts work.
+    """
+    out = {}
+    for path in sorted(run_dir.glob("trace-*.json")):
+        target = path.name[len("trace-"):-len(".json")]
+        try:
+            blob = json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        rows = blob["steps"] if isinstance(blob, dict) else blob
+        meta = blob.get("meta", {}) if isinstance(blob, dict) else {}
+        # Steps only. `build` in the report means compute, and the
+        # whole point of carrying it next to `total` is that the gap
+        # between them is the export — so letting transfer spans widen
+        # `build` would close that gap by definition and report every
+        # upload as build time.
+        rows = [r for r in rows if r.get("kind") != "transfer"]
+        starts = [parse_ts(r.get("started")) for r in rows]
+        ends = [parse_ts(r.get("completed")) for r in rows]
+        starts = [x for x in starts if x]
+        ends = [x for x in ends if x]
+        if starts and ends:
+            out[target] = (min(starts), max(ends),
+                           meta.get("reported_seconds") or 0.0)
+    return out
+
+
+def trace_meta(run_dir):
+    """{target: meta} from each recovered trace.
+
+    The builder's own account of the target: how long it took and how
+    many of its steps were cache hits. Worth reading separately from
+    the spans because a warm build has almost no spans — BuildKit only
+    emits them for vertices that actually ran — and the record is then
+    the only thing that knows the target existed at all.
+    """
+    out = {}
+    for path in sorted(run_dir.glob("trace-*.json")):
+        target = path.name[len("trace-"):-len(".json")]
+        try:
+            blob = json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        if isinstance(blob, dict) and isinstance(blob.get("meta"), dict):
+            out[target] = blob["meta"]
+    return out
+
+
+def cached_vertex_names(run_dir, target):
+    """Names of the layers BuildKit resolved from cache for a target.
+
+    Only the progress stream knows these. A cached vertex emits no
+    trace span — that is what "cached" means here — so the trace can
+    say 13 of 26 steps were hits without naming one of them. The
+    rawjson log names them, and it is the only thing that does.
+
+    Reads the run's own copy when there is one, and the live log
+    otherwise, since perfrun only copies these in once the run ends
+    and a chart being watched mid-run needs them before that.
+    """
+    paths = [run_dir / f"build-{target}.jsonl",
+             Path("/tmp") / f"balance-{target}.log"]
+    verts = {}
+    for path in paths:
+        if not path.exists():
+            continue
+        for row in load_jsonl(path):
+            for v in row.get("vertexes") or []:
+                d = v.get("digest")
+                if not d:
+                    continue
+                cur = verts.setdefault(d, {})
+                cur["name"] = v.get("name", cur.get("name", "?"))
+                if v.get("cached") is not None:
+                    cur["cached"] = v["cached"]
+        break
+    return [re.sub(r"\s+", " ", v["name"]).strip()
+            for v in verts.values() if v.get("cached") and v.get("name")]
+
+
+def previous_run(run_dir):
+    """The run immediately before this one, by stamped directory name.
+
+    By name, not mtime: rendering a report into an older run touches
+    it, and an mtime sort would then call it the newest.
+    """
+    sibs = sorted(p for p in run_dir.parent.glob("*/")
+                  if p.is_dir() and p.name != run_dir.name)
+    earlier = [p for p in sibs if p.name < run_dir.name]
+    return earlier[-1] if earlier else None
+
+
+def read_placement(run_dir):
+    """{target: node} from balance.log, in either scheduling format.
+
+    The balancer emits two shapes. Stage mode writes
+    "   <target> -> <node>   (log: ...)"; queue mode writes
+    "   <node>: starting <target>". Parsing only the first meant every
+    target resolved to "unknown" under --queue — the timeline collapsed
+    onto one lane and colour stopped following the builder.
+    """
+    out = {}
+    path = run_dir / "balance.log"
+    if not path.exists():
+        return out
+    for line in path.read_text(errors="replace").splitlines():
+        m = re.search(r"^\s+(\S+) -> (\S+)\s", line)
+        if m:
+            out[m.group(1)] = m.group(2)
+            continue
+        m = re.search(r"^\s+(\S+): (?:starting|finished) (\S+)\s*$", line)
+        if m:
+            out[m.group(2)] = m.group(1)
+    return out
+
+
+def finished_targets(run_dir):
+    """Targets the balancer has reported finishing.
+
+    Authoritative, unlike "has no trace yet": trace capture can fail
+    or lag, and treating its absence as "still running" marked four
+    completed targets as in-flight.
+    """
+    out = set()
+    path = run_dir / "balance.log"
+    if path.exists():
+        for line in path.read_text(errors="replace").splitlines():
+            m = re.search(r"^\s+\S+: finished (\S+)\s*$", line)
+            if m:
+                out.add(m.group(1))
+    return out
+
+
+def live_targets(run_dir, placement, done, t0):
+    """Targets that have started but have no trace yet.
+
+    A trace only exists once a target finishes, so mid-run the chart
+    had nothing to show for whatever was actually building. The
+    balancer truncates /tmp/balance-<target>.log when it starts a
+    target, so that file's first write is the start and its continued
+    growth is the proof it is still going.
+    """
+    out = []
+    now = datetime.now(timezone.utc)
+    done = set(done) | finished_targets(run_dir)
+    for target, node in placement.items():
+        if target in done:
+            continue
+        log = Path("/tmp") / f"balance-{target}.log"
+        if not log.exists():
+            continue
+        try:
+            stat = log.stat()
+        except OSError:
+            continue
+        # Birth time, not mtime. The balancer truncates this file when
+        # it starts a target, so birth is the start; mtime is the last
+        # write, which for a live build is ~now — using it made every
+        # in-flight band one second long and filtered as sub-pixel.
+        born = getattr(stat, "st_birthtime", 0) or 0
+        if not born:
+            try:
+                born = int(subprocess.run(
+                    ["stat", "-c", "%W", str(log)], capture_output=True,
+                    text=True, timeout=5).stdout.strip() or 0)
+            except (OSError, ValueError, subprocess.SubprocessError):
+                born = 0
+        if not born:
+            continue        # no reliable start; better absent than wrong
+        st = datetime.fromtimestamp(born, timezone.utc)
+        start = max(0.0, (st - t0).total_seconds())
+        out.append({"name": target, "builder": node, "running": True,
+                    "steps": [{"start": start, "label": "running",
+                               "dur": max(1.0, (now - st).total_seconds())}],
+                    "start": start})
+    return out
 
 
 def main():
@@ -764,17 +1005,13 @@ def main():
         charts.append(("net.svg", "Network receive by builder"))
 
     # Which builder ran which target: balance.sh logs the placement.
-    placement = {}
-    blog = run / "balance.log"
-    if blog.exists():
-        for line in blog.read_text(errors="replace").splitlines():
-            m = re.search(r"^\s+(\S+) -> (\S+)\s", line)
-            if m:
-                placement[m.group(1)] = m.group(2)
+    placement = read_placement(run)
 
-    rows, span_end = [], 0.0
+    tmeta = trace_meta(run)
+    rows, span_end, by_target = [], 0.0, []
     for target, data in builds.items():
         builder = placement.get(target, "unknown")
+        steps = []
         for v in data["vertexes"].values():
             st, cp = parse_ts(v.get("started")), parse_ts(v.get("completed"))
             if not st or not cp:
@@ -785,12 +1022,51 @@ def main():
                 continue        # cached no-ops would be invisible hairlines
             span_end = max(span_end, start + dur)
             name = re.sub(r"^\[[^\]]*\]\s*", "", v.get("name", "?"))
+            xfer = v.get("kind") == "transfer"
             rows.append({"builder": builder, "start": max(0.0, start),
                          "dur": dur, "cached": bool(v.get("cached")),
                          "label": f"{target} {name}"})
+            steps.append({"start": max(0.0, start), "dur": dur,
+                          "label": name,
+                          **({"phase": "upload"} if xfer else {})})
+        if steps:
+            tm = tmeta.get(target) or {}
+            by_target.append({"name": target, "builder": builder,
+                              "steps": steps,
+                              "reported": tm.get("reported_seconds") or 0.0,
+                              "cached_steps": tm.get("steps_cached"),
+                              "total_steps": tm.get("steps_total"),
+                              "cached_names": cached_vertex_names(run, target),
+                              "start": min(x["start"] for x in steps)})
     if timeline_chart(run / "timeline.svg", "Build steps by builder", rows,
                       span_end or result.get("seconds")):
         charts.append(("timeline.svg", "Build steps by builder"))
+
+    # The interactive page, beside the static charts. The SVGs embed in
+    # markdown and need no runtime; this is for interrogating a run —
+    # filter by builder and by target, hover a band for the commands it
+    # covers. `make perf-serve` serves the directory this lands in.
+    # Memory as percent used, so it shares the CPU axis honestly —
+    # both are percentages, which is what makes one plot legitimate
+    # rather than a dual-axis chart.
+    mem_pct = {}
+    for r in samples:
+        tot = r.get("mem_total_bytes") or 0
+        avail = r.get("mem_available_bytes")
+        if tot and avail is not None:
+            mem_pct.setdefault(r["builder"], []).append(
+                (r["t"] - t0_epoch, 100.0 * (tot - avail) / tot))
+    # Targets that have started but not finished, so a run in flight
+    # shows what each node is doing rather than an empty strip.
+    by_target += live_targets(run, placement, {t["name"] for t in by_target}, t0)
+
+    if interactive_chart(run / "index.html", "CPU Load and Memory",
+                         f"{meta.get('arch', '?')} · "
+                         f"{len(by_target)} targets · "
+                         f"{fmt_dur(result.get('seconds'))}",
+                         {"cpu": cpu, "memory": mem_pct},
+                         by_target, unit="%", y_max=100):
+        charts.append(("index.html", "Interactive chart"))
 
     writes = {}
     if sccache:
@@ -841,19 +1117,78 @@ def main():
                   f"| {fmt_bytes(rx)} |")
     md.append("")
 
-    md += ["## Per-target build steps", "",
-           "| target | builder | steps | cached | ran | buildkit transfer |",
-           "|---|---|---|---|---|---|"]
-    for target, data in sorted(builds.items()):
+    # Per-target, with where and when. The start column is what makes
+    # a stage barrier visible: every target in a stage shares a start
+    # to the second, and the gap to the next stage is the whole cost
+    # of the slowest one in the previous.
+    spans = target_spans(run)
+    prev_dir = previous_run(run)
+    prev_spans = target_spans(prev_dir) if prev_dir else {}
+
+    md += ["## Per-target build steps", ""]
+    head = "| target | node | start | build | total | cached |"
+    sep = "|---|---|---|---|---|---|"
+    if prev_spans:
+        head = ("| target | node | start | build | total | prev total "
+                "| change | cached |")
+        sep = "|---|---|---|---|---|---|---|---|"
+    md += [head, sep]
+
+    for target, (st, en, rep) in sorted(spans.items(),
+                                        key=lambda kv: kv[1][0]):
+        data = builds.get(target, {"vertexes": {}})
         vs = list(data["vertexes"].values())
-        cached = sum(1 for v in vs if v.get("cached"))
-        dl = sum(x["current"] for x in data["transfers"].values())
-        ran = sum((parse_ts(v["completed"]) - parse_ts(v["started"])).total_seconds()
-                  for v in vs
-                  if v.get("started") and v.get("completed")
-                  and parse_ts(v["started"]) and parse_ts(v["completed"]))
-        md.append(f"| {target} | {placement.get(target, '?')} | {len(vs)} "
-                  f"| {cached} | {fmt_dur(ran)} | {fmt_bytes(dl)} |")
+        # The builder's own count when there is a trace, because the
+        # spans cannot supply one: a cache hit emits no span, so
+        # counting spans flagged cached returns 0 for every target
+        # however warm the build was. Fall back to the progress stream
+        # for runs captured without a trace.
+        tm = tmeta.get(target) or {}
+        if tm.get("steps_cached") is not None:
+            cached = f"{tm['steps_cached']}/{tm.get('steps_total', '?')}"
+        else:
+            cached = str(sum(1 for v in vs if v.get("cached")))
+        dur = (en - st).total_seconds()
+        # Both numbers. `build` is the span of the target's own steps;
+        # `total` is what the builder reported for it. The gap is setup
+        # plus cache export, and quoting only the first would hide
+        # exactly what clearing cache-to was worth.
+        cells = [target, placement.get(target, "?"),
+                 fmt_clock((st - t0).total_seconds()), fmt_dur(dur),
+                 fmt_dur(rep) if rep else "-"]
+        if prev_spans:
+            was = prev_spans.get(target)
+            if was:
+                pd = (was[1] - was[0]).total_seconds()
+                prep = was[2] if len(was) > 2 else 0
+                # Compare like with like. A run traced before the
+                # reported duration was recorded has only spans, and
+                # putting this run's total against that run's span
+                # measures the difference in what is counted rather
+                # than the difference in the build — it showed
+                # aiter-wheel at -40% where total against total is
+                # -85%. Fall back to span-vs-span and mark it.
+                if prep:
+                    base, now, mark = prep, (rep or dur), ""
+                else:
+                    base, now, mark = pd, dur, "*"
+                delta = (now - base) / base * 100 if base else 0
+                cells += [fmt_dur(base) + mark, f"{delta:+.0f}%{mark}"]
+            else:
+                cells += ["-", "-"]
+        cells += [cached]
+        md.append("| " + " | ".join(cells) + " |")
+    md.append("")
+    md.append("*start* is elapsed from the beginning of this run, so it "
+              "compares across runs. *build* is the span of the target's "
+              "own steps; *total* is what the builder reported for it. "
+              "The gap between them is setup plus cache export — which is "
+              "why `change` is computed on *total*. A `*` marks a target "
+              "whose previous run predates that measurement, so its "
+              "comparison is build-vs-build and excludes the export on "
+              "both sides.")
+    if prev_dir:
+        md.append(f"*previous* is `{prev_dir.name}`.")
     md.append("")
     md.append("*buildkit transfer* is what BuildKit itself moved — context, "
               "layer pulls and exports. Downloads made **inside** a RUN step "

@@ -173,7 +173,7 @@ BAKE_PRINT = docker buildx bake -f rocm-bake.hcl
         fetch-lmcache-wheel \
         build-serving push-serving \
         cache-summary cache-check cache-logs builder-load \
-        perf-plan perf-run perf-report perf-runs \
+        perf-plan perf-run perf-build perf-report perf-runs perf-serve \
         layer-summary \
         list-vars \
         build-base build-pytorch build-runtime build-all \
@@ -918,12 +918,26 @@ perf-plan: ## Show which builder each wheel would land on (no build)
 perf-run: ## Cold parallel build of every wheel, fully instrumented
 	@PYTORCH_ROCM_ARCH=$(PERF_ARCH) .builders/perfrun.sh
 
+# The same instrumentation on an ordinary build: caches on, results
+# pushed, the fleet's real sccache store. perf-run answers "what does
+# this cost from nothing"; this answers "what does a build I would
+# actually run look like", and both land in the same report and the
+# same live chart.
+perf-build: ## Instrumented *normal* build — caches on, pushes to Zot
+	@PYTORCH_ROCM_ARCH=$(PERF_ARCH) .builders/perfrun.sh --normal
+
 perf-report: ## Render the newest perf run as markdown + SVG charts
 	@python3 .builders/perfreport.py $(PERF_RUN)
 
 # The `||` has to hang off the whole thing, not off ls: in a pipeline
 # the exit status is the last command's, so sed succeeding on empty
 # input swallowed ls's failure and the target printed nothing at all.
+# PERF_PORT=, PERF_BIND=, PERF_RUN=, PERF_REFRESH= all pass through.
+# Defaults to the newest run; binds every interface because the usual
+# viewer is a laptop on the LAN rather than on the tailnet.
+perf-serve: ## Serve the newest run's interactive chart (PERF_PORT=8090)
+	@.builders/perfserve.sh
+
 perf-runs: ## List collected performance runs, newest last
 	@found=$$(ls -1d /var/tmp/rocm-perf/*/ 2>/dev/null); \
 	if [ -n "$$found" ]; then printf '  %s\n' $$found; \
