@@ -45,8 +45,9 @@ DRY=0
 #   ordinary build that happens to be instrumented - the same five
 #   streams, the same report, the same live chart.
 MODE="${PERF_MODE:-cold}"
-DRY_PUSH_FLAG="--no-push"
-[ "${MODE}" = normal ] && DRY_PUSH_FLAG=""
+# Resolved after argument parsing, not here: --normal sets MODE in the
+# loop below, so deciding this now made `--normal --dry-run` plan a
+# cold run's placement.
 # while/shift, not `for a in "$@"`. A shift inside a for-loop does not
 # advance the loop variable — the list was captured when the loop
 # started — so `--arch gfx1201` set ARCH to "--arch" and then saw
@@ -62,6 +63,9 @@ while [ $# -gt 0 ]; do
     shift
 done
 [ -z "${ARCH}" ] && ARCH=$(make -s --eval='__a:;@printf "%s" "$(PYTORCH_ROCM_ARCH)"' __a 2>/dev/null)
+
+DRY_PUSH_FLAG="--no-push"
+[ "${MODE}" = normal ] && DRY_PUSH_FLAG=""
 
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 RUN_DIR="${PERF_DIR:-/var/tmp/rocm-perf}/${STAMP}"
@@ -234,9 +238,16 @@ done
 # name, because the two differ: vllm-wheel reports as
 # rocm-pytorch-build/vllm/<arch>/<run>, and a guess would match
 # nothing and fail silently.
+#
+# Parsed once, and its stderr is not discarded. A 2>/dev/null here
+# would hide the one failure this script cannot otherwise detect:
+# placement.py returning nothing, which looks identical to a run in
+# which no target was scheduled and costs every trace in the run.
+PLACEMENT=$(python3 .builders/placement.py "${RUN_DIR}")
+[ -n "${PLACEMENT}" ] || log "warning: no placement parsed; traces will be skipped"
+
 for t in ${STAGE_A} ${STAGE_B} ${STAGE_C}; do
-    node=$(python3 .builders/placement.py "${RUN_DIR}" 2>/dev/null \
-           | awk -v t="${t}" '$1 == t {print $2; exit}')
+    node=$(echo "${PLACEMENT}" | awk -v t="${t}" '$1 == t {print $2; exit}')
     [ -n "${node}" ] || continue
     name=$(PYTORCH_ROCM_ARCH="${ARCH}" docker buildx bake -f rocm-bake.hcl \
            --print "${t}" 2>/dev/null \

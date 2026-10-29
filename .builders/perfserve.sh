@@ -54,7 +54,11 @@ catch_traces() {
     arch=$(python3 -c "import json;print(json.load(open('${d}/run.json'))['arch'])" \
            2>/dev/null) || return 0
     [ -n "${arch}" ] || return 0
-    local pairs; pairs=$(python3 .builders/placement.py "${d}" 2>/dev/null)
+    # Errors to the log, not /dev/null. If this stops parsing, no
+    # trace is ever captured and the page shows CPU lines with no
+    # bands for the whole run — silently, which is how it failed
+    # before placement.py existed.
+    local pairs; pairs=$(python3 .builders/placement.py "${d}" 2>> "${LOG}")
     for t in $(echo "${pairs}" | awk '{print $1}'); do
         [ -f "${d}/trace-${t}.json" ] && continue
         node=$(echo "${pairs}" | awk -v t="${t}" '$1 == t {print $2; exit}')
