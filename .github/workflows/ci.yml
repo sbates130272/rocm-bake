@@ -129,9 +129,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # 3.14, not the 3.12 the Python lint job uses. Every wheel this
+      # repo builds is cp314 — Ubuntu 26.04 is the only base AMD
+      # publishes ROCm 10.1 for and it ships no other Python — so the
+      # generated metapackage declares Requires-Python >=3.14 and pip
+      # refuses it on anything older. An index test on 3.12 is both
+      # broken and a combination we never ship.
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.14"
 
       # The whole point of the index is that two archs' wheels have the
       # same filename and must not be confusable, so the test builds

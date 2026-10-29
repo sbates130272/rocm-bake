@@ -162,7 +162,7 @@ def check_arch(wheel_dir, arch):
     return archs
 
 
-def metapackage_wheel(arch, version, pins, out_dir):
+def metapackage_wheel(arch, version, pins, out_dir, python):
     """Build the rocm-torch metapackage: pure metadata, no modules.
 
     Hand-assembled rather than built with setuptools because that would
@@ -179,7 +179,12 @@ def metapackage_wheel(arch, version, pins, out_dir):
         f"Name: {METAPACKAGE}",
         f"Version: {version}",
         f"Summary: ROCm PyTorch stack for {arch}, built by rocm-pytorch-build",
-        "Requires-Python: >=3.14",
+        # From --python, not a constant. Hardcoding ">=3.14" here meant
+        # the metapackage disagreed with the interpreter it was
+        # generated for the moment anything ran on another one, and it
+        # fails as an opaque "requires a different Python" a long way
+        # from this line.
+        f"Requires-Python: >={python}",
         f"Provides-Extra: {extra}",
     ]
     for name, ver in pins:
@@ -287,7 +292,8 @@ def main():
         if capped_below(spec, args.python):
             capped.append((project, spec))
 
-    meta_whl = metapackage_wheel(args.arch, meta_version, pins, out / METAPACKAGE)
+    meta_whl = metapackage_wheel(args.arch, meta_version, pins,
+                                out / METAPACKAGE, args.python)
     projects[METAPACKAGE] = [
         (f"{meta_whl.name}#sha256={sha256_of(meta_whl)}", meta_whl.name)]
 
