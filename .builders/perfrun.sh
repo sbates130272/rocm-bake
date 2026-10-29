@@ -139,9 +139,17 @@ START=$(date +%s)
 # recoverable from the rawjson logs, so nothing is lost by turning the
 # wrapper off — whereas leaving it on costs a parse that silently finds
 # nothing.
+# --set *.cache-to= is not optional, and bench.sh clears it for the
+# same reason. --no-push suppresses the *image* push; a cache export
+# is a separate registry write and still runs. Measured on a real
+# gfx1201 run: triton-wheel reported 38m52s of which the trace
+# accounts for 15m48s, so 23m04s — 59% of its headline duration — was
+# uploading mode=max cache nobody asked for. Every target was inflated
+# the same way, which makes the per-target numbers useless as build
+# times, which is the one thing this harness exists to produce.
 log "building (cold, parallel, PUBLISHED_INPUTS=1)"
 TELEMETRY=0 \
-BAKE_EXTRA="--no-cache --progress=rawjson" \
+BAKE_EXTRA="--set *.cache-to= --no-cache --progress=rawjson" \
 PUBLISHED_INPUTS=1 \
 PYTORCH_ROCM_ARCH="${ARCH}" \
 SCCACHE_WEBDAV_KEY_PREFIX="${PREFIX}" \
@@ -169,6 +177,28 @@ for t in ${STAGE_A} ${STAGE_B} ${STAGE_C}; do
         continue
     fi
     cp "${src}" "${RUN_DIR}/build-${t}.jsonl"
+done
+
+# The timeline, from BuildKit's own record rather than from the
+# progress stream. The stream capture has been seen to truncate itself
+# back to its 8-byte header partway through a healthy build, losing
+# every vertex; the trace is written by BuildKit and read back after
+# the fact, so there is nothing to miss. perfreport prefers it.
+#
+# The record name is asked of bake rather than built from the target
+# name, because the two differ: vllm-wheel reports as
+# rocm-pytorch-build/vllm/<arch>/<run>, and a guess would match
+# nothing and fail silently.
+for t in ${STAGE_A} ${STAGE_B} ${STAGE_C}; do
+    node=$(awk -v t="${t}" '$1 == t && $2 == "->" {print $3; exit}' \
+           "${RUN_DIR}/balance.log" 2>/dev/null)
+    [ -n "${node}" ] || continue
+    name=$(PYTORCH_ROCM_ARCH="${ARCH}" docker buildx bake -f rocm-bake.hcl \
+           --print "${t}" 2>/dev/null \
+           | jq -r ".target[\"${t}\"].args.BUILDKIT_BUILD_NAME // empty")
+    [ -n "${name}" ] || continue
+    python3 .builders/perftrace.py --builder "${node}" --name "${name}" \
+        --out "${RUN_DIR}/trace-${t}.json" 2>&1 | sed 's/^/  /' || true
 done
 
 # Slice both logs to the window. tail -c +N is 1-indexed, hence the +1.

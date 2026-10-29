@@ -656,6 +656,85 @@ extra is spelled `device-<arch>` so that when variants do land, the
 arch is already a first-class coordinate and only the selection
 mechanism has to change.
 
+## Measuring build performance
+
+Two harnesses, answering different questions. Do not quote a number
+from one as if it came from the other.
+
+| | `bench.sh` | `make perf-run` |
+|---|---|---|
+| runs targets | one at a time | across the fleet at once |
+| answers | what does *this* target cost | what does a full cold build look like |
+| numbers are | isolated per-target | throughput under contention |
+
+`bench.sh cold` serialises on purpose and isolates its compiler cache,
+so its per-target times are comparable run to run. `perf-run` runs the
+fleet flat out, so three builds share the sccache store and the
+registry — both on Strix, which is also a build node. Its timings are
+throughput, and its report says so at the top.
+
+### A cold, instrumented, parallel build
+
+```bash
+make perf-plan                      # placement only, builds nothing
+make perf-run PERF_ARCH=gfx1201     # the real thing, hours
+make perf-report                    # markdown + SVG from the newest run
+make perf-runs                      # list collected runs
+```
+
+A run collects five streams into `/var/tmp/rocm-perf/<stamp>/`:
+
+| file | from | answers |
+|---|---|---|
+| `samples.jsonl` | node_exporter, polled | CPU, memory, disk, network over time |
+| `trace-<target>.json` | the builder's own build record | what ran, when, for how long |
+| `sccache.log` | the WebDAV vhost's nginx log | what was written to the compiler cache |
+| `zot.jsonl` | Zot's structured log | layer-cache and image writes |
+| `artifacts.txt` | `wheelhouse.py` | what ended up published |
+
+`make perf-report` writes `report.md` with SVG charts beside it. There
+is also an interactive HTML chart — overlaid CPU lines, a clickable
+legend that filters by builder *and* by target, and per-band hover
+showing the actual `RUN` commands a phase covers.
+
+### Why the timeline comes from the build record
+
+It used to come from `bake --progress=rawjson`, captured by
+redirecting a live build's output. On a real run all three target logs
+truncated back to the 8-byte `{"v":1}` stream header partway through
+and never grew again, losing every step for builds that were otherwise
+healthy. BuildKit keeps the same information itself — an OpenTelemetry
+trace, one span per step — and it survives on the builder whether or
+not anything was listening. `.builders/perftrace.py` reads it back
+after the fact, which is why a timeline can be recovered from a run
+that was not being watched.
+
+### Cache export is not build time
+
+`--no-push` suppresses the image push but **not** the cache export,
+which is a separate registry write. `perfrun.sh` clears it with
+`--set *.cache-to=`, as `bench.sh` does, because the cost is not
+small: on one gfx1201 run `triton-wheel` reported 38m52s of which the
+trace accounted for 15m48s — the other **23m04s, 59% of its headline
+duration, was uploading `mode=max` cache**. A measurement harness that
+times its own uploads is not measuring the build.
+
+If you see a per-target number that looks inflated, compare it against
+the sum of its trace steps; the two disagreeing by minutes is this.
+
+### Stage barriers cost more than they look
+
+`balance.sh` runs stages with a barrier between them, and ranks nodes
+by capacity but hands targets out **in list order** — so position in
+the stage string decides placement. On one gfx1201 run stage 1 took
+44m16s of wall clock to do 77m09s of work, leaving **55m39s of idle
+builder time**, more idle than the stage was long, with the weakest
+node idle for 82% of it. Stage 2 then put an 18-minute Triton build on
+the 15GB node while the 123GB one took an 83-second job.
+
+Order each stage heaviest-first, and prefer measured durations over
+intuition — `triton-wheel` is noarch and looks cheap, and is not.
+
 ## Architecture Optimization
 
 ### gfx950 Build Flags
