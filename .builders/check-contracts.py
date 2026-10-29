@@ -24,6 +24,8 @@ Checks:
 """
 import importlib.util
 import re
+import shutil
+import tempfile
 import sys
 from pathlib import Path
 
@@ -77,20 +79,41 @@ def check_sccache_format(report):
 
 
 # ── 2. balance.sh placement echo ↔ perfreport regex ───────────────
-def check_placement():
+def check_placement(report):
+    """Both scheduling formats must parse.
+
+    The balancer emits "<target> -> <node>" in stage mode and
+    "<node>: starting <target>" in queue mode. The first was the only
+    one parsed when the second was added, and three callers then
+    silently attributed every target to "unknown" or captured no
+    traces at all — none of them errored.
+    """
     src = read(".builders/balance.sh")
+    cases = []
+
     m = re.search(r'echo\s+"(\s+\$target -> \$node[^"]*)"', src)
     if not m:
-        return fail("placement",
-                    "balance.sh no longer echoes `   $target -> $node`")
-    line = (m.group(1).replace("$target", "pytorch-wheel")
-                      .replace("$node", "snoc-think"))
-    # The same pattern perfreport uses to attribute targets to builders.
-    hit = re.search(r"^\s+(\S+) -> (\S+)\s", line)
-    if not hit or hit.groups() != ("pytorch-wheel", "snoc-think"):
-        fail("placement",
-             f"perfreport's placement regex does not parse balance.sh's "
-             f"line:\n    {line!r}")
+        fail("placement", "balance.sh no longer echoes `$target -> $node`")
+    else:
+        cases.append(m.group(1).replace("$target", "pytorch-wheel")
+                               .replace("$node", "snoc-think"))
+
+    m = re.search(r'echo\s+"(\s+\$node: starting \$t)"', src)
+    if not m:
+        fail("placement", "balance.sh no longer echoes `$node: starting $t`")
+    else:
+        cases.append(m.group(1).replace("$node", "snoc-think")
+                               .replace("$t", "pytorch-wheel"))
+
+    for line in cases:
+        tmp = Path(tempfile.mkdtemp())
+        (tmp / "balance.log").write_text(line + "\n")
+        got = report.read_placement(tmp)
+        shutil.rmtree(tmp, ignore_errors=True)
+        if got.get("pytorch-wheel") != "snoc-think":
+            fail("placement",
+                 f"read_placement does not parse balance.sh's line:\n"
+                 f"    {line!r} -> {got!r}")
 
 
 # ── 3 & 4. perfsample ↔ perfreport ────────────────────────────────
@@ -154,7 +177,7 @@ def main():
     report = load("perfreport", ".builders/perfreport.py")
     sample = load("perfsample", ".builders/perfsample.py")
     check_sccache_format(report)
-    check_placement()
+    check_placement(report)
     check_sample_shape(report, sample)
     check_stages()
 

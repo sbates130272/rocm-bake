@@ -1,0 +1,112 @@
+#!/bin/bash
+# perfserve.sh - serve a perf run's interactive chart, kept current.
+#
+# perfreport.py writes index.html and a data.json sidecar into the run
+# directory; this serves that directory and regenerates on an interval
+# so a run still in progress stays watchable. The page polls data.json
+# rather than reloading itself, so a refresh does not discard whichever
+# builders and targets the viewer had filtered down to.
+#
+# Defaults to the newest run and re-resolves it each cycle, so it
+# follows a run that starts after the server did. Pin an older one
+# with PERF_RUN=<dir>.
+#
+# Binds 0.0.0.0 by default: the usual viewer is a laptop on the LAN
+# that is not on tailscale, and a tailnet-only bind locked it out.
+# What this exposes is build telemetry - hostnames, CPU and memory
+# figures, build step names. No credentials and no registry access.
+# Narrow it with PERF_BIND=<ip>, and stop it when you are done.
+set -uo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
+
+PORT="${PERF_PORT:-8090}"
+BIND="${PERF_BIND:-0.0.0.0}"
+EVERY="${PERF_REFRESH:-30}"
+PINNED="${PERF_RUN:-}"
+PERF_DIR="${PERF_DIR:-/var/tmp/rocm-perf}"
+
+newest() {
+    if [ -n "${PINNED}" ]; then echo "${PINNED}"; return; fi
+    ls -1d "${PERF_DIR}"/*/ 2>/dev/null | sort -r | head -1 | sed 's#/$##'
+}
+
+run=$(newest)
+if [ -z "${run}" ]; then
+    echo "no runs under ${PERF_DIR} — run 'make perf-run' first" >&2
+    exit 1
+fi
+
+# Errors are kept, not sent to /dev/null. A regeneration loop that
+# fails silently leaves a page frozen on stale data while looking
+# perfectly healthy, which has happened here before.
+LOG="${PERF_DIR}/.perfserve.log"
+# A target's trace exists on its builder as soon as that target
+# finishes, but perfrun.sh only collects at the end of the whole run -
+# so a live viewer showed CPU lines and no phase bands for however
+# long the run had left. This picks each one up as it lands.
+#
+# Captured once per target, never re-fetched: `history export` on a
+# builder that is saturating its uplink has been measured at 9s
+# against an idle node's 0.08s, and polling that every cycle would be
+# a tax on the very run being watched.
+catch_traces() {
+    local d="$1" arch node name t
+    arch=$(python3 -c "import json;print(json.load(open('${d}/run.json'))['arch'])" \
+           2>/dev/null) || return 0
+    [ -n "${arch}" ] || return 0
+    local pairs; pairs=$(python3 .builders/placement.py "${d}" 2>/dev/null)
+    for t in $(echo "${pairs}" | awk '{print $1}'); do
+        [ -f "${d}/trace-${t}.json" ] && continue
+        node=$(echo "${pairs}" | awk -v t="${t}" '$1 == t {print $2; exit}')
+        [ -n "${node}" ] || continue
+        name=$(PYTORCH_ROCM_ARCH="${arch}" timeout 60 docker buildx bake \
+               -f rocm-bake.hcl --print "${t}" 2>/dev/null \
+               | jq -r ".target[\"${t}\"].args.BUILDKIT_BUILD_NAME // empty")
+        [ -n "${name}" ] || continue
+        # Only once it has actually completed; an in-flight record has
+        # no final spans to read.
+        timeout 90 docker buildx history ls --builder "${node}" \
+            --format '{{.Name}}|{{.Status}}' 2>/dev/null \
+            | grep -qE "^${name}\|Completed" || continue
+        timeout 300 python3 .builders/perftrace.py --builder "${node}" \
+            --name "${name}" --out "${d}/trace-${t}.json" >> "${LOG}" 2>&1 \
+            || true
+    done
+}
+
+# python -m http.server fixes --directory at startup, so a server
+# started before the current run keeps serving the previous one - which
+# is what happened: the page looked stale because it was a different
+# run. Serve a stable directory instead and refresh its contents, so
+# the viewer follows whichever run is newest without a restart.
+SERVE_DIR="${PERF_DIR}/.current"
+mkdir -p "${SERVE_DIR}"
+
+regen() {
+    local d; d=$(newest)
+    [ -n "${d}" ] || return 0
+    catch_traces "${d}"
+    python3 .builders/perfreport.py "${d}" >> "${LOG}" 2>&1 || true
+    # Copy rather than symlink the directory: a symlink swap races
+    # with an in-flight request, and these are two small files.
+    for f in index.html data.json; do
+        [ -f "${d}/${f}" ] && cp "${d}/${f}" "${SERVE_DIR}/${f}.tmp" \
+            && mv "${SERVE_DIR}/${f}.tmp" "${SERVE_DIR}/${f}"
+    done
+    echo "${d}"
+}
+
+regen > /dev/null
+( while sleep "${EVERY}"; do regen > /dev/null; done ) &
+WORKER=$!
+trap 'kill "${WORKER}" 2>/dev/null || true' EXIT INT TERM
+
+lan=$(hostname -I 2>/dev/null | awk '{print $1}')
+ts=$(tailscale ip -4 2>/dev/null | head -1)
+echo "serving ${run}"
+echo "  regenerating every ${EVERY}s · log ${LOG}"
+[ -n "${lan}" ] && echo "  lan:     http://${lan}:${PORT}/"
+[ -n "${ts}" ]  && echo "  tailnet: http://${ts}:${PORT}/"
+echo "  stop with Ctrl-C"
+
+exec python3 -m http.server "${PORT}" --bind "${BIND}" --directory "${SERVE_DIR}"

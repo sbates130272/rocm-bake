@@ -139,7 +139,29 @@ def main():
              "completed": s["EndTime"],
              "cached": bool((s.get("Attributes") or {}) and False)}
             for s in spans]
-    Path(args.out).write_text(json.dumps(rows, indent=1) + "\n")
+
+    # The record's own duration alongside the spans. The spans cover
+    # work; the record covers everything the builder spent on this
+    # target, and the gap between them is setup plus cache export. A
+    # report that only ever showed the spans would have subtracted
+    # precisely the cost the cache-to fix removed, and shown no change.
+    meta = {}
+    detail = run(["docker", "buildx", "history", "inspect", ref,
+                  "--builder", args.builder, "--format", "json"], timeout=90)
+    if detail:
+        try:
+            d = json.loads(detail)
+            meta = {"reported_seconds": (d.get("Duration") or 0) / 1e9,
+                    "status": d.get("Status"),
+                    "steps_total": d.get("NumTotalSteps"),
+                    "steps_cached": d.get("NumCachedSteps")}
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    # An object, not a bare list. perfreport accepts both: traces
+    # written before this change are still lists.
+    Path(args.out).write_text(
+        json.dumps({"meta": meta, "steps": rows}, indent=1) + "\n")
     print(f"  {len(rows)} steps -> {args.out}")
     return 0
 

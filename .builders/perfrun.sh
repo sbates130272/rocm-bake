@@ -39,6 +39,14 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 
 ARCH="${PYTORCH_ROCM_ARCH:-}"
 DRY=0
+# cold: --no-cache, an sccache prefix of its own, no push, cache-to
+#   cleared. Measures what a build costs from nothing.
+# normal: caches on, pushes, writes the shared sccache store. An
+#   ordinary build that happens to be instrumented - the same five
+#   streams, the same report, the same live chart.
+MODE="${PERF_MODE:-cold}"
+DRY_PUSH_FLAG="--no-push"
+[ "${MODE}" = normal ] && DRY_PUSH_FLAG=""
 # while/shift, not `for a in "$@"`. A shift inside a for-loop does not
 # advance the loop variable — the list was captured when the loop
 # started — so `--arch gfx1201` set ARCH to "--arch" and then saw
@@ -46,6 +54,7 @@ DRY=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --dry-run) DRY=1 ;;
+        --normal)  MODE=normal ;;
         --arch)    shift; ARCH="${1:-}" ;;
         --arch=*)  ARCH="${1#--arch=}" ;;
         *)         echo "unknown argument: $1" >&2; exit 2 ;;
@@ -67,22 +76,44 @@ STAGE_A="${PERF_STAGE_A:-vllm-wheel pytorch-wheel aiter-wheel}"
 STAGE_B="${PERF_STAGE_B:-lmcache-wheel nixl-wheel triton-wheel}"
 STAGE_C="${PERF_STAGE_C:-cupy-wheel}"
 
+# Per-node queues by default, not stage barriers. Nothing in this run
+# depends on anything else in it - PUBLISHED_INPUTS=1 makes every wheel
+# a single self-contained target pulling its inputs from Zot - so a
+# barrier only idles whichever nodes finish early. Measured on
+# 20261029T184335Z: 44m16s of wall clock to do 77m09s of work, 55m39s
+# of it idle.
+#
+# The stage variables still set the pool; --queue flattens them and
+# packs longest-first onto the least-loaded node, each node then
+# draining its list sequentially. Set PERF_QUEUE=0 to go back to
+# barriers, which is worth doing if a target ever gains a real
+# dependency on another.
+QUEUE_FLAG="--queue"
+[ "${PERF_QUEUE:-1}" = "0" ] && QUEUE_FLAG=""
+
 # A prefix of this run's own, deleted afterwards. Identical reasoning to
 # bench.sh: the store is shared with the fleet and with the sibling
 # project, so a cold run that wrote into the live prefix would evict
 # objects other builds depend on, and one that read from it would not
 # be cold.
-PREFIX="perf-${STAMP}"
+# A normal build must use the fleet's real compiler cache, not a
+# throwaway prefix: the point of it is to populate and benefit from
+# what everything else shares.
+if [ "${MODE}" = normal ]; then
+    PREFIX=""
+else
+    PREFIX="perf-${STAMP}"
+fi
 
 log() { printf '[perf %(%H:%M:%S)T] %s\n' -1 "$*"; }
 
-log "arch      ${ARCH}"
+log "arch      ${ARCH}  mode=${MODE}"
 if [ "${DRY}" = 1 ]; then
     log "dry run: showing placement only"
     PUBLISHED_INPUTS=1 PYTORCH_ROCM_ARCH="${ARCH}" \
     STAGE_1="${STAGE_A}" STAGE_2="${STAGE_B}" STAGE_3="${STAGE_C}" \
     STAGE_2B=" " STAGE_3B=" " STAGE_4=" " STAGE_5=" " \
-        ./.builders/balance.sh --dry-run --no-push
+        ./.builders/balance.sh --dry-run ${DRY_PUSH_FLAG} ${QUEUE_FLAG}
     exit 0
 fi
 
@@ -94,6 +125,7 @@ cat > "${RUN_DIR}/run.json" <<EOF
 {
   "stamp": "${STAMP}",
   "arch": "${ARCH}",
+  "mode": "${MODE}",
   "interval_seconds": ${INTERVAL},
   "sccache_key_prefix": "${PREFIX}",
   "stages": ["${STAGE_A}", "${STAGE_B}", "${STAGE_C}"],
@@ -139,23 +171,36 @@ START=$(date +%s)
 # recoverable from the rawjson logs, so nothing is lost by turning the
 # wrapper off — whereas leaving it on costs a parse that silently finds
 # nothing.
-# --set *.cache-to= is not optional, and bench.sh clears it for the
-# same reason. --no-push suppresses the *image* push; a cache export
-# is a separate registry write and still runs. Measured on a real
-# gfx1201 run: triton-wheel reported 38m52s of which the trace
-# accounts for 15m48s, so 23m04s — 59% of its headline duration — was
-# uploading mode=max cache nobody asked for. Every target was inflated
-# the same way, which makes the per-target numbers useless as build
-# times, which is the one thing this harness exists to produce.
-log "building (cold, parallel, PUBLISHED_INPUTS=1)"
+# In cold mode, --set *.cache-to= is not optional, and bench.sh
+# clears it for the same reason: --no-push suppresses the *image*
+# push, but a cache export is a separate registry write and still
+# runs. Measured on a real gfx1201 run, triton-wheel reported 38m52s
+# of which the trace accounts for 15m48s — the other 23m04s, 59% of
+# its headline duration, was uploading mode=max cache nobody asked
+# for, which made every per-target number useless as a build time.
+#
+# In normal mode none of that applies: the export is the point, the
+# layer cache is the point, and the shared sccache prefix is the
+# point. The only thing carried over is the instrumentation.
+if [ "${MODE}" = normal ]; then
+    EXTRA="--progress=rawjson"        # both caches live, cache-to kept
+    PUSH_FLAG=""                      # publish, like any ordinary build
+    log "building (normal: caches on, pushing, shared sccache)"
+else
+    EXTRA="--set *.cache-to= --no-cache --progress=rawjson"
+    PUSH_FLAG="--no-push"
+    log "building (cold: no layer cache, isolated sccache, no push)"
+fi
+
 TELEMETRY=0 \
-BAKE_EXTRA="--set *.cache-to= --no-cache --progress=rawjson" \
+BAKE_EXTRA="${EXTRA}" \
 PUBLISHED_INPUTS=1 \
 PYTORCH_ROCM_ARCH="${ARCH}" \
-SCCACHE_WEBDAV_KEY_PREFIX="${PREFIX}" \
+SCCACHE_WEBDAV_KEY_PREFIX="${PREFIX:-rocm-pytorch}" \
 STAGE_1="${STAGE_A}" STAGE_2="${STAGE_B}" STAGE_3="${STAGE_C}" \
 STAGE_2B=" " STAGE_3B=" " STAGE_4=" " STAGE_5=" " \
-    ./.builders/balance.sh --no-push > "${RUN_DIR}/balance.log" 2>&1
+    ./.builders/balance.sh ${PUSH_FLAG} ${QUEUE_FLAG} \
+        > "${RUN_DIR}/balance.log" 2>&1
 RC=$?
 END=$(date +%s)
 log "build finished rc=${RC} in $((END - START))s"
@@ -190,8 +235,8 @@ done
 # rocm-pytorch-build/vllm/<arch>/<run>, and a guess would match
 # nothing and fail silently.
 for t in ${STAGE_A} ${STAGE_B} ${STAGE_C}; do
-    node=$(awk -v t="${t}" '$1 == t && $2 == "->" {print $3; exit}' \
-           "${RUN_DIR}/balance.log" 2>/dev/null)
+    node=$(python3 .builders/placement.py "${RUN_DIR}" 2>/dev/null \
+           | awk -v t="${t}" '$1 == t {print $2; exit}')
     [ -n "${node}" ] || continue
     name=$(PYTORCH_ROCM_ARCH="${ARCH}" docker buildx bake -f rocm-bake.hcl \
            --print "${t}" 2>/dev/null \
@@ -219,8 +264,8 @@ else
 fi
 
 # What the store gained, and then put it back as we found it.
-log "sccache prefix: $(sudo du -sh "/var/cache/sccache-webdav/${PREFIX}" 2>/dev/null | cut -f1 || echo 'n/a')"
-sudo rm -rf "/var/cache/sccache-webdav/${PREFIX}" 2>/dev/null
+[ -n "${PREFIX}" ] && log "sccache prefix: $(sudo du -sh "/var/cache/sccache-webdav/${PREFIX}" 2>/dev/null | cut -f1 || echo 'n/a')"
+[ -n "${PREFIX}" ] && sudo rm -rf "/var/cache/sccache-webdav/${PREFIX}" 2>/dev/null
 
 # Unquoted on purpose: WHEEL_REPOS is a list of repo names and each
 # must arrive as its own argument.

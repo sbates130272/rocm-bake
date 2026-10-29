@@ -32,12 +32,14 @@ DRY_RUN=0
 BEST_ONLY=0
 PUSH=1
 STREAM="${BALANCE_STREAM:-0}"
+QUEUE="${BALANCE_QUEUE:-0}"
 for arg in "$@"; do
     case "$arg" in
         --dry-run)  DRY_RUN=1 ;;
         --best)     BEST_ONLY=1 ;;   # print the strongest node and exit
         --no-push)  PUSH=0 ;;
         --stream)   STREAM=1 ;;  # multiplex target logs to the terminal
+        --queue)    QUEUE=1 ;;   # per-node queues, no cross-node barrier
     esac
 done
 
@@ -182,6 +184,133 @@ make_target() {
 }
 
 # ── run one stage, one target per node, highest score first ──────
+
+# ── per-node queues ───────────────────────────────────────────────
+# Stages exist to order work that depends on earlier work. Under
+# PUBLISHED_INPUTS=1 nothing here does: every wheel resolves to a
+# single self-contained target that pulls its inputs from Zot. The
+# stage barrier then buys nothing and costs a great deal - measured on
+# run 20261029T184335Z, stage 1 took 44m16s of wall clock to do 77m09s
+# of work, leaving 55m39s of idle builder time, with the weakest node
+# idle for 82% of it.
+#
+# This mode drops the barrier. Targets are packed onto nodes
+# longest-first (LPT list scheduling), and each node then drains its
+# own queue sequentially while the nodes run concurrently. Sequential
+# per node matters: five concurrent builds on one box each derive
+# MAX_JOBS from MemAvailable as though they were alone, and
+# oversubscribe it.
+#
+# LPT's makespan is within 4/3 of optimal, and with one job far longer
+# than the rest - pytorch-wheel at 2336s against a 5232s total - it
+# lands on the real lower bound, which is that longest job.
+COSTS_FILE="${COSTS_FILE:-.builders/target-costs}"
+
+# Cost of running <target> on <node>, in seconds: the build, plus the
+# time to push its cache over that node's link.
+#
+# The second term is not a refinement. The fleet's upload speeds span
+# a factor of 25 - 3000MB/s on the host itself, 90 wired, 3.7 over
+# WiFi - so the same 6GB export is ~1 minute on one node and ~28 on
+# another. Scheduling on build time alone sent the largest export to
+# the slowest link and spent most of a normal build waiting on it.
+cost_of() {
+    local t="$1" node="${2:-}" build cache net
+    build=$(awk -v t="$t" '$1 == "build" && $2 == t {print $3; exit}' \
+            "${COSTS_FILE}" 2>/dev/null)
+    build="${build:-1}"
+    [ -z "${node}" ] && { echo "${build}"; return; }
+    cache=$(awk -v t="$t" '$1 == "cache" && $2 == t {print $3; exit}' \
+            "${COSTS_FILE}" 2>/dev/null)
+    net=$(awk -v n="$node" '$1 == "netmb" && $2 == n {print $3; exit}' \
+          "${COSTS_FILE}" 2>/dev/null)
+    # No figure for this node means no reason to penalise it; fall back
+    # to the build term rather than inventing a link speed.
+    [ -n "${cache}" ] && [ -n "${net}" ] || { echo "${build}"; return; }
+    awk -v b="${build}" -v c="${cache}" -v n="${net}" \
+        'BEGIN{printf "%d", b + c/(n*1048576)}'
+}
+
+run_queues() {
+    local targets="$1" ranked=() pids=() tailpids=() rc=0
+    score_all
+    mapfile -t ranked < <(rank_nodes)
+    if [ "${#ranked[@]}" -eq 0 ]; then
+        echo "balance: no node has ${MIN_MEM_GB}GB free; refusing to schedule" >&2
+        return 1
+    fi
+
+    # Longest first, so the big jobs are placed while every node is
+    # still empty and the short ones fill whatever gaps remain.
+    local sorted
+    sorted=$(for t in ${targets}; do printf '%s %s\n' "$(cost_of "$t")" "$t"; done \
+             | sort -rn | awk '{print $2}')
+
+    local -a load queue
+    local n
+    for ((n = 0; n < ${#ranked[@]}; n++)); do load[n]=0; queue[n]=""; done
+    for t in ${sorted}; do
+        # Earliest finish, not least loaded. The same target costs
+        # different amounts on different nodes once the export is
+        # counted, so the choice is which node finishes it soonest -
+        # a node that is idle but behind WiFi can still be the wrong
+        # answer for a cache-heavy target.
+        local best=0 bestfin=-1 i fin c
+        for ((i = 0; i < ${#ranked[@]}; i++)); do
+            c=$(cost_of "$t" "${ranked[i]}")
+            fin=$(( load[i] + c ))
+            if [ "${bestfin}" -lt 0 ] || [ "${fin}" -lt "${bestfin}" ]; then
+                bestfin=${fin}; best=${i}
+            fi
+        done
+        queue[best]="${queue[best]} ${t}"
+        load[best]=${bestfin}
+    done
+
+    echo "── queues (no barrier; each node runs its list in order)"
+    for ((n = 0; n < ${#ranked[@]}; n++)); do
+        printf '   %-14s %5ss  %s\n' "${ranked[n]}" "${load[n]}" "${queue[n]# }"
+    done
+    [ "$DRY_RUN" = 1 ] && return 0
+
+    for ((n = 0; n < ${#ranked[@]}; n++)); do
+        [ -n "${queue[n]// /}" ] || continue
+        local node="${ranked[n]}" list="${queue[n]}"
+        (
+            for t in ${list}; do
+                local mk; mk=$(make_target "$t")
+                [ "$PUSH" = 0 ] && mk="${mk/push-/build-}"
+                : > "/tmp/balance-$t.log"
+                echo "   $node: starting $t"
+                if [ "$STREAM" = 1 ]; then
+                    BUILDKIT_PROGRESS=plain make "$mk" BUILDER="$node" \
+                        > "/tmp/balance-$t.log" 2>&1
+                else
+                    make "$mk" BUILDER="$node" > "/tmp/balance-$t.log" 2>&1
+                fi || exit 1
+                echo "   $node: finished $t"
+            done
+        ) &
+        pids+=($!)
+        if [ "$STREAM" = 1 ]; then
+            for t in ${list}; do
+                tail -F -n +1 "/tmp/balance-$t.log" 2>/dev/null \
+                    | sed -u "s/^/$(printf '%-14s' "$t") | /" &
+                tailpids+=($!)
+            done
+        fi
+    done
+
+    for p in "${pids[@]:-}"; do
+        [ -n "$p" ] || continue
+        wait "$p" || rc=1
+    done
+    for p in "${tailpids[@]:-}"; do
+        [ -n "$p" ] && kill "$p" 2>/dev/null
+    done
+    return "$rc"
+}
+
 run_stage() {
     local stage="$1" ranked=() pids=() tailpids=() rc=0 i=0
     score_all
@@ -255,9 +384,17 @@ fi
 # default back. Without this guard each of those spaces printed a
 # "── stage:" header and the whole node ranking underneath it, so
 # perfrun.sh's four-stage plan rendered as seven, three of them empty.
-for stage in "$STAGE_1" "$STAGE_2" "$STAGE_2B" "$STAGE_3" "$STAGE_3B" "$STAGE_4" "$STAGE_5"; do
-    [ -z "${stage// /}" ] && continue
-    run_stage "$stage" || { echo "balance: stage failed: $stage" >&2; exit 1; }
-done
+if [ "$QUEUE" = 1 ]; then
+    # Every stage flattened into one pool. Safe only because nothing
+    # here depends on anything else here; see the comment on
+    # run_queues.
+    all="$STAGE_1 $STAGE_2 $STAGE_2B $STAGE_3 $STAGE_3B $STAGE_4 $STAGE_5"
+    run_queues "$all" || { echo "balance: a queue failed" >&2; exit 1; }
+else
+    for stage in "$STAGE_1" "$STAGE_2" "$STAGE_2B" "$STAGE_3" "$STAGE_3B" "$STAGE_4" "$STAGE_5"; do
+        [ -z "${stage// /}" ] && continue
+        run_stage "$stage" || { echo "balance: stage failed: $stage" >&2; exit 1; }
+    done
+fi
 
 echo "balance: all stages complete"
