@@ -1,0 +1,283 @@
+# vLLM + LMCache (multi-process) on ROCm.
+#
+# LMCache runs in its own container, as its own process group: that is
+# what "MP" means. The cache engine, its worker pool and its storage
+# tiers live there, not inside vLLM. vLLM holds only the connector,
+# which is a thin client.
+#
+# IPC namespace
+# ─────────────
+# The two share a private IPC namespace: lmcache declares `shareable`
+# and vllm joins it with `service:lmcache`. LMCache's engine-driven
+# transfer moves KV blocks through a POSIX shared-memory segment
+# (--shm-name) rather than copying them over a socket, and a segment
+# created in one container's IPC namespace is invisible from another.
+#
+# Upstream's launch_lmcache_mp.sh uses `--ipc host`, which also works
+# but puts both containers in the host's namespace, sharing every
+# segment and semaphore on the box with anything else running there.
+# `shareable` gives the same sharing between exactly these two
+# containers and nothing else.
+#
+# Network
+# ───────
+# Everything runs on an internal bridge. Only vllm publishes a port,
+# and only 8000, the OpenAI-compatible endpoint used to drive load.
+# LMCache's ZMQ request channel (5555) and its control/health API
+# (9000) are reachable from vllm by service name and from nowhere else
+# — they are not published to the host. To inspect them, go through the
+# network rather than opening a hole:
+#   docker compose exec vllm curl -s http://lmcache:9000/health
+#
+# Storage tiers, selected with KV_TIER:
+#   cpu    L1 only      --l1-size-gb        KV in host RAM, LRU evicted
+#   file   L1 + L2      --l2-adapter JSON   spills to local files
+# Both are LMCache-side; none of it is configured in vLLM.
+#
+# Usage:
+#   KV_TIER=cpu  docker compose up
+#   KV_TIER=file docker compose up
+#
+# Set REGISTRY/VLLM_TAG/LMCACHE_TAG to match the images you built.
+
+name: rocm-serving
+
+networks:
+  serving:
+    driver: bridge
+
+# Device access for a ROCm container.
+#
+# group_add takes numeric GIDs on purpose: --group-add resolves names
+# against the *container's* /etc/group, and these images have no render
+# group, so "render" fails with "unable to find group render". One
+# entry because on these hosts /dev/kfd and /dev/dri/renderD128 share
+# gid 993 and compose rejects duplicates. If a host splits them, add
+# the second:  stat -c %g /dev/kfd ; stat -c %g /dev/dri/renderD128
+x-rocm: &rocm
+  devices:
+    - /dev/kfd
+    - /dev/dri
+  group_add:
+    - "${RENDER_GID:-993}"
+  security_opt:
+    - seccomp=unconfined
+
+# Which HIP IPC path the runtime uses: 1 is the legacy one, 0 the
+# current. Set on both services because both sides of a KV transfer
+# attach the same memory.
+#
+# 1 is required for cross-container IPC on this fleet, and it is the
+# single setting that decides whether the pair works at all. Measured
+# on snoc-thinkstation (gfx1201), exporting a tensor from one container
+# and importing it in the other through
+# torch.multiprocessing.reductions:
+#
+#   legacy=1, shared ipc namespace only          ok
+#   legacy=1, shared ipc + pid, extra caps       ok
+#   legacy=0, shared ipc + pid, extra caps       invalid device pointer
+#   legacy=0, --ipc host (+/- --pid host)        invalid device {context,pointer}
+#
+# So neither the shared PID namespace nor CAP_SYS_ADMIN / SYS_PTRACE /
+# IPC_LOCK is needed here, despite the sibling rocm-aic stack setting
+# all of them — only this. With legacy=0 the LMCache server dies during
+# register_kv_caches and vLLM reports just "LMCache server did not
+# respond to register_kv_caches within 300.0s", naming nothing useful.
+#
+# The counter-evidence, which is real and unresolved: LMCache#4419
+# reports legacy=1 silently disabling the cache — a reporter ran eight
+# days and ~36k requests at a zero hit rate, the only symptom being
+# "no lookup ipc key" in a log nobody read. That is a worse failure
+# than not starting, because it looks like success.
+#
+# Both cannot be dodged by choosing a value, so this is the value that
+# runs and `make serve-test` is the check that it is also caching: it
+# measures a repeated prefill and reads LMCache's own store/retrieve
+# counts rather than trusting /health. Run it after any change here.
+x-hip-ipc: &hip-ipc
+  HSA_ENABLE_IPC_MODE_LEGACY: "${HSA_IPC_LEGACY:-1}"
+
+volumes:
+  hf-cache:
+  kv-store:
+
+services:
+  lmcache:
+    image: ${REGISTRY:-snoc-strix.fold-leaffish.ts.net:8080}/rocm-pytorch/lmcache:${LMCACHE_TAG:-v0.5.6-10.1.0-full-gfx1201}
+    # These tags move: every build of this ref overwrites them. Docker
+    # will not re-pull a tag it already has locally, so without this the
+    # GPU host serves whatever it happened to pull first and no amount
+    # of rebuilding changes what runs. That is not hypothetical — this
+    # host spent a day running an lmcache image from before cupy was
+    # added, while the registry had the right one, and the symptom was a
+    # KV registration failure that looked like a GPU problem.
+    pull_policy: always
+    <<: *rocm
+    # Owns the namespace; vllm joins it below.
+    ipc: shareable
+    entrypoint: ["/bin/bash", "-c"]
+    # One service for both tiers. The L2 flags are appended from an env
+    # var rather than split across two service definitions, so that
+    # vllm's `ipc: service:lmcache` has a single, stable target name.
+    #
+    # The "type":"fs" key was a guess when this was written, because
+    # l2_adapters/factory.py resolves adapters dynamically rather than
+    # from a literal table. It is confirmed: the server logs
+    # "Initialized FSL2Adapter with base_path=/kv-store" and writes one
+    # .data file per chunk there. `make serve-test-l2` reads blocks back
+    # out of it with L1 emptied.
+    command:
+      - |
+        set -e
+        if [ "$${KV_TIER}" = "file" ]; then
+          L2_ARGS='--l2-store-policy=default --l2-adapter={"type":"fs","base_path":"/kv-store"}'
+        else
+          L2_ARGS=''
+        fi
+        echo "lmcache: tier=$${KV_TIER} l1=$${L1_SIZE_GB}GB $${L2_ARGS}"
+        exec lmcache server \
+          --host 0.0.0.0 --port 5555 \
+          --l1-size-gb "$${L1_SIZE_GB}" \
+          --chunk-size "$${CHUNK_SIZE}" \
+          --transport zmq \
+          --supported-transfer-mode "$${TRANSFER_MODE}" \
+          --eviction-policy LRU \
+          $${L2_ARGS}
+    environment:
+      <<: *hip-ipc
+      KV_TIER: ${KV_TIER:-cpu}
+      # lmcache_driven is upstream's default and where the measured
+      # wins are. Keep it, but know the failure mode.
+      #
+      # LMCache/LMCache#4419 reports vLLM's EngineCore deadlocking on
+      # the first retrieve on ROCm in this mode — an infinite block in
+      # torch.cuda.Event.from_ipc_handle, via import_event in
+      # lmcache_driven_transfer.py. It reproduces with the producer and
+      # consumer in the *same* container. Across two containers, which
+      # is what this file does, a gfx950/ROCm 7.2 reporter could not
+      # reproduce it at all: 577,847 imports, no hang, with
+      # 3.93s -> 0.39s on a repeated 27k-token prompt.
+      #
+      # Do NOT apply the event_ipc.py patch from that issue. It returns
+      # a fabricated event, and a never-recorded event reports as
+      # already complete, so every wait becomes a no-op: 9 of 12 reads
+      # came back as unwritten data. No error, no hang — just wrong
+      # output on long contexts. v0.5.6 does not carry it, which is the
+      # outcome we want.
+      #
+      # If the first request never returns, that is the #4419 hang:
+      # set TRANSFER_MODE=engine_driven, which uses PREPARE/COMMIT and
+      # does not go through import_event. Treat it as a fallback, not
+      # the default — it gives up the caching win above.
+      TRANSFER_MODE: ${TRANSFER_MODE:-lmcache_driven}
+      L1_SIZE_GB: ${L1_SIZE_GB:-8}
+      CHUNK_SIZE: ${CHUNK_SIZE:-256}
+      LMCACHE_LOG_LEVEL: ${LMCACHE_LOG_LEVEL:-INFO}
+    volumes:
+      - kv-store:/kv-store
+    # Deliberately no `ports:`. 5555 and 9000 stay on the internal
+    # network; vllm reaches them as lmcache:5555 / lmcache:9000.
+    networks:
+      - serving
+    shm_size: ${SHM_SIZE:-16g}
+
+  vllm:
+    image: ${REGISTRY:-snoc-strix.fold-leaffish.ts.net:8080}/rocm-pytorch/vllm:${VLLM_TAG:-v0.32.0-10.1.0-full-gfx1201}
+    # Same moving tag, same reason — see lmcache above.
+    pull_policy: always
+    <<: *rocm
+    # Join lmcache's private namespace rather than the host's.
+    ipc: "service:lmcache"
+    depends_on:
+      lmcache:
+        condition: service_started
+    entrypoint: ["/bin/bash", "-c"]
+    # One install before serving, working around an image defect:
+    #
+    #  torchvision  Dockerfile.pytorch installs the PyPI (CUDA) build,
+    #               whose extension cannot load on ROCm. Present-but-
+    #               broken is worse than absent: transformers imports it
+    #               eagerly and `torchvision::nms does not exist` kills
+    #               the vllm CLI, while removing it makes vllm's model
+    #               registry fail on minimax_m3's unconditional
+    #               `from torchvision.transforms import InterpolationMode`.
+    #               The CPU wheel satisfies both; --no-deps stops it
+    #               pulling a CPU torch over the ROCm one.
+    #               Real fix: a HIP torchvision wheel built against our
+    #               torch, as a bake target.
+    #
+    # lmcache is NOT installed here any more: Dockerfile.vllm carries it
+    # at build time. vLLM ships the MP connector itself but imports
+    # lmcache.utils from it, so it is a real dependency of the image
+    # rather than something to bolt on at startup. Installing it at run
+    # time also silently moved packages vLLM pins (grpcio 1.78 -> 1.85).
+    command:
+      - |
+        set -e
+        pip uninstall -y torchvision torchaudio torchdata >/dev/null 2>&1 || true
+        pip install --no-cache-dir --no-deps -q \
+          --index-url https://download.pytorch.org/whl/cpu torchvision
+        # KV_OFFLOAD=0 runs the same container, same namespaces, same
+        # everything — just without the connector. That makes the A/B
+        # honest: the connector is the only variable, rather than
+        # comparing against a differently-shaped standalone run. The
+        # lmcache service still starts and sits idle, which costs a
+        # little RAM and is worth it for a comparable baseline.
+        if [ "$${KV_OFFLOAD}" = "1" ]; then
+          KV_ARGS='--disable-hybrid-kv-cache-manager --kv-transfer-config {"kv_connector":"LMCacheMPConnector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://lmcache","lmcache.mp.port":5555}}'
+        else
+          KV_ARGS=''
+        fi
+        echo "vllm: model=$${MODEL} kv_offload=$${KV_OFFLOAD}"
+        exec vllm serve "$${MODEL}" \
+          --host 0.0.0.0 --port 8000 \
+          --max-model-len "$${MAX_MODEL_LEN}" \
+          --gpu-memory-utilization "$${GPU_UTIL}" \
+          $${KV_ARGS}
+    environment:
+      <<: *hip-ipc
+      # 1 wires up the LMCacheMPConnector; 0 serves without KV offload
+      # for a baseline. See the note in the command above.
+      KV_OFFLOAD: ${KV_OFFLOAD:-1}
+      MODEL: ${MODEL:-Qwen/Qwen2.5-3B-Instruct}
+      MAX_MODEL_LEN: ${MAX_MODEL_LEN:-8192}
+      GPU_UTIL: ${GPU_UTIL:-0.90}
+      # Which transfer protocol the connector speaks, and it must be one
+      # the server was started with — the same TRANSFER_MODE as above,
+      # so the two cannot be configured apart.
+      #
+      # This was `ipc`, which is not a value this enum has. The name
+      # looked right next to the IPC namespace the two containers share,
+      # but those are different things: the namespace is how the shared
+      # memory is reachable, while this chooses who drives the copy.
+      # MPTransferMode accepts auto, engine_driven and lmcache_driven,
+      # and anything else kills EngineCore at startup with
+      #
+      #   ValueError: 'ipc' is not a valid MPTransferMode
+      #
+      # buried under a vLLM traceback that names kv_cache initialisation
+      # rather than the setting. `make serve-test` now covers this.
+      LMCACHE_MP_TRANSFER_MODE: ${TRANSFER_MODE:-lmcache_driven}
+      LMCACHE_CHUNK_SIZE: ${CHUNK_SIZE:-256}
+      LMCACHE_LOG_LEVEL: ${LMCACHE_LOG_LEVEL:-INFO}
+      HF_HOME: /root/.cache/huggingface
+      # Exposes /reset_prefix_cache, /sleep and /wake_up. Off by default
+      # because they let any caller on the published port drop the GPU
+      # cache or park the engine mid-serve.
+      #
+      # Turn it on to tell LMCache's cache apart from vLLM's own. Both
+      # make a repeated prompt faster, so timing alone cannot attribute
+      # the win; dropping vLLM's prefix cache between the two requests
+      # leaves LMCache as the only thing that could still have the
+      # blocks. VLLM_DEV_MODE=1 make serve-stack
+      VLLM_SERVER_DEV_MODE: ${VLLM_DEV_MODE:-0}
+    volumes:
+      - ${HF_CACHE:-hf-cache}:/root/.cache/huggingface
+    # The only hole in the box: the OpenAI-compatible endpoint, bound to
+    # loopback so it is reachable from this host and not the network.
+    # Set VLLM_BIND=0.0.0.0 to drive it from another machine.
+    ports:
+      - "${VLLM_BIND:-127.0.0.1}:8000:8000"
+    networks:
+      - serving
+    shm_size: ${SHM_SIZE:-16g}

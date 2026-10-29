@@ -41,6 +41,12 @@ for arg in "$@"; do
     esac
 done
 
+# One bake per target, each pinned to a different node, results handed
+# over through Zot. `target:` contexts cannot cross that boundary, so
+# every target here resolves its inputs from published images instead.
+# See the PUBLISHED_INPUTS comment in bake.hcl.
+export PUBLISHED_INPUTS=1
+
 NODES="${NODES:-snoc-think snoc-strix snoc-gaming}"
 MIN_MEM_GB="${MIN_MEM_GB:-8}"
 
@@ -67,7 +73,36 @@ STAGE_2B="${STAGE_2B:-pytorch}"
 # pytorch-run omitted: no node has a working GPU, so the runtime image
 # cannot be exercised and is not worth a slot. Add it back here when
 # one does.
-STAGE_3="${STAGE_3:-aiter-wheel pytorch-wheel}"
+# Three targets, which is the first stage wide enough to use the whole
+# fleet. nixl-wheel used to sit in a stage of its own; it only needs
+# pytorch, so it belongs here beside the other two. That removed a
+# serial stage and took stage width from 2 to 3.
+#
+# Width is the whole game for this scheduler: it parallelises *within* a
+# stage, so a one-target stage always goes to the single best node no
+# matter how the others score. Stages 1, 2 and 2B are width-1 because
+# the dependency chain genuinely is serial there.
+STAGE_3="${STAGE_3:-aiter-wheel nixl-wheel pytorch-wheel}"
+# cupy-wheel needs only pytorch-base, so in principle it could run in
+# stage 1. It is here because lmcache consumes it and nothing earlier
+# does, and because stage 3 is already the widest point — adding a
+# fourth target there would oversubscribe a three-node fleet.
+STAGE_3B="${STAGE_3B:-cupy-wheel}"
+# The serving stack. nixl-wheel is its own stage because both vllm and
+# lmcache consume it; vllm first in stage 5 because it is the expensive
+# one (AITER-dependent) and stage order is priority, not preference.
+#
+# These are only reachable here because bake resolves their inputs from
+# the registry under PUBLISHED_INPUTS (exported below) rather than from
+# sibling targets. Without it each would rebuild pytorch, triton, aiter
+# and nixl on whichever node it landed on.
+# lmcache before vllm, not beside it. vllm's bake target now takes a
+# lmcache-wheel context (vLLM ships the MP connector but imports
+# lmcache.utils from it), and on this path the stages hand results over
+# through Zot — so the wheel has to be *published* before vllm starts,
+# not merely building on some other node.
+STAGE_4="${STAGE_4:-lmcache lmcache-wheel}"
+STAGE_5="${STAGE_5:-vllm vllm-wheel}"
 
 # ── node capacity ────────────────────────────────────────────────
 # score = free GB of RAM + idle cores. Memory is weighted equally with
@@ -75,6 +110,18 @@ STAGE_3="${STAGE_3:-aiter-wheel pytorch-wheel}"
 # each takes 1-2GB, so RAM is what actually bounds a big node.
 node_score() {
     local builder="$1" endpoint stats cores load freemem idle score
+
+    # Health first, before anything is measured. A node whose buildkitd
+    # is wedged still answers ssh, still reports idle cores and free
+    # memory, and so scores *well* — snoc-gaming has ranked first while
+    # sitting in buildx's `error` state, and the build scheduled onto it
+    # failed after the endpoint gave up. Capacity is only meaningful on
+    # a node that can accept work.
+    if ! python3 "$(dirname "${BASH_SOURCE[0]}")/builder-health.py" \
+            --check "$builder" >/dev/null 2>&1; then
+        echo "0"; return
+    fi
+
     endpoint=$(timeout 10 docker buildx inspect "$builder" 2>/dev/null \
         | awk '/^Endpoint:/ {print $2; exit}')
     [ -n "$endpoint" ] || { echo "0"; return; }
@@ -202,7 +249,7 @@ if [ "$BEST_ONLY" = 1 ]; then
     exit 0
 fi
 
-for stage in "$STAGE_1" "$STAGE_2" "$STAGE_2B" "$STAGE_3"; do
+for stage in "$STAGE_1" "$STAGE_2" "$STAGE_2B" "$STAGE_3" "$STAGE_3B" "$STAGE_4" "$STAGE_5"; do
     run_stage "$stage" || { echo "balance: stage failed: $stage" >&2; exit 1; }
 done
 

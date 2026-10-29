@@ -1,0 +1,174 @@
+# syntax=docker/dockerfile:1
+# CuPy (github.com/cupy/cupy) built from source for ROCm.
+#
+# Why build it: LMCache's multi-process server needs cupy, and no
+# published wheel fits this stack. PyPI has cupy-rocm-7-0, which is
+# built against ROCm 7.0 — a different major to our 10.1 — and the
+# plain `cupy` package ships no wheels at all, only an sdist.
+#
+# Why it is not optional, despite what Dockerfile.lmcache used to say.
+# LMCache's MP server builds a cupy.cuda.ExternalStream in
+# v1/platform/devices/cuda/cache_context.py and imports cupy at module
+# scope to do it. ROCm does not take a different path: the rocm device
+# platform is two files, __init__.py and pin_memory.py, and both import
+# from the cuda one, so cache_context comes from cuda unchanged.
+# Without cupy the server dies on the first request with
+# ModuleNotFoundError and vLLM then waits five minutes before
+# reporting a generic engine failure.
+#
+# FROM the base image rather than pytorch: cupy has no torch
+# dependency, and the base already carries ROCm and the venv this
+# wheel has to match. Same reasoning as Dockerfile.triton.
+
+ARG BASE_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/base:10.1.0-full-3.14
+
+FROM ${BASE_IMAGE} AS builder
+
+ARG CUPY_REF=v14.2.0
+ARG PYTORCH_ROCM_ARCH=gfx950
+ARG ROCM_VERSION=10.1.0-full
+ARG SCCACHE_WEBDAV_ENDPOINT=http://snoc-strix.fold-leaffish.ts.net:8081
+# Key namespace within the shared store, and a unix socket rather than
+# a TCP port — the builders run with --driver-opt network=host, so a
+# fixed port is shared by every container on the node and two builds'
+# sccache servers cross. See the long note in Dockerfile.aiter.
+ARG SCCACHE_WEBDAV_KEY_PREFIX=rocm-pytorch
+ARG SCCACHE_VERSION=0.19.0
+# Empty means "derive from the node"; set it to pin a job count.
+ARG MAX_JOBS=
+# Memory budget per compile job, used to derive MAX_JOBS. Shared
+# convention with Dockerfile.pytorch; 2GB is measured for cc1plus.
+ARG MEM_PER_JOB_GB=2
+
+LABEL org.opencontainers.image.source="https://github.com/cupy/cupy"
+LABEL org.opencontainers.image.description="CuPy ${CUPY_REF} for ROCm ${ROCM_VERSION}, ${PYTORCH_ROCM_ARCH}"
+
+# HCC_AMDGPU_TARGET is the whole reason this needs an explicit arch.
+# CuPy's docs: "If you don't specify the HCC_AMDGPU_TARGET environment
+# variable, CuPy will be built for the GPU architectures available on
+# the build host." A BuildKit RUN has no /dev/kfd and therefore no
+# GPUs, so leaving it unset produces a wheel with no device code at
+# all — the same trap AITER falls into when it shells out to rocminfo.
+#
+# CUPY_INSTALL_USE_HIP=1 selects the ROCm backend; without it setup.py
+# looks for CUDA and fails.
+ENV ROCM_HOME=/opt/rocm \
+    ROCM_PATH=/opt/rocm \
+    CUPY_INSTALL_USE_HIP=1 \
+    HCC_AMDGPU_TARGET=${PYTORCH_ROCM_ARCH} \
+    SCCACHE_WEBDAV_ENDPOINT=${SCCACHE_WEBDAV_ENDPOINT} \
+    SCCACHE_SERVER_UDS=/tmp/sccache.sock \
+    SCCACHE_WEBDAV_KEY_PREFIX=${SCCACHE_WEBDAV_KEY_PREFIX} \
+    SCCACHE_IGNORE_CLIENT_VERSION=1 \
+    SCCACHE_CONF=/etc/sccache.toml \
+    PATH=/opt/rocm/bin:${PATH}
+
+# sccache lives in Dockerfile.pytorch's builder stage and never reaches
+# the base image this is FROM.
+RUN curl -fsSL "https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+    -o /tmp/sccache.tar.gz && \
+    tar xzf /tmp/sccache.tar.gz -C /usr/local/bin --strip-components=1 \
+        "sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache" && \
+    rm /tmp/sccache.tar.gz && chmod +x /usr/local/bin/sccache && sccache --version
+
+# Each RUN is a fresh container, so a build step starts its own sccache
+# server and startup probes the remote store. That probe is bounded by
+# a 10s timeout compiled into sccache; only this config field moves it.
+RUN printf 'server_startup_timeout_ms = 60000\n' > /etc/sccache.toml
+
+# No apt step. The -full base already carries everything cupy's docs
+# list as ROCm prerequisites — hipblas, hipsparse, rocsparse, rocrand,
+# hiprand, thrust, rocsolver, rocfft, hipfft, hipcub, rocprim, rccl —
+# under /opt/rocm/include. An earlier version of this file installed
+# them and failed: the package names in this repo are
+# amdrocm-<lib>-...10.1, not the upstream rocm-<lib>-dev, and the
+# headers were already there anyway. The directory is `thrust`, not
+# `rocthrust`, which is what made it look absent.
+
+RUN pip install --no-cache-dir "cython>=0.29.22" "fastrlock>=0.5" numpy setuptools wheel build
+
+RUN git clone --depth 1 --branch "${CUPY_REF}" --recursive \
+    https://github.com/cupy/cupy.git /opt/cupy
+
+WORKDIR /opt/cupy
+
+# Python 3.14 changed the default multiprocessing start method on Linux
+# from "fork" to "forkserver". Under forkserver every worker re-imports
+# __main__, so cupy's setup.py re-executes itself in each child during
+# the parallel cythonize and the build dies with a misleading
+#
+#     error: [Errno 104] Connection reset by peer
+#
+# whose traceback is pure multiprocessing:
+#     forkserver.main -> spawn.import_main_path -> runpy.run_path(setup.py)
+#
+# Forcing "fork" restores 3.13 behaviour and keeps the parallelism.
+# CUPY_NUM_BUILD_JOBS=1 would also avoid it, at the cost of a serial
+# build of several hundred extensions.
+RUN printf '%s\n' \
+    'import multiprocessing, runpy, sys' \
+    'multiprocessing.set_start_method("fork", force=True)' \
+    'sys.argv = ["setup.py"] + sys.argv[1:]' \
+    'runpy.run_path("setup.py", run_name="__main__")' \
+    > /opt/cupy/build-wheel.py && cat /opt/cupy/build-wheel.py
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# njobs, not MAX_JOBS, for the computation: MAX_JOBS is a build ARG, so
+# BuildKit substitutes every ${MAX_JOBS} in this instruction with the
+# ARG's value before the shell runs — assigning to it in the shell does
+# not change what the later expansions already became. Compute into a
+# name BuildKit does not know about, then export it once.
+#
+# setup.py directly rather than `python -m build`: cupy's build reads
+# the environment set above, and a PEP 517 front end would run it in an
+# isolated venv where ROCM_HOME and the HIP toolchain are not visible.
+RUN njobs="${MAX_JOBS}"; \
+    if [ -z "${njobs}" ]; then \
+        cores=$(nproc); \
+        njobs=$(awk -v per="${MEM_PER_JOB_GB}" '/^MemAvailable:/ {print int($2/1024/1024/per)}' /proc/meminfo); \
+        [ -n "${njobs}" ] || njobs=${cores}; \
+        [ "${njobs}" -ge 1 ] || njobs=1; \
+        [ "${njobs}" -le "${cores}" ] || njobs=${cores}; \
+    fi; \
+    export CUPY_NUM_BUILD_JOBS="${njobs}"; \
+    echo "CUPY_NUM_BUILD_JOBS=${njobs}, HCC_AMDGPU_TARGET=${HCC_AMDGPU_TARGET}"; \
+    CC="sccache gcc" CXX="sccache g++" \
+    PYTHONDONTWRITEBYTECODE=1 python build-wheel.py bdist_wheel --dist-dir=/wheels \
+    2>&1 | tee /wheels-build.log \
+    && sccache --show-stats | tee /wheels-cupy-sccache-stats.txt
+
+SHELL ["/bin/sh", "-c"]
+
+# Prove the wheel carries device code for the arch it claims. CuPy
+# compiles much of its kernel surface at run time through hipRTC, so
+# the offload-bundle check is softer than the one in Dockerfile.aiter:
+# some builds legitimately ship few precompiled objects. Report what is
+# there and fail only if the wheel has no .so at all, which is what a
+# missing HCC_AMDGPU_TARGET would produce.
+RUN --mount=type=tmpfs,target=/tmp/cupy-wheel \
+    set -eu; \
+    python -m zipfile -e /wheels/*.whl /tmp/cupy-wheel; \
+    count=$(find /tmp/cupy-wheel -name '*.so' | wc -l); \
+    echo "shared objects in wheel: ${count}"; \
+    [ "${count}" -gt 0 ] || { echo "wheel contains no extensions" >&2; exit 1; }; \
+    for so in $(find /tmp/cupy-wheel -name '*.so' | head -20); do \
+        /opt/rocm/llvm/bin/llvm-objdump --offloading "${so}" 2>/dev/null \
+            | grep -oE 'gfx[0-9a-z]+' || true; \
+    done | sort -u | tee /wheels-arch.txt; \
+    echo "arch bundles found: $(wc -l < /wheels-arch.txt)"
+
+RUN ls -la /wheels/
+
+# ─── Wheel-only image ────────────────────────────────────────────
+# scratch, not the base: this exists to be consumed by COPY --from=,
+# so it carries the wheel and nothing else.
+FROM scratch AS wheel
+
+ARG CUPY_REF
+ARG PYTORCH_ROCM_ARCH
+LABEL org.opencontainers.image.source="https://github.com/cupy/cupy"
+LABEL org.opencontainers.image.description="CuPy ${CUPY_REF} wheel for ROCm, ${PYTORCH_ROCM_ARCH}"
+
+COPY --from=builder /wheels/ /wheels/
+COPY --from=builder /wheels-build.log /wheels-cupy-sccache-stats.txt /wheels-arch.txt /
