@@ -3,8 +3,8 @@ name: CI — Dockerfile & bake validation
 on:
   pull_request:
     paths:
-      - "bake.hcl"
-      - "Dockerfile.*"
+      - "rocm-bake.hcl"
+      - "docker/Dockerfile.*"
       - "Makefile"
       - "serving/docker-compose.yml"
       - ".builders/**"
@@ -12,8 +12,8 @@ on:
   push:
     branches: [main]
     paths:
-      - "bake.hcl"
-      - "Dockerfile.*"
+      - "rocm-bake.hcl"
+      - "docker/Dockerfile.*"
       - "Makefile"
       - "serving/docker-compose.yml"
       - ".builders/**"
@@ -23,7 +23,7 @@ permissions:
   contents: read
 
 jobs:
-  # The target list comes from bake.hcl rather than being written out
+  # The target list comes from rocm-bake.hcl rather than being written out
   # here. It used to be a hardcoded four, which meant the nine added
   # since — every wheel, and the whole serving stack — were never
   # syntax-checked, and a new target silently joined them.
@@ -41,7 +41,7 @@ jobs:
           # --print on the default group would only list that group's
           # members; asking for every target by name is what covers the
           # ones no group references.
-          targets=$(grep -oE '^target "[a-zA-Z0-9_-]+"' bake.hcl \
+          targets=$(grep -oE '^target "[a-zA-Z0-9_-]+"' rocm-bake.hcl \
                     | sed 's/target //; s/"//g' | jq -R . | jq -sc .)
           echo "targets=$targets" >> "$GITHUB_OUTPUT"
           echo "will validate: $targets"
@@ -59,11 +59,56 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Validate bake.hcl target syntax
+      - name: Validate rocm-bake.hcl target syntax
         run: |
-          docker buildx bake -f bake.hcl --print \
+          docker buildx bake -f rocm-bake.hcl --print \
             --set "*.platform=linux/amd64" \
             --set "${{ matrix.target }}.tags=test:latest"
+
+      # --print resolves the dockerfile path but never opens it, so a
+      # target pointing at a file that does not exist parses perfectly
+      # and fails only once someone runs the build. That is exactly the
+      # gap a move leaves behind: the Dockerfiles now live in docker/,
+      # and nothing else here would notice a path left on the old form.
+      - name: Dockerfile the target names exists
+        run: |
+          df=$(docker buildx bake -f rocm-bake.hcl --print "${{ matrix.target }}" \
+                 2>/dev/null \
+               | jq -r '.target["${{ matrix.target }}"].dockerfile')
+          echo "${{ matrix.target }} -> $df"
+          test -f "$df" || { echo "::error::no such dockerfile: $df"; exit 1; }
+
+      # A target's tags are the statement of whether its output is
+      # arch-specific, so the cache ref has to agree with them. If the
+      # tags carry the arch and the cache ref does not, two archs share
+      # one cache and each evicts the other — every switch becomes a
+      # cold build. If the tags omit it, the target is built once for
+      # the whole fleet (pytorch-base, triton-wheel) and an arch-scoped
+      # ref would just fragment the cache for nothing.
+      #
+      # Tags rather than the PYTORCH_ROCM_ARCH arg: pytorch-run takes no
+      # such arg — it compiles nothing — but COPYs the torch wheel out
+      # of `pytorch`, so its content is arch-specific all the same.
+      # Keying on the arg called it arch-independent and missed that its
+      # tags had been overwriting each other.
+      - name: Cache ref and tags agree about the arch
+        run: |
+          t="${{ matrix.target }}"
+          for arch in gfx950 gfx1201; do
+            out=$(PYTORCH_ROCM_ARCH=$arch docker buildx bake -f rocm-bake.hcl \
+                    --print "$t" 2>/dev/null)
+            tags=$(jq -r ".target[\"$t\"].tags // [] | join(\" \")" <<<"$out")
+            ref=$(jq -r ".target[\"$t\"][\"cache-to\"][0].ref // \"\"" <<<"$out")
+            case "$tags" in *"$arch"*) tagged=yes ;; *) tagged=no ;; esac
+            case "$ref"  in *"$arch"*) cached=yes ;; *) cached=no ;; esac
+            echo "  $arch  tags_have_arch=$tagged  cache_has_arch=$cached"
+            [ -z "$ref" ] && continue
+            if [ "$tagged" != "$cached" ]; then
+              echo "::error::$t: tags say arch-specific=$tagged but" \
+                   "cache ref says $cached ($ref)"
+              exit 1
+            fi
+          done
 
       # The three `docker build` steps that used to sit here pulled the
       # base image from the tailnet Zot
@@ -79,17 +124,124 @@ jobs:
       # behind `runs-on: [self-hosted]` if a fleet runner is ever
       # registered — that is the only place they can work.
 
+  wheelindex:
+    name: Per-arch pip index
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 3.14, not the 3.12 the Python lint job uses. Every wheel this
+      # repo builds is cp314 — Ubuntu 26.04 is the only base AMD
+      # publishes ROCm 10.1 for and it ships no other Python — so the
+      # generated metapackage declares Requires-Python >=3.14 and pip
+      # refuses it on anything older. An index test on 3.12 is both
+      # broken and a combination we never ship.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      # The whole point of the index is that two archs' wheels have the
+      # same filename and must not be confusable, so the test builds
+      # two indexes from identically-named wheels and proves each
+      # resolves to its own. Synthetic wheels, no registry and no GPU —
+      # this runs on a bare runner in seconds.
+      # The demo wheels are assembled with zipfile rather than built
+      # with setuptools. A wheel is a zip with a dist-info directory,
+      # and the test needs two of them that differ only in payload —
+      # not a build backend. The first version shelled out to
+      # `setup.py bdist_wheel`, which is deprecated, and relied on
+      # setuptools being present, which since 3.12 ensurepip no longer
+      # guarantees. It failed here for exactly that reason, and the
+      # `>/dev/null 2>&1` on that line meant the log said nothing about
+      # why — the next command just could not find a .whl. No output is
+      # discarded now.
+      - name: Index two archs from identically-named wheels
+        run: |
+          set -e
+          for arch in gfx950 gfx1201; do
+            d="work/$arch"; mkdir -p "$d"
+            ARCH="$arch" DEST="$d" python - <<'EOF'
+          import base64, csv, hashlib, io, os, zipfile
+          arch, dest = os.environ["ARCH"], os.environ["DEST"]
+          di = "demopkg-1.0.0.dist-info"
+          files = {
+              "demo/__init__.py": f"ARCH = {arch!r}\n",
+              f"{di}/METADATA": ("Metadata-Version: 2.1\n"
+                                 "Name: demopkg\nVersion: 1.0.0\n"),
+              f"{di}/WHEEL": ("Wheel-Version: 1.0\nGenerator: ci\n"
+                              "Root-Is-Purelib: true\nTag: py3-none-any\n"),
+          }
+          rows = []
+          for n, b in files.items():
+              raw = b.encode()
+              h = base64.urlsafe_b64encode(
+                  hashlib.sha256(raw).digest()).rstrip(b"=").decode()
+              rows.append((n, f"sha256={h}", str(len(raw))))
+          rows.append((f"{di}/RECORD", "", ""))
+          buf = io.StringIO()
+          csv.writer(buf, lineterminator="\n").writerows(rows)
+          files[f"{di}/RECORD"] = buf.getvalue()
+          # Same name and version for both archs; only the payload
+          # differs. That is exactly the real situation.
+          with zipfile.ZipFile(
+                  f"{dest}/demopkg-1.0.0-py3-none-any.whl", "w") as z:
+              for n, b in files.items():
+                  z.writestr(n, b)
+          EOF
+            echo "$arch" > "$d/wheels-arch.txt"
+            ls -l "$d"/*.whl
+            .builders/wheelindex.py "$d" --arch "$arch" \
+              --out "index/$arch" --version 10.1.0-full
+          done
+
+          # Identical filenames across the two arch directories is the
+          # precondition this all exists for. Assert it rather than
+          # assume it, or the test could pass for the wrong reason.
+          a=$(basename work/gfx950/*.whl)
+          b=$(basename work/gfx1201/*.whl)
+          echo "gfx950: $a"
+          echo "gfx1201: $b"
+          [ "$a" = "$b" ] || { echo "::error::names differ; test is void"; exit 1; }
+
+      - name: Each index installs its own arch, and only its own
+        run: |
+          set -e
+          python -m http.server 8099 --directory . >/dev/null 2>&1 &
+          sleep 2
+          for arch in gfx950 gfx1201; do
+            python -m venv "v-$arch"
+            "v-$arch/bin/pip" install -q --no-cache-dir \
+              --index-url "http://127.0.0.1:8099/index/$arch/" \
+              --extra-index-url https://pypi.org/simple \
+              "rocm-torch[device-$arch]"
+            got=$("v-$arch/bin/python" -c "import demo; print(demo.ARCH)")
+            echo "  $arch index installed: $got"
+            [ "$got" = "$arch" ] || {
+              echo "::error::$arch index served $got"; exit 1; }
+          done
+
+          # An index must refuse the other arch's extra. Without this,
+          # the two indexes are just directories and nothing stops a
+          # consumer pointing at the wrong one.
+          out=$("v-gfx950/bin/pip" install --dry-run --no-cache-dir \
+                  --index-url http://127.0.0.1:8099/index/gfx950/ \
+                  --extra-index-url https://pypi.org/simple \
+                  "rocm-torch[device-gfx1201]" 2>&1 || true)
+          echo "$out" | grep -q "does not provide the extra" || {
+            echo "::error::gfx950 index accepted the gfx1201 extra"; exit 1; }
+          echo "  cross-arch extra correctly rejected"
+
   defaults:
     name: Defaults are not duplicated
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      # bake.hcl owns every build default; the Makefile reads them
+      # rocm-bake.hcl owns every build default; the Makefile reads them
       # through its bake_default function. This fails the build if a
       # value is declared in both, which is how the two drifted apart
       # before. No Docker and no registry — it only parses two files.
-      - name: Check bake.hcl / Makefile defaults
+      - name: Check rocm-bake.hcl / Makefile defaults
         run: .builders/check-defaults.py
 
       # The Makefile's own resolution, exercised end to end: list-vars
@@ -157,10 +309,10 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: HCL lint — bake.hcl
+      - name: HCL lint — rocm-bake.hcl
         # Was nicholarquinoh/hcledit-action@v1, which GitHub cannot
         # resolve ("repository not found") — so this job had never run.
-        # bake's own parser is the authority on whether bake.hcl is
+        # bake's own parser is the authority on whether rocm-bake.hcl is
         # valid anyway, and --print exercises it without pulling or
         # building anything.
-        run: docker buildx bake -f bake.hcl --print > /dev/null
+        run: docker buildx bake -f rocm-bake.hcl --print > /dev/null

@@ -45,7 +45,7 @@ RUN python${PYTHON_VERSION} -m venv /opt/venv \
 ENV PATH=/opt/venv/bin:$PATH
 
 # PyTorch build context - the wheel is copied from the pytorch build image
-# In bake.hcl, contexts = { pytorch = "${REGISTRY}/${REGISTRY_NAME}/pytorch:..." }
+# In rocm-bake.hcl, contexts = { pytorch = "${REGISTRY}/${REGISTRY_NAME}/pytorch:..." }
 # The wheel path is /opt/venv/lib/python3.x/site-packages/ inside the pytorch image
 FROM base AS runtime
 

@@ -107,6 +107,13 @@ def finished(record):
     land", which is what you want when reading the panel against a log
     or a commit. Local time, not UTC: the records are UTC but the person
     reading the panel is not.
+
+    Date as well as time. The clock alone is only unambiguous while the
+    window is short, and LAYER_SUMMARY_HOURS opens it as wide as you
+    like — at which point an overnight build and this morning's read
+    identically, and "02:14" tells you nothing about which. Month-day
+    rather than a full date: the panel is a recent-activity view and the
+    year has never been the question.
     """
     if record.get("status") == "Running":
         return "-"
@@ -117,7 +124,7 @@ def finished(record):
         end = datetime.fromisoformat(ended.replace("Z", "+00:00"))
     except ValueError:
         return "-"
-    return end.astimezone().strftime("%H:%M:%S")
+    return end.astimezone().strftime("%m-%d %H:%M:%S")
 
 
 def layers(record, builder):
@@ -176,7 +183,12 @@ def strip_prefix(raw):
     """Record name with this repo's prefix removed, or None if foreign."""
     for pre in NAME_PREFIXES:
         if raw.startswith(pre):
-            return raw[len(pre):]
+            rest = raw[len(pre):]
+            # The four targets with no BUILDKIT_BUILD_NAME are named by
+            # buildkit after their dockerfile path, which moved under
+            # docker/. Without this they parse as the image "docker" and
+            # drop out of every panel.
+            return rest[len("docker/"):] if rest.startswith("docker/") else rest
     return None
 
 
@@ -303,17 +315,39 @@ def by_image(builders):
         ("images", [n for n in latest if not n.endswith("(wheel)")]),
         ("wheels", [n for n in latest if n.endswith("(wheel)")]),
     ]
-    print(f"  \033[2m{'':<22} {'layers':<13} {'node':<14} "
-          f"{'status':<10} {'elapsed':>8}  {'when':>8}  {'id':<16}\033[0m")
+    # Widths from the data, not constants. layers() has no bound — it
+    # is "cached/total (pct)", so a long build prints "123/456 (27%)"
+    # and overran the fixed column, pushing id out of line on exactly
+    # the rows worth reading. Every variable-width column is measured
+    # here instead, header included so a short column never collapses
+    # under its own title.
+    rows = []
     for title, names in (g for g in groups if g[1]):
-        print(f"  \033[2m{title}\033[0m")
         for name in sorted(names, key=image_key):
             _, rid, node, status, dur, when, lyr = latest[name]
             # The stage is dropped here, not in the record: the group
             # already says wheel, so repeating it in every row is noise.
-            show = name.replace(" (wheel)", "")
-            print(f"  {show:<22} {lyr:<13} {node:<14} "
-                  f"{status.lower():<10} {dur:>8}  {when:>8}  {rid:<16}")
+            rows.append((title, name.replace(" (wheel)", ""),
+                         lyr, node, status.lower(), dur, when, rid))
+    def w(i, head):
+        return max([len(head)] + [len(r[i]) for r in rows])
+
+    wn, wl, wnd, ws = w(1, ""), w(2, "layers"), w(3, "node"), w(4, "status")
+    wd, ww = w(5, "elapsed"), w(6, "when")
+
+    # Headers all left-aligned, including over the right-aligned
+    # elapsed and when columns. Where a number lines up and where its
+    # name starts are separate questions: the values align on their
+    # units so they compare, the titles align with each other.
+    print(f"  \033[2m{'':<{wn}} {'layers':<{wl}} {'node':<{wnd}} "
+          f"{'status':<{ws}} {'elapsed':<{wd}}  {'when':<{ww}}  id\033[0m")
+    shown = None
+    for title, show, lyr, node, status, dur, when, rid in rows:
+        if title != shown:
+            print(f"  \033[2m{title}\033[0m")
+            shown = title
+        print(f"  {show:<{wn}} {lyr:<{wl}} {node:<{wnd}} "
+              f"{status:<{ws}} {dur:>{wd}}  {when:>{ww}}  {rid}")
 
 
 STOPS = _stop_times()
@@ -365,12 +399,22 @@ def main():
     # another cache number next to sccache's, and they measure
     # different things — whole build steps skipped, versus individual
     # compiles served from the compiler cache.
-    print(f"  \033[2m{'node':<14} {'build':<13} {'target':<20} "
-          f"{'status':<10} {'elapsed':>8}  {'when':>8}  {'layers':>9}  "
-          f"{'id':<16}\033[0m")
-    for node, build, name, status, dur, when, lyr, rid in rows[:limit]:
-        print(f"  {node:<14} {build:<13} {name:<20} {status:<10} "
-              f"{dur:>8}  {when:>8}  {lyr:>9}  {rid:<16}")
+    # Measured, for the same reason as the by-image panel: "layers" is
+    # cached/total plus a percentage and has no fixed width, so a
+    # two-digit step count pushed id out of its column.
+    visible = rows[:limit]
+    def w(i, head):
+        return max([len(head)] + [len(r[i]) for r in visible])
+
+    wnd, wb, wt = w(0, "node"), w(1, "build"), w(2, "target")
+    ws, wd, ww, wl = w(3, "status"), w(4, "elapsed"), w(5, "when"), w(6, "layers")
+
+    print(f"  \033[2m{'node':<{wnd}} {'build':<{wb}} {'target':<{wt}} "
+          f"{'status':<{ws}} {'elapsed':<{wd}}  {'when':<{ww}}  "
+          f"{'layers':<{wl}}  id\033[0m")
+    for node, build, name, status, dur, when, lyr, rid in visible:
+        print(f"  {node:<{wnd}} {build:<{wb}} {name:<{wt}} {status:<{ws}} "
+              f"{dur:>{wd}}  {when:>{ww}}  {lyr:>{wl}}  {rid}")
 
 
 if __name__ == "__main__":

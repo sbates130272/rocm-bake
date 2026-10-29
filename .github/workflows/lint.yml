@@ -68,7 +68,7 @@ jobs:
           #                  bake named context, invisible to hadolint
           #   DL3006         the base image tag comes from an ARG
           rc=0
-          for f in Dockerfile.*; do
+          for f in docker/Dockerfile.*; do
             printf '== %s\n' "$f"
             docker run --rm -i hadolint/hadolint:latest hadolint \
               --failure-threshold warning \

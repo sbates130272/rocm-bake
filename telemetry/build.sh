@@ -4,7 +4,7 @@
 # Usage: telemetry/build.sh [bake args...]
 #        telemetry/build.sh --builder snoc-pool pytorch
 #
-# Runs `docker buildx bake -f bake.hcl "$@"`, then writes Prometheus
+# Runs `docker buildx bake -f rocm-bake.hcl "$@"`, then writes Prometheus
 # metrics for every build that invocation produced: wall-clock duration,
 # BuildKit layer-cache hit ratio, and sccache compiler-cache counters.
 # Exits with the bake's own status, so it is safe to use in place of a
@@ -18,12 +18,12 @@
 # Env:
 #   BUILDER       buildx builder to read history from (default: current)
 #   TEXTFILE_DIR  output directory
-#   BAKE_FILE     bake definition (default: bake.hcl)
+#   BAKE_FILE     bake definition (default: rocm-bake.hcl)
 
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BAKE_FILE="${BAKE_FILE:-${REPO_ROOT}/bake.hcl}"
+BAKE_FILE="${BAKE_FILE:-${REPO_ROOT}/rocm-bake.hcl}"
 TEXTFILE_DIR="${TEXTFILE_DIR:-/var/lib/node_exporter/textfile_collector}"
 FALLBACK_DIR="${REPO_ROOT}/telemetry/out"
 METRIC_FILE="rocm_pytorch_build.prom"

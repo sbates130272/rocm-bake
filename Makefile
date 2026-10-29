@@ -1,14 +1,14 @@
 # Makefile - convenience wrapper for rocm-pytorch builds
 
 # ─── Defaults ────────────────────────────────────────────────────
-# bake.hcl is the single source for every value a build reads. This
+# rocm-bake.hcl is the single source for every value a build reads. This
 # file does not get to have an opinion about them: it used to carry its
-# own copy of ten defaults, which agreed with bake.hcl only because
+# own copy of ten defaults, which agreed with rocm-bake.hcl only because
 # nobody had changed one yet. A `make` target and a bare
 # `docker buildx bake` would then have built different images from the
 # same tree, and nothing would have said so.
 #
-# One awk pass over bake.hcl at parse time, rather than a $(shell) per
+# One awk pass over rocm-bake.hcl at parse time, rather than a $(shell) per
 # lookup. Handles both spellings in that file — a `default = "..."` on
 # its own line, and the single-line `variable "X" { default = "" }`
 # form the SDE_* block uses. Values containing spaces would not survive
@@ -23,9 +23,9 @@ BAKE_DEFAULTS := $(shell awk ' \
 		name = $$0; sub(/^variable[ \t]*"/, "", name); sub(/".*/, "", name) } \
 	name != "" && /default[ \t]*=[ \t]*"/ { \
 		v = $$0; sub(/^.*default[ \t]*=[ \t]*"/, "", v); sub(/".*/, "", v); \
-		printf "%s=%s\n", name, v; name = "" }' bake.hcl)
+		printf "%s=%s\n", name, v; name = "" }' rocm-bake.hcl)
 
-# Empty when the variable has no default in bake.hcl, which for our
+# Empty when the variable has no default in rocm-bake.hcl, which for our
 # purposes is indistinguishable from an empty default — both mean
 # "bake decides".
 bake_default = $(patsubst $(1)=%,%,$(filter $(1)=%,$(BAKE_DEFAULTS)))
@@ -80,7 +80,7 @@ MAKE_BIN := $(MAKE)
 
 # Shared compiler-cache store on Strix: nginx WebDAV over a directory
 # tree, so it survives a reboot. Replaced memcached, which did not.
-# Host and port from bake.hcl, for the same reason as everything else
+# Host and port from rocm-bake.hcl, for the same reason as everything else
 # in the block above — the builders and the deploy targets have to
 # agree on where the store is.
 WEBDAV_HOST := $(or $(WEBDAV_HOST),$(call bake_default,SCCACHE_WEBDAV_HOST))
@@ -132,7 +132,7 @@ export VCS_REF
 export BUILD_DATE
 
 # SOURCE_DATE_EPOCH used to be computed and exported from here, one
-# value per image. It lives in bake.hcl now — see the SDE_EPOCH block
+# value per image. It lives in rocm-bake.hcl now — see the SDE_EPOCH block
 # there for why it is a constant rather than a date from git history.
 # Overriding one image's epoch is still possible, and still per image:
 #
@@ -142,10 +142,16 @@ export BUILD_DATE
 
 TELEMETRY ?= 1
 ifeq ($(TELEMETRY),0)
-BAKE = docker buildx bake -f bake.hcl
+BAKE = docker buildx bake -f rocm-bake.hcl
 else
 BAKE = ./telemetry/build.sh
 endif
+
+# Bake without the telemetry wrapper, for the recipes that want to read
+# bake's own output rather than run a build. build.sh prints timings and
+# sccache stats around the build, so $(BAKE) --print is not parseable
+# JSON — it fed jq a progress line and failed with a parse error.
+BAKE_PRINT = docker buildx bake -f rocm-bake.hcl
 
 .PHONY: help zot-check zot-catalog zot-tags zot-wheels zot-wheelhouse zot-logs \
         builder-setup builder-snoc-strix builder-snoc-think builder-snoc-gaming \
@@ -202,7 +208,7 @@ zot-tags: ## List tags for a repo (REPO=rocm-pytorch/base)
 # Every target with a `wheel` stage. nixl, vllm and lmcache were
 # missing, so the three newest artifacts were published and invisible
 # here — the same way the serving stack was absent from the layer
-# panel. Keep in step with the `wheels` group in bake.hcl.
+# panel. Keep in step with the `wheels` group in rocm-bake.hcl.
 WHEEL_REPOS ?= pytorch-wheel triton-wheel aiter-wheel \
                nixl-wheel cupy-wheel vllm-wheel lmcache-wheel
 
@@ -709,6 +715,133 @@ push-wheels: ## Push the wheel artifacts (torch, triton, aiter, nixl, vllm, lmca
 _push-wheels: builder-ensure
 	$(call bake,wheels,--push)
 
+##@ Multi-GFX
+
+# The archs the fleet runs: snoc-strix is gfx950, snoc-think and
+# snoc-gaming are gfx1201. PYTORCH_ROCM_ARCH stays single-valued and
+# still defaults to gfx950, so every existing target is unchanged; this
+# is the list the arches-* wrappers fan out over.
+#
+# gfx1250 (MI450) is in the list without being in the fleet. The
+# builders already cross-compile — the two gfx1201 nodes build gfx950
+# today — so having no such card only means `make test` and `make
+# gpu-test` cannot cover it, not that it cannot be built. The ROCm 10.1
+# toolchain in our base image compiles it:
+#   clang -x hip --offload-arch=gfx1250 -nogpulib -c   # exits 0
+# Note it is NOT RDNA despite the gfx12 number; see ARCH_RDNA_TEST in
+# rocm-bake.hcl for what that would otherwise have broken.
+#
+# Each arch is a full pass over every target, so this list is a
+# multiplier on build time. Narrow it per invocation when iterating:
+#   make arches-push-all ARCHES=gfx950
+#
+# A space-separated list of single archs, not the ";"-separated form
+# PYTORCH_ROCM_ARCH takes. Those are different things: "gfx950;gfx1201"
+# is one fat build carrying both code objects, while ARCHES is two
+# builds producing two separately-tagged sets of artifacts. The fat
+# build is still available — set PYTORCH_ROCM_ARCH to the ";" form —
+# but it costs both compiles and ships every card the larger binary.
+ARCHES ?= gfx950 gfx1201 gfx1250
+
+# `make arches-push-all`, `make arches-build-pytorch`, `make
+# arches-push-wheels` — any target, once per arch. Sequential: the
+# archs contend for the same three builders and the same sccache store,
+# so running them concurrently just makes both slower.
+#
+# Safe to repeat now that rocm-bake.hcl scopes the layer cache by arch
+# (CACHE_ARCH). Before that, alternating archs through this loop would
+# have been the worst case for it — each pass evicting the last.
+arches-%:
+	@set -e; for a in $(ARCHES); do \
+		printf '\n\033[36m== %s  PYTORCH_ROCM_ARCH=%s\033[0m\n' "$*" "$$a"; \
+		$(MAKE_BIN) --no-print-directory "$*" \
+			PYTORCH_ROCM_ARCH="$$a" BUILDER=$(BUILDER); \
+	done
+
+arches-list: ## Show the archs the arches-* wrappers fan out over
+	@printf 'ARCHES = %s\n' "$(ARCHES)"
+	@for a in $(ARCHES); do \
+		printf '  %-10s pytorch:%s-%s-%s\n' "$$a" \
+			"$(PYTORCH_VERSION)" "$(ROCM_VERSION)" "$$a"; \
+	done
+	@printf '\nusage: make arches-push-all        # every target, every arch\n'
+	@printf '       make arches-push-wheels     # just the wheel artifacts\n'
+	@printf '       make arches-build-pytorch ARCHES=gfx1201\n'
+
+# ─── Per-arch pip index ──────────────────────────────────────────
+# The wheels this repo builds have arch-independent filenames — torch
+# is torch-2.14.1a0+git5c48869-cp314-cp314-linux_x86_64.whl whether it
+# was compiled for gfx950 or gfx1201 — so the arch has to live in the
+# path. One PEP 503 index per arch, selected by index URL, with a
+# generated rocm-torch metapackage in each offering a device-<arch>
+# extra that pins the whole set. See .builders/wheelindex.py.
+WHEELS_DIR ?= dist/wheels
+INDEX_DIR  ?= dist/index
+
+# Fetched by arch-specific tag, never :latest. :latest is written by
+# whichever arch was pushed last and the wheels inside cannot be told
+# apart afterwards, which is the entire failure this index exists to
+# prevent. The tags come from bake --print rather than being rebuilt
+# here: rocm-bake.hcl owns tag construction (PUB_* and ARCH_TAG), and a
+# second copy in the Makefile is exactly the drift check-defaults.py
+# exists to catch.
+wheel-index: ## Fetch each arch's wheels and build a pip index (ARCHES=)
+	@set -e; \
+	for a in $(ARCHES); do \
+		dest="$(WHEELS_DIR)/$$a"; \
+		rm -rf "$$dest"; mkdir -p "$$dest"; \
+		echo "== $$a"; \
+		for t in $(WHEEL_REPOS); do \
+			ref=$$(PYTORCH_ROCM_ARCH="$$a" $(BAKE_PRINT) --print "$$t" 2>/dev/null \
+				| jq -r ".target[\"$$t\"].tags[0]"); \
+			printf '   %-16s %s\n' "$$t" "$$ref"; \
+			printf 'FROM %s\n' "$$ref" \
+				| docker buildx build --builder $(BUILDER) \
+					--output type=local,dest="$$dest" - 2>/dev/null \
+				|| { echo "   (not published for $$a — skipped)"; continue; }; \
+		done; \
+		if [ -d "$$dest/wheels" ]; then \
+			mv "$$dest"/wheels/*.whl "$$dest"/ 2>/dev/null || true; \
+			[ -f "$$dest/wheels-arch.txt" ] || true; \
+		fi; \
+		python3 .builders/wheelindex.py "$$dest" --arch "$$a" \
+			--out "$(INDEX_DIR)/$$a" --version "$(ROCM_VERSION)" \
+			--python "$(PYTHON_VERSION)"; \
+	done
+	@printf '\nserve it with:  python3 -m http.server 8081 --directory dist\n'
+	@printf 'install with:   pip install \\\n'
+	@printf '                  --index-url http://<host>:8081/index/<arch>/ \\\n'
+	@printf '                  --extra-index-url https://pypi.org/simple \\\n'
+	@printf '                  "rocm-torch[device-<arch>]"\n'
+
+# --extra-index-url is not optional. --index-url replaces PyPI outright,
+# so without it the first wheel with an ordinary dependency (numpy, via
+# triton-kernels) fails to resolve. download.pytorch.org has the same
+# property and the same workaround.
+#
+# --ignore-requires-python for the same reason the Dockerfiles use it:
+# LMCache v0.5.6 declares ">=3.10,<3.14" and this lane is cp314
+# throughout. See docker/Dockerfile.lmcache, which carries the full
+# rationale. wheelindex.py names every wheel this applies to rather
+# than letting the flag hide them.
+wheel-index-check: ## Install each generated index into a throwaway venv
+	@set -e; \
+	port=8099; \
+	python3 -m http.server $$port --directory dist >/dev/null 2>&1 & \
+	srv=$$!; trap 'kill '"$$srv"' 2>/dev/null || true' EXIT; sleep 2; \
+	for a in $(ARCHES); do \
+		[ -d "$(INDEX_DIR)/$$a" ] || { echo "no index for $$a — run make wheel-index"; continue; }; \
+		v=$$(mktemp -d); python3 -m venv "$$v" >/dev/null; \
+		echo "== $$a"; \
+		no_proxy=127.0.0.1,localhost NO_PROXY=127.0.0.1,localhost \
+		"$$v/bin/pip" install -q --no-cache-dir --ignore-requires-python \
+			--index-url "http://127.0.0.1:$$port/index/$$a/" \
+			--extra-index-url https://pypi.org/simple \
+			"rocm-torch[device-$$a]" \
+			&& "$$v/bin/pip" list 2>/dev/null | sed 's/^/     /'; \
+		rm -rf "$$v"; \
+	done
+
 ##@ Wheels
 
 push-torch-wheel: builder-ensure ## * Build and push the torch wheel image to Zot
@@ -780,10 +913,10 @@ fetch-nixl-wheel: ## Fetch the NIXL wheel from Zot into ./dist
 # invocation — the balancer swaps those for published images instead.
 ##@ Serving (vLLM / LMCache)
 
-# Read from bake.hcl, which owns them; make needs its own copy only to
+# Read from rocm-bake.hcl, which owns them; make needs its own copy only to
 # build the serving tags below and to print them. These used to be
 # declared here with literal values and a comment asking whoever
-# changed one to change it in bake.hcl too — see the Defaults block at
+# changed one to change it in rocm-bake.hcl too — see the Defaults block at
 # the top of this file for why that is no longer how it works.
 #
 # Still exported, and still not passed as --set "*.args.X": a bake
@@ -880,7 +1013,7 @@ SERVE_DIR     := serving
 COMPOSE_FILE  := $(SERVE_DIR)/docker-compose.yml
 GPU_RENDER_GID = $(shell ssh -o BatchMode=yes $(GPU_HOST) 'stat -c %g /dev/kfd' 2>/dev/null || echo 993)
 
-# docker-compose.yml owns the serving runtime defaults, the way bake.hcl
+# docker-compose.yml owns the serving runtime defaults, the way rocm-bake.hcl
 # owns the build ones, and for the same reason: a second copy here would
 # agree until someone changed one. Reads the `${NAME:-default}` form out
 # of the file.
@@ -917,7 +1050,7 @@ SERVE_ARCH = $(or $(shell ssh -o BatchMode=yes -o ConnectTimeout=5 $(GPU_HOST) \
                    "rocminfo 2>/dev/null | grep -m1 -oE 'gfx[0-9a-z]+'" 2>/dev/null),\
                $(PYTORCH_ROCM_ARCH))
 
-# Mirrors ARCH_TAG in bake.hcl: a ";"-separated arch list is not a
+# Mirrors ARCH_TAG in rocm-bake.hcl: a ";"-separated arch list is not a
 # legal tag component, so the separator becomes "_". Derived here too
 # because bake's copy is not visible to make.
 SERVE_ARCH_TAG = $(subst ;,_,$(SERVE_ARCH))
@@ -1021,15 +1154,21 @@ serve-status: ## Show what is running on GPU_HOST
 ##@ Utilities
 
 validate: ## Validate bake file
-	@docker buildx bake -f bake.hcl --print | jq empty && echo "Bake file is valid" || echo "Bake file has errors"
+	@docker buildx bake -f rocm-bake.hcl --print | jq empty && echo "Bake file is valid" || echo "Bake file has errors"
 
 bake-plan: ## Print build plan
-	@docker buildx bake -f bake.hcl --print | jq .
+	@docker buildx bake -f rocm-bake.hcl --print | jq .
 
-clean: ## Remove built images from local registry
+# Over ARCHES, not the single build arch: these tags are per-arch, and
+# the gfx950 here used to be hardcoded — so on a gfx1201 build `clean`
+# quietly removed nothing and reported success. runtime is in the loop
+# because its tag carries the arch now too.
+clean: ## Remove built images from local registry (every arch in ARCHES)
 	@docker rmi $(REGISTRY)/$(REGISTRY_NAME)/base:$(ROCM_VERSION)-$(PYTHON_VERSION) 2>/dev/null || true
-	@docker rmi $(REGISTRY)/$(REGISTRY_NAME)/pytorch:$(PYTORCH_VERSION)-$(ROCM_VERSION)-gfx950 2>/dev/null || true
-	@docker rmi $(REGISTRY)/$(REGISTRY_NAME)/runtime:$(PYTORCH_VERSION)-$(ROCM_VERSION) 2>/dev/null || true
+	@for a in $(ARCHES); do \
+		docker rmi $(REGISTRY)/$(REGISTRY_NAME)/pytorch:$(PYTORCH_VERSION)-$(ROCM_VERSION)-$$a 2>/dev/null || true; \
+		docker rmi $(REGISTRY)/$(REGISTRY_NAME)/runtime:$(PYTORCH_VERSION)-$(ROCM_VERSION)-$$a 2>/dev/null || true; \
+	done
 	@echo "Local images cleaned"
 
 clean-cache: ## Remove cache images from Zot
@@ -1044,10 +1183,17 @@ setup: zot-check builder-setup ## Full setup: check Zot, then builders
 
 ##@ Help
 
+# The title line names one arch because one build is one arch — that is
+# what PYTORCH_ROCM_ARCH means and it has not changed. ARCHES is a
+# separate thing and gets its own line: it is what arches-* fans out
+# over, it defaults to three, and each one is a full pass over every
+# target. A multiplier on build time that large should not be something
+# you only find out from a comment in here.
 help: ## Show this help
 	@printf '\n\033[1mROCm PyTorch Build\033[0m — PyTorch %s on ROCm %s for %s\n' \
 		"$(PYTORCH_VERSION)" "$(ROCM_VERSION)" "$(PYTORCH_ROCM_ARCH)"
 	@printf 'Registry %s · builder %s\n' "$(REGISTRY)" "$(BUILDER)"
+	@printf 'One arch per build · \033[36mmake arches-*\033[0m covers ARCHES = %s\n' "$(ARCHES)"
 	@printf 'Usage: make <target> [VAR=value]\n'
 	@awk 'BEGIN {FS = ":.*?## "; cmd = "sort"} \
 		/^##@/ { if (insec) close(cmd); printf "\n\033[1m%s\033[0m\n", substr($$0, 5); insec = 1; next } \
@@ -1073,6 +1219,7 @@ list-vars: ## Show the variables these targets read, and their values
 	@printf '  \033[36m%-24s\033[0m %s\n' LMCACHE_REF "$(LMCACHE_REF)"
 	@printf '  \033[36m%-24s\033[0m %s\n' CUPY_REF "$(call bake_default,CUPY_REF)  (bake)"
 	@printf '  \033[36m%-24s\033[0m %s\n' PYTORCH_ROCM_ARCH "$(PYTORCH_ROCM_ARCH)"
+	@printf '  \033[36m%-24s\033[0m %s\n' ARCHES "$(ARCHES)  (what arches-* fans out over)"
 	@printf '  \033[36m%-24s\033[0m %s\n' MAX_JOBS "$(if $(MAX_JOBS),$(MAX_JOBS),(derived per node from free memory))"
 	@printf '\n\033[1mLocation\033[0m\n'
 	@printf '  \033[36m%-24s\033[0m %s\n' BUILDER "$(BUILDER)"

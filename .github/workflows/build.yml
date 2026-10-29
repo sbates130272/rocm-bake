@@ -59,7 +59,7 @@ jobs:
           PYTORCH_ROCM_ARCH: ${{ inputs.rocm_arch }}
         run: |
           docker buildx bake \
-            -f bake.hcl \
+            -f rocm-bake.hcl \
             --set "*.args.REGISTRY=${REGISTRY}" \
             --set "target.pytorch.args.PYTORCH_VERSION=${PYTORCH_VERSION}" \
             --set "target.pytorch.args.ROCM_VERSION=${ROCM_VERSION}" \
@@ -75,7 +75,7 @@ jobs:
           PYTORCH_ROCM_ARCH: ${{ inputs.rocm_arch }}
         run: |
           docker buildx bake \
-            -f bake.hcl \
+            -f rocm-bake.hcl \
             --push \
             --set "*.args.REGISTRY=${REGISTRY}" \
             --set "target.pytorch.args.PYTORCH_VERSION=${PYTORCH_VERSION}" \
