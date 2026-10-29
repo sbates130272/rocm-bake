@@ -249,7 +249,14 @@ if [ "$BEST_ONLY" = 1 ]; then
     exit 0
 fi
 
+# Skip stages with nothing in them. The defaults are ${STAGE_N:-...},
+# so a caller that wants fewer stages than the seven here has to blank
+# them with a space — an empty string reads as unset and gets the
+# default back. Without this guard each of those spaces printed a
+# "── stage:" header and the whole node ranking underneath it, so
+# perfrun.sh's four-stage plan rendered as seven, three of them empty.
 for stage in "$STAGE_1" "$STAGE_2" "$STAGE_2B" "$STAGE_3" "$STAGE_3B" "$STAGE_4" "$STAGE_5"; do
+    [ -z "${stage// /}" ] && continue
     run_stage "$stage" || { echo "balance: stage failed: $stage" >&2; exit 1; }
 done
 

@@ -173,6 +173,7 @@ BAKE_PRINT = docker buildx bake -f rocm-bake.hcl
         fetch-lmcache-wheel \
         build-serving push-serving \
         cache-summary cache-check cache-logs builder-load \
+        perf-plan perf-run perf-report perf-runs \
         layer-summary \
         list-vars \
         build-base build-pytorch build-runtime build-all \
@@ -341,8 +342,19 @@ cache-check: ## Verify every build node can reach the compiler cache
 		echo; \
 	done
 
+SCCACHE_LOG_FILE ?= /var/log/nginx/sccache.log
+
+# Falls back to the shared access.log for a node whose nginx predates
+# the dedicated vhost log. Re-run .builders/deploy-webdav.sh to get the
+# sized format perfreport.py reads.
 cache-logs: ## Follow the WebDAV store's access log
-	@sudo tail -f /var/log/nginx/access.log
+	@if sudo test -f $(SCCACHE_LOG_FILE); then \
+		sudo tail -f $(SCCACHE_LOG_FILE); \
+	else \
+		echo "note: $(SCCACHE_LOG_FILE) absent — re-run .builders/deploy-webdav.sh"; \
+		echo "      for per-object write sizes. Falling back to access.log."; \
+		sudo tail -f /var/log/nginx/access.log; \
+	fi
 
 ##@ Builders
 
@@ -880,6 +892,33 @@ wheel-index-check: ## Install each generated index into a throwaway venv
 			&& "$$v/bin/pip" list 2>/dev/null | sed 's/^/     /'; \
 		rm -rf "$$v"; \
 	done
+
+##@ Performance
+
+# ─── Performance runs ────────────────────────────────────────────
+# A cold, parallel, instrumented build of every wheel, and the report
+# that comes out of it. Separate from bench.sh on purpose: bench
+# serialises to get clean per-target numbers, this one runs the fleet
+# flat out and measures what that looks like. Both are useful; they
+# answer different questions and must not be confused in a report.
+PERF_ARCH ?= $(PYTORCH_ROCM_ARCH)
+
+perf-plan: ## Show which builder each wheel would land on (no build)
+	@PYTORCH_ROCM_ARCH=$(PERF_ARCH) .builders/perfrun.sh --dry-run
+
+perf-run: ## Cold parallel build of every wheel, fully instrumented
+	@PYTORCH_ROCM_ARCH=$(PERF_ARCH) .builders/perfrun.sh
+
+perf-report: ## Render the newest perf run as markdown + SVG charts
+	@python3 .builders/perfreport.py $(PERF_RUN)
+
+# The `||` has to hang off the whole thing, not off ls: in a pipeline
+# the exit status is the last command's, so sed succeeding on empty
+# input swallowed ls's failure and the target printed nothing at all.
+perf-runs: ## List collected performance runs, newest last
+	@found=$$(ls -1d /var/tmp/rocm-perf/*/ 2>/dev/null); \
+	if [ -n "$$found" ]; then printf '  %s\n' $$found; \
+	else echo "  (none yet — make perf-run)"; fi
 
 ##@ Wheels
 

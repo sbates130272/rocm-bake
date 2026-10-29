@@ -74,10 +74,30 @@ cat > "${SITE}" << EOF
 # sccache PUTs objects under a key prefix and GETs them back. It does
 # not need the full DAV verb set, but create_full_put_path is essential:
 # keys are nested (ab/cd/<hash>) and sccache does not MKCOL first.
+# \$request_length, which the stock combined format omits. It logs
+# \$body_bytes_sent — the size of the *response* — so a PUT, which is
+# the only request that writes to the cache, was recorded as a couple
+# of hundred bytes regardless of the object it carried. The request
+# length is the object, so this is what makes "what was written to
+# sccache, and when" answerable from the log rather than inferable
+# from polling the store's total size.
+#
+# \$request_time too: an object that took 30s to upload is a different
+# event from one that took 0.2s, and only one of them is a problem.
+log_format sccache '\$time_iso8601 \$remote_addr \$request_method \$uri '
+                   '\$status req=\$request_length resp=\$body_bytes_sent '
+                   'secs=\$request_time';
+
 server {
     listen ${TAILNET_IP}:${PORT};
     listen 127.0.0.1:${PORT};
     server_name _;
+
+    # Its own log, not the shared access.log: this one is parsed by
+    # .builders/perfreport.py, and sharing a file with every other
+    # vhost means every parse starts by discarding someone else's
+    # traffic.
+    access_log /var/log/nginx/sccache.log sccache;
 
     root ${DATA_DIR};
 
