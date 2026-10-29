@@ -231,6 +231,135 @@ jobs:
             echo "::error::gfx950 index accepted the gfx1201 extra"; exit 1; }
           echo "  cross-arch extra correctly rejected"
 
+  perfreport:
+    name: Perf report renders
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      # ruff and py_compile prove perfreport parses; nothing proved it
+      # renders. Every chart bug this tool has had — lines drawn as
+      # filled areas, white-on-white labels, spans overdrawing each
+      # other, an unanchored FROM swallowing the two longest steps —
+      # passed lint cleanly and was only visible in the output. So the
+      # test renders a fixture and then inspects the SVG it produced.
+      - name: Render a synthetic run
+        run: |
+          set -e
+          d="$RUNNER_TEMP/run"; mkdir -p "$d"
+          python3 - "$d" <<'EOF'
+          import json, sys
+          from datetime import datetime, timedelta, timezone
+          d = sys.argv[1]
+          t0 = datetime(2026, 1, 1, tzinfo=timezone.utc); ep = 1e6
+          json.dump({"stamp": "T", "arch": "gfx1201", "interval_seconds": 5,
+                     "sccache_key_prefix": "p", "stages": ["a"],
+                     "vcs_ref": "abc", "vcs_dirty": False},
+                    open(f"{d}/run.json", "w"))
+          json.dump({"rc": 0, "started": 0, "ended": 600, "seconds": 600},
+                    open(f"{d}/result.json", "w"))
+          with open(f"{d}/samples.jsonl", "w") as f:
+              for i in range(40):
+                  for b, pk in (("snoc-strix", 70), ("snoc-think", 95),
+                                ("snoc-gaming", 30)):
+                      r = {"ts": (t0 + timedelta(seconds=15 * i)).isoformat(),
+                           "t": ep + 15 * i, "builder": b,
+                           "mem_available_bytes": 20_000_000_000}
+                      if i:
+                          r |= {"interval_seconds": 15.0,
+                                "cpu_busy_pct": pk * min(1, i / 8),
+                                "net_rx_bps": 5_000_000}
+                      f.write(json.dumps(r) + "\n")
+          # Deliberately overlapping steps on one builder, and a long
+          # label on a short step: the two cases that have broken the
+          # timeline before.
+          spans = [(30, 400, "RUN njobs=; cores=$(nproc) MemAvailable"),
+                   (40, 380, "RUN cmake --build . --target all"),
+                   (60, 8, "RUN a-very-long-command-name-that-will-not-fit"),
+                   (450, 60, "RUN git clone https://example.invalid/x")]
+          json.dump([{"name": f"[builder {i+1}/4] {c}",
+                      "started": (t0 + timedelta(seconds=s)).isoformat(),
+                      "completed": (t0 + timedelta(seconds=s + dd)).isoformat(),
+                      "cached": False}
+                     for i, (s, dd, c) in enumerate(spans)],
+                    open(f"{d}/trace-demo-wheel.json", "w"))
+          open(f"{d}/balance.log", "w").write(
+              "   demo-wheel -> snoc-strix   (log: x)\n")
+          EOF
+          python3 .builders/perfreport.py "$d"
+          test -s "$d/report.md"
+          ls "$d"/*.svg
+
+      - name: Every SVG is well-formed and obeys the mark invariants
+        run: |
+          python3 - "$RUNNER_TEMP/run" <<'EOF'
+          import glob, re, sys, xml.etree.ElementTree as ET
+          d = sys.argv[1]; bad = []
+          for f in glob.glob(f"{d}/*.svg"):
+              ET.parse(f)                       # well-formed, or raises
+              txt = open(f).read()
+              style = "".join(re.findall(r"<style>(.*?)</style>", txt, re.S))
+              for sel, props in re.findall(r"([^{}]+)\{([^}]*)\}", style):
+                  # A CSS fill beats a fill="none" attribute, which is
+                  # what once turned every line chart into a filled area
+                  # and hid the series drawn first.
+                  if re.search(r"\.s-\d", sel):
+                      m = re.search(r"\bfill:\s*([^;]+)", props)
+                      if m and m.group(1).strip() != "none":
+                          bad.append(f"{f}: {sel.strip()} sets fill:{m.group(1)}")
+                  if re.search(r"\.d-\d", sel):
+                      m = re.search(r"\bstroke:\s*([^;]+)", props)
+                      if m and m.group(1).strip() != "none":
+                          bad.append(f"{f}: {sel.strip()} sets stroke:{m.group(1)}")
+          if bad:
+              print("\n".join(bad)); sys.exit(1)
+          print("svg invariants ok")
+          EOF
+
+      - name: Timeline spans do not overlap, and labels fit their bars
+        run: |
+          python3 - "$RUNNER_TEMP/run" <<'EOF'
+          import re, sys, xml.etree.ElementTree as ET
+          NS = "{http://www.w3.org/2000/svg}"
+          root = ET.parse(f"{sys.argv[1]}/timeline.svg").getroot()
+          rects, texts, bad = {}, [], []
+          for e in root.iter():
+              if e.tag == f"{NS}rect" and re.search(r"[sd]-\d", e.get("class") or ""):
+                  y = round(float(e.get("y")))
+                  rects.setdefault(y, []).append(
+                      (float(e.get("x")), float(e.get("width"))))
+              if e.tag == f"{NS}text" and (e.text or "").startswith("demo"):
+                  texts.append((float(e.get("x")), e.text))
+          for y, row in rects.items():
+              row.sort()
+              for (x1, w1), (x2, _) in zip(row, row[1:]):
+                  if x1 + w1 > x2 + 0.5:
+                      bad.append(f"overlap on row y={y}: {x1}+{w1} > {x2}")
+          if len(rects) < 2:
+              bad.append(f"expected sub-lanes for overlapping spans, "
+                         f"got {len(rects)} row(s)")
+          for x, t in texts:
+              row = [r for yy in rects for r in rects[yy]
+                     if r[0] <= x <= r[0] + r[1]]
+              if row and len(t) * 6.2 + 10 > max(w for _, w in row):
+                  bad.append(f"label {t!r} wider than its bar")
+          if bad:
+              print("\n".join(bad)); sys.exit(1)
+          print(f"timeline ok: {len(rects)} sub-lanes, no overlap")
+          EOF
+
+      - name: It degrades rather than crashes on a partial run
+        run: |
+          set -e
+          d="$RUNNER_TEMP/partial"; mkdir -p "$d"
+          cp "$RUNNER_TEMP/run/samples.jsonl" "$RUNNER_TEMP/run/run.json" "$d/"
+          python3 .builders/perfreport.py "$d"
+          test -s "$d/report.md"
+          echo "partial run still produced a report"
+
   defaults:
     name: Defaults are not duplicated
     runs-on: ubuntu-latest
@@ -243,6 +372,17 @@ jobs:
       # before. No Docker and no registry — it only parses two files.
       - name: Check rocm-bake.hcl / Makefile defaults
         run: .builders/check-defaults.py
+
+      # The other direction: files that are not the Makefile/bake pair
+      # but still have to agree — nginx's log_format with the regex
+      # that parses it, balance.sh's placement line with the regex that
+      # attributes targets to builders, the sampler's row shape with
+      # the reader's field names, and the perf stage list with bake's
+      # wheels group. Each of those is a producer and a consumer in
+      # different files with only a comment between them, and each
+      # fails by silently matching nothing rather than by erroring.
+      - name: Cross-file contracts have not drifted
+        run: .builders/check-contracts.py
 
       # The Makefile's own resolution, exercised end to end: list-vars
       # expands every default it reads, so an awk or $(or ...) mistake

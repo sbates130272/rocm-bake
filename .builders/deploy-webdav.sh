@@ -1,10 +1,10 @@
 #!/bin/bash
 # deploy-webdav.sh - Durable sccache object store on SNOC Strix.
 #
-# Replaces the memcached store. memcached holds everything in RAM and
-# has no persistence: a power cycle on Strix wiped the compiler cache
-# for the whole fleet. extstore did not help — it is an overflow tier,
-# not durable storage, and memcached never reads it back at startup.
+# Durable by design: the objects are files on disk, so a power cycle
+# on Strix leaves the fleet's compiler cache intact. An in-RAM store
+# does not survive one, and an overflow-to-disk tier is not the same
+# thing — it is a spill target, not something read back at startup.
 #
 # WebDAV rather than S3/MinIO: dl.min.io is blocked by the corporate
 # proxy and MinIO is not packaged, whereas nginx with the dav modules
@@ -74,10 +74,30 @@ cat > "${SITE}" << EOF
 # sccache PUTs objects under a key prefix and GETs them back. It does
 # not need the full DAV verb set, but create_full_put_path is essential:
 # keys are nested (ab/cd/<hash>) and sccache does not MKCOL first.
+# \$request_length, which the stock combined format omits. It logs
+# \$body_bytes_sent — the size of the *response* — so a PUT, which is
+# the only request that writes to the cache, was recorded as a couple
+# of hundred bytes regardless of the object it carried. The request
+# length is the object, so this is what makes "what was written to
+# sccache, and when" answerable from the log rather than inferable
+# from polling the store's total size.
+#
+# \$request_time too: an object that took 30s to upload is a different
+# event from one that took 0.2s, and only one of them is a problem.
+log_format sccache '\$time_iso8601 \$remote_addr \$request_method \$uri '
+                   '\$status req=\$request_length resp=\$body_bytes_sent '
+                   'secs=\$request_time';
+
 server {
     listen ${TAILNET_IP}:${PORT};
     listen 127.0.0.1:${PORT};
     server_name _;
+
+    # Its own log, not the shared access.log: this one is parsed by
+    # .builders/perfreport.py, and sharing a file with every other
+    # vhost means every parse starts by discarding someone else's
+    # traffic.
+    access_log /var/log/nginx/sccache.log sccache;
 
     root ${DATA_DIR};
 
@@ -91,7 +111,7 @@ server {
     create_full_put_path on;
     dav_access user:rw group:rw all:r;
 
-    # Access control is the tailnet, as with Zot and the old memcached.
+    # Access control is the tailnet, as with Zot.
     # Do not add a public interface to the listen lines above.
     autoindex on;
 }
@@ -130,4 +150,4 @@ echo "Store:   http://${TAILNET_IP}:${PORT}"
 echo "Data:    ${DATA_DIR} (durable; survives reboot)"
 echo ""
 echo "Builds use it via SCCACHE_WEBDAV_ENDPOINT, already the default in"
-echo "rocm-bake.hcl. Inspect it with: make cache-stats"
+echo "rocm-bake.hcl. Inspect it with: make cache-summary"

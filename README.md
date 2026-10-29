@@ -203,9 +203,9 @@ across nodes — see the note on `build-all` in the Makefile.
 
 1. **BuildKit Layer Cache** → Stored in Zot as OCI artifacts, so a layer
    built on one node is reusable from any of them
-2. **sccache Compiler Cache** → One shared store on Strix (memcached,
-   8GB RAM then spilling to a 200GB file on disk). An object compiled on
-   any node is a hit on the others
+2. **sccache Compiler Cache** → One shared store on Strix (nginx
+   WebDAV over a directory tree, so it survives a reboot). An object
+   compiled on any node is a hit on the others
 3. **Pull-Through Cache** → Zot syncs Docker Hub/GHCR/Quay on demand
 4. **Multi-Builder** → Targets fan out across Strix, Thinkstation and Gaming
 
@@ -222,11 +222,13 @@ platform   = linux/amd64
 ### sccache Integration
 
 Each build container runs its own sccache server, and all of them share
-one store: memcached on Strix, reached over the tailnet.
+one store: an nginx WebDAV endpoint on Strix, reached over the tailnet.
+The objects are files on disk, so a power cycle does not cost the fleet
+its compiler cache.
 
 ```
-SCCACHE_MEMCACHED=tcp://snoc-strix.fold-leaffish.ts.net:11211
-SCCACHE_SERVER_PORT=4250
+SCCACHE_WEBDAV_ENDPOINT=http://snoc-strix.fold-leaffish.ts.net:8081
+SCCACHE_WEBDAV_KEY_PREFIX=rocm-pytorch
 CMAKE_C_COMPILER_LAUNCHER=sccache
 CMAKE_CXX_COMPILER_LAUNCHER=sccache
 CMAKE_HIP_COMPILER_LAUNCHER=sccache
@@ -234,7 +236,13 @@ CMAKE_HIP_COMPILER_LAUNCHER=sccache
 
 sccache intercepts compiler invocations (gcc, g++, hipcc), caches object
 files by a hash of source plus flags, and returns the cached object when
-both match. Deploy the store with `.builders/deploy-memcached.sh`.
+both match. Deploy the store with `.builders/deploy-webdav.sh`, and
+inspect it with `make cache-summary`.
+
+The key prefix is a directory inside the store, which is what lets a
+benchmark run against an isolated copy: `bench.sh` sets it to a
+throwaway `bench-cold-<stamp>` so a cold run never evicts the fleet's
+working cache.
 
 Three constraints make this work, and each one fails quietly if broken:
 
@@ -348,9 +356,13 @@ wrapper falls back and says so.
 To inspect the shared compiler cache itself:
 
 ```bash
-printf 'stats\r\nquit\r\n' | nc snoc-strix.fold-leaffish.ts.net 11211 \
-  | grep -E 'get_hits|get_misses|bytes|extstore_pages_used|evictions'
+make cache-summary
 ```
+
+Size, object count, disk headroom, the delta and rate since the last
+call, and the hit rate of the last build of each target — the last of
+those read back out of the telemetry the wrapper writes, since the
+WebDAV store has no stats verb of its own.
 
 ## Configuration
 
@@ -413,8 +425,7 @@ authoritative if this table has aged.
 
 There is no `SCCACHE_SERVER_PORT`: the build containers reach their
 sccache server over a unix socket, because the builders run with
-`network=host` and a fixed port would be shared fleet-wide. memcached
-was the store until it proved not to survive a reboot.
+`network=host` and a fixed port would be shared fleet-wide.
 
 `TELEMETRY=0 make build-pytorch` skips the telemetry wrapper.
 
@@ -645,6 +656,85 @@ extra is spelled `device-<arch>` so that when variants do land, the
 arch is already a first-class coordinate and only the selection
 mechanism has to change.
 
+## Measuring build performance
+
+Two harnesses, answering different questions. Do not quote a number
+from one as if it came from the other.
+
+| | `bench.sh` | `make perf-run` |
+|---|---|---|
+| runs targets | one at a time | across the fleet at once |
+| answers | what does *this* target cost | what does a full cold build look like |
+| numbers are | isolated per-target | throughput under contention |
+
+`bench.sh cold` serialises on purpose and isolates its compiler cache,
+so its per-target times are comparable run to run. `perf-run` runs the
+fleet flat out, so three builds share the sccache store and the
+registry — both on Strix, which is also a build node. Its timings are
+throughput, and its report says so at the top.
+
+### A cold, instrumented, parallel build
+
+```bash
+make perf-plan                      # placement only, builds nothing
+make perf-run PERF_ARCH=gfx1201     # the real thing, hours
+make perf-report                    # markdown + SVG from the newest run
+make perf-runs                      # list collected runs
+```
+
+A run collects five streams into `/var/tmp/rocm-perf/<stamp>/`:
+
+| file | from | answers |
+|---|---|---|
+| `samples.jsonl` | node_exporter, polled | CPU, memory, disk, network over time |
+| `trace-<target>.json` | the builder's own build record | what ran, when, for how long |
+| `sccache.log` | the WebDAV vhost's nginx log | what was written to the compiler cache |
+| `zot.jsonl` | Zot's structured log | layer-cache and image writes |
+| `artifacts.txt` | `wheelhouse.py` | what ended up published |
+
+`make perf-report` writes `report.md` with SVG charts beside it. There
+is also an interactive HTML chart — overlaid CPU lines, a clickable
+legend that filters by builder *and* by target, and per-band hover
+showing the actual `RUN` commands a phase covers.
+
+### Why the timeline comes from the build record
+
+It used to come from `bake --progress=rawjson`, captured by
+redirecting a live build's output. On a real run all three target logs
+truncated back to the 8-byte `{"v":1}` stream header partway through
+and never grew again, losing every step for builds that were otherwise
+healthy. BuildKit keeps the same information itself — an OpenTelemetry
+trace, one span per step — and it survives on the builder whether or
+not anything was listening. `.builders/perftrace.py` reads it back
+after the fact, which is why a timeline can be recovered from a run
+that was not being watched.
+
+### Cache export is not build time
+
+`--no-push` suppresses the image push but **not** the cache export,
+which is a separate registry write. `perfrun.sh` clears it with
+`--set *.cache-to=`, as `bench.sh` does, because the cost is not
+small: on one gfx1201 run `triton-wheel` reported 38m52s of which the
+trace accounted for 15m48s — the other **23m04s, 59% of its headline
+duration, was uploading `mode=max` cache**. A measurement harness that
+times its own uploads is not measuring the build.
+
+If you see a per-target number that looks inflated, compare it against
+the sum of its trace steps; the two disagreeing by minutes is this.
+
+### Stage barriers cost more than they look
+
+`balance.sh` runs stages with a barrier between them, and ranks nodes
+by capacity but hands targets out **in list order** — so position in
+the stage string decides placement. On one gfx1201 run stage 1 took
+44m16s of wall clock to do 77m09s of work, leaving **55m39s of idle
+builder time**, more idle than the stage was long, with the weakest
+node idle for 82% of it. Stage 2 then put an 18-minute Triton build on
+the 15GB node while the 123GB one took an 83-second job.
+
+Order each stage heaviest-first, and prefer measured durations over
+intuition — `triton-wheel` is noarch and looks cheap, and is not.
+
 ## Architecture Optimization
 
 ### gfx950 Build Flags
@@ -765,12 +855,15 @@ The build refuses to start when the store is unreachable, so a silent
 no-cache build should not happen. If it does:
 
 ```bash
-# Is the shared store up and reachable from this node?
-printf 'stats\r\nquit\r\n' | nc snoc-strix.fold-leaffish.ts.net 11211 \
-  | grep -E 'get_hits|get_misses|evictions|extstore_pages_used'
+# State, deltas and the last recorded hit rate, in one place
+make cache-summary
 
-# Is it filling? bytes_written climbing means objects are landing
-systemctl status memcached        # on Strix
+# Is the store reachable from every build node, not just this one?
+make cache-check
+
+# Raw: is the endpoint answering?
+curl -sI http://snoc-strix.fold-leaffish.ts.net:8081/ | head -1
+systemctl status nginx            # on Strix
 ```
 
 Three failure modes have distinct signatures:

@@ -79,7 +79,7 @@ export BUILD_PIDFILE
 MAKE_BIN := $(MAKE)
 
 # Shared compiler-cache store on Strix: nginx WebDAV over a directory
-# tree, so it survives a reboot. Replaced memcached, which did not.
+# tree, so it survives a reboot.
 # Host and port from rocm-bake.hcl, for the same reason as everything else
 # in the block above — the builders and the deploy targets have to
 # agree on where the store is.
@@ -166,12 +166,14 @@ BAKE_PRINT = docker buildx bake -f rocm-bake.hcl
         _build-all _push-all \
         push-torch-wheel fetch-torch-wheel \
         push-triton-wheel fetch-triton-wheel \
-        push-nixl-wheel fetch-nixl-wheel \
+        push-nixl-wheel build-nixl-wheel fetch-nixl-wheel \
         push-cupy-wheel build-cupy-wheel fetch-cupy-wheel \
-        build-vllm push-vllm push-vllm-wheel fetch-vllm-wheel \
-        build-lmcache push-lmcache push-lmcache-wheel fetch-lmcache-wheel \
+        build-vllm push-vllm push-vllm-wheel build-vllm-wheel fetch-vllm-wheel \
+        build-lmcache push-lmcache push-lmcache-wheel build-lmcache-wheel \
+        fetch-lmcache-wheel \
         build-serving push-serving \
-        cache-stats cache-summary cache-check cache-logs builder-load \
+        cache-summary cache-check cache-logs builder-load \
+        perf-plan perf-run perf-report perf-runs \
         layer-summary \
         list-vars \
         build-base build-pytorch build-runtime build-all \
@@ -234,12 +236,13 @@ zot-logs: ## Follow Zot registry logs
 ##@ Compiler Cache
 
 # The sccache store every node shares: nginx WebDAV over a directory
-# tree on Strix. It replaced memcached, which held everything in RAM and
-# lost the fleet's cache on every power cycle.
+# tree on Strix, so a power cycle does not cost the fleet its cache.
 #
-# WebDAV has no stats verb, so unlike memcached the store cannot report
-# hit rates — only size and object count. Hit rates come from sccache
-# itself, which prints --show-stats at the end of each build.
+# WebDAV has no stats verb, so the store itself can only report size
+# and object count. Hit rates come from sccache, which prints
+# --show-stats at the end of each build; telemetry/build.sh parses that
+# into rocm_build_sccache_hit_ratio, which is where cache-summary reads
+# it from.
 # The other cache. sccache stores compiler objects; this is buildkit's
 # layer reuse, and the two move independently — a Dockerfile edit can
 # drop layer reuse to 5% while sccache still serves every compile.
@@ -255,39 +258,76 @@ layer-summary: ## Layer reuse on the most recent build of each image
 	@printf '\033[36m══ layer reuse\033[0m  (shared cache: Zot on %s)\n' "$(WEBDAV_HOST)"
 	@timeout 40 python3 .builders/history.py --by-image $(WATCH_BUILDERS) 2>/dev/null
 
-cache-stats: ## Show the shared compiler-cache (WebDAV) state
-	@curl -sf -o /dev/null -w "  endpoint            HTTP %{http_code}  $(WEBDAV_URL)\n" "$(WEBDAV_URL)/" \
-		|| { echo "  endpoint            UNREACHABLE  $(WEBDAV_URL)"; exit 1; }
-	@sudo du -sh $(WEBDAV_DIR) 2>/dev/null | awk '{printf "  size                %s\n", $$1}'
-	@sudo find $(WEBDAV_DIR) -type f 2>/dev/null | wc -l | awk '{printf "  objects             %s\n", $$1}'
-	@df -h $(WEBDAV_DIR) 2>/dev/null | tail -1 \
-		| awk '{printf "  filesystem          %s of %s used, %s free\n", $$3, $$2, $$4}'
-	@echo "  hit_rate            see 'sccache --show-stats' in the build log"
-
 CACHE_STATE := /tmp/.rocm-cache-prev
 
-# Totals alone say nothing about the build in front of you, so this
-# prints current state plus the delta since the previous call — the
-# number that moves while a build runs.
-cache-summary: ## One-line cache state plus deltas since the last call
+# One target, not two. cache-stats and cache-summary read the same
+# store and were split only by how much they printed, so the pair gave
+# two partial answers and you had to know which: stats had the endpoint
+# and the disk, summary had the deltas, neither had both. This is the
+# union.
+#
+# Totals alone say nothing about the build in front of you, hence the
+# delta since the previous call — the number that moves while a build
+# runs — and now a rate, because "+412 objects" means something quite
+# different over eight seconds than over an hour.
+#
+# The hit rate used to be the line "see 'sccache --show-stats' in the
+# build log", which is a pointer, not a statistic. telemetry/build.sh
+# already parses exactly that output into
+# rocm_build_sccache_hit_ratio, so the number is sitting in the
+# textfile collector; read it from there instead of sending someone to
+# a log. It is per-target and from the last build of each, which is why
+# the target name is printed with it.
+#
+# Every lookup is best-effort. This runs inside `make watch`'s refresh
+# loop, so a missing sudo, an unmounted store or an absent telemetry
+# file must degrade to a line of output rather than break the panel.
+cache-summary: ## Compiler-cache state: size, disk, deltas and hit rates
+	@printf '\033[36m══ sccache store (WebDAV, durable)\033[0m\n'
+	@curl -sf -o /dev/null -m 5 -w "  endpoint  HTTP %{http_code}  $(WEBDAV_URL)\n" "$(WEBDAV_URL)/" \
+		2>/dev/null || echo "  endpoint  UNREACHABLE  $(WEBDAV_URL)"
 	@objs=$$(sudo find $(WEBDAV_DIR) -type f 2>/dev/null | wc -l); \
 	size=$$(sudo du -sb $(WEBDAV_DIR) 2>/dev/null | cut -f1); \
+	now=$$(date +%s); \
 	if [ -z "$$size" ]; then \
-		printf '\033[36m══ sccache store\033[0m unreachable at %s\n' "$(WEBDAV_DIR)"; \
+		printf '  store     unreadable at %s\n' "$(WEBDAV_DIR)"; \
 	else \
-		echo "$$objs $$size" > $(CACHE_STATE).now; \
+		printf '%s %s %s\n' "$$objs" "$$size" "$$now" > $(CACHE_STATE).now; \
 		[ -s $(CACHE_STATE) ] || cp $(CACHE_STATE).now $(CACHE_STATE); \
 		paste $(CACHE_STATE).now $(CACHE_STATE) \
 		| awk '{ \
-			o=$$1; b=$$2; po=$$3; pb=$$4; \
-			printf "\033[36m══ sccache store (WebDAV, durable)\033[0m\n"; \
-			printf "  objects=%d  size=%.2fGB\n", o, b/1073741824; \
+			o=$$1; b=$$2; t=$$3; po=$$4; pb=$$5; pt=$$6; \
+			printf "  objects   %d  size=%.2fGB\n", o, b/1073741824; \
+			dt = (pt > 0 && t > pt) ? t - pt : 0; \
 			if (o - po <= 0) \
-				printf "  interval  idle (no new objects since last refresh)\n"; \
+				printf "  interval  idle (no new objects%s)\n", \
+					dt ? sprintf(" in %ds", dt) : " since last refresh"; \
+			else if (dt > 0) \
+				printf "  interval  +%d objects  +%.0fMB  (%.1f obj/s, %.1fMB/s over %ds)\n", \
+					o-po, (b-pb)/1048576, (o-po)/dt, ((b-pb)/1048576)/dt, dt; \
 			else \
 				printf "  interval  +%d objects  +%.0fMB\n", o-po, (b-pb)/1048576; \
 			}'; \
 		mv $(CACHE_STATE).now $(CACHE_STATE); \
+	fi
+	@df -h $(WEBDAV_DIR) 2>/dev/null | tail -1 \
+		| awk '{printf "  disk      %s of %s used, %s free\n", $$3, $$2, $$4}' \
+		|| true
+	@prom=$$(ls -t telemetry/out/*.prom /var/lib/node_exporter/textfile_collector/*.prom 2>/dev/null | head -1); \
+	if [ -n "$$prom" ]; then \
+		awk -F'[{}]' '/^rocm_build_sccache_hit_ratio\{/ { \
+			split($$2, a, "\""); t = a[2]; \
+			if (!(t in r)) ord[++n] = t; \
+			r[t] = $$3 + 0 } \
+		END { \
+			line = ""; \
+			for (i = 1; i <= n; i++) \
+				line = line sprintf("  %s %.0f%%", ord[i], r[ord[i]]*100); \
+			if (n) printf "  hit rate %s  (last build of each)\n", line; \
+			else print "  hit rate  not recorded yet — no build has published sccache stats" \
+		}' "$$prom"; \
+	else \
+		echo "  hit rate  no telemetry file found"; \
 	fi
 
 cache-check: ## Verify every build node can reach the compiler cache
@@ -302,8 +342,19 @@ cache-check: ## Verify every build node can reach the compiler cache
 		echo; \
 	done
 
+SCCACHE_LOG_FILE ?= /var/log/nginx/sccache.log
+
+# Falls back to the shared access.log for a node whose nginx predates
+# the dedicated vhost log. Re-run .builders/deploy-webdav.sh to get the
+# sized format perfreport.py reads.
 cache-logs: ## Follow the WebDAV store's access log
-	@sudo tail -f /var/log/nginx/access.log
+	@if sudo test -f $(SCCACHE_LOG_FILE); then \
+		sudo tail -f $(SCCACHE_LOG_FILE); \
+	else \
+		echo "note: $(SCCACHE_LOG_FILE) absent — re-run .builders/deploy-webdav.sh"; \
+		echo "      for per-object write sizes. Falling back to access.log."; \
+		sudo tail -f /var/log/nginx/access.log; \
+	fi
 
 ##@ Builders
 
@@ -426,6 +477,15 @@ WATCH_LINES ?= 20
 # Build records shown per builder. The full list grows without bound and
 # pushes the running build off screen.
 WATCH_HISTORY ?= 5
+# A busy builder answers its control API slowly - a node saturating
+# its uplink on a cache export measured 9.2s against 0.08s for an idle
+# one. At the old 3s this timed out, SIGTERMed the docker client, and
+# the client's "got 1 SIGTERM/SIGINTs, forcing shutdown" was captured
+# into WATCH_TMP and printed straight into the panel. The filter below
+# already dropped one flavour of that noise; it now drops the rest,
+# and the timeout is no longer tighter than a loaded node's latency.
+WATCH_LOG_TIMEOUT ?= 12
+
 WATCH_TMP := /tmp/.rocm-build-watch.log
 # Every snoc-* builder, so a build started on any node shows up. The pool
 # keeps its own buildkit instances separate from the single-node
@@ -491,10 +551,10 @@ watch: ## Live build history across all snoc-* builders (WATCH_BUILDERS=, WATCH_
 			for id in $$(docker buildx history ls --builder $$b \
 					--filter status=running --format "{{.Ref}}" 2>/dev/null); do \
 				printf "\\033[36m──── %s / %s ────\\033[0m\\n" "$$b" "$$id"; \
-				timeout 3 docker buildx history logs "$$id" --builder $$b \
+				timeout $(WATCH_LOG_TIMEOUT) docker buildx history logs "$$id" --builder $$b \
 					> $(WATCH_TMP) 2>&1 || true; \
 				grep -v "^$$" $(WATCH_TMP) \
-					| grep -v "rpc error: code = Canceled" \
+					| grep -vE "rpc error: code = Canceled|SIGTERM/SIGINT|error during connect|context canceled|failed to list workers" \
 					| tail -$(WATCH_LINES); \
 				echo; \
 			done; \
@@ -842,6 +902,33 @@ wheel-index-check: ## Install each generated index into a throwaway venv
 		rm -rf "$$v"; \
 	done
 
+##@ Performance
+
+# ─── Performance runs ────────────────────────────────────────────
+# A cold, parallel, instrumented build of every wheel, and the report
+# that comes out of it. Separate from bench.sh on purpose: bench
+# serialises to get clean per-target numbers, this one runs the fleet
+# flat out and measures what that looks like. Both are useful; they
+# answer different questions and must not be confused in a report.
+PERF_ARCH ?= $(PYTORCH_ROCM_ARCH)
+
+perf-plan: ## Show which builder each wheel would land on (no build)
+	@PYTORCH_ROCM_ARCH=$(PERF_ARCH) .builders/perfrun.sh --dry-run
+
+perf-run: ## Cold parallel build of every wheel, fully instrumented
+	@PYTORCH_ROCM_ARCH=$(PERF_ARCH) .builders/perfrun.sh
+
+perf-report: ## Render the newest perf run as markdown + SVG charts
+	@python3 .builders/perfreport.py $(PERF_RUN)
+
+# The `||` has to hang off the whole thing, not off ls: in a pipeline
+# the exit status is the last command's, so sed succeeding on empty
+# input swallowed ls's failure and the target printed nothing at all.
+perf-runs: ## List collected performance runs, newest last
+	@found=$$(ls -1d /var/tmp/rocm-perf/*/ 2>/dev/null); \
+	if [ -n "$$found" ]; then printf '  %s\n' $$found; \
+	else echo "  (none yet — make perf-run)"; fi
+
 ##@ Wheels
 
 push-torch-wheel: builder-ensure ## * Build and push the torch wheel image to Zot
@@ -892,6 +979,15 @@ fetch-cupy-wheel: ## Fetch the CuPy wheel from Zot into ./dist
 			--output type=local,dest=dist -
 	@ls -la dist/wheels/
 
+# The build-only counterparts exist for bench.sh, which dispatches
+# through `make build-<name>` and so could only measure a target that
+# had one. Four of the seven wheels did, so a cold run covered torch,
+# triton, aiter and cupy and stopped at nixl. They are useful on their
+# own too: the push- form writes to Zot, which the credential helper on
+# this host cannot do unattended.
+build-nixl-wheel: builder-ensure ## Build the NIXL wheel image (no push)
+	$(call bake,nixl-wheel)
+
 push-nixl-wheel: builder-ensure ## * Build and push the NIXL wheel image (NIXL + ROCm UCX)
 	$(call bake,nixl-wheel,--push)
 
@@ -939,6 +1035,9 @@ build-vllm: builder-ensure ## Build the vLLM serving image (single builder)
 push-vllm: builder-ensure ## * Build and push the vLLM serving image
 	$(call bake,vllm,--push)
 
+build-vllm-wheel: builder-ensure ## Build the vLLM wheel image (no push)
+	$(call bake,vllm-wheel)
+
 push-vllm-wheel: builder-ensure ## * Build and push the vLLM wheel image
 	$(call bake,vllm-wheel,--push)
 
@@ -954,6 +1053,9 @@ build-lmcache: builder-ensure ## Build the LMCache MP image (single builder)
 
 push-lmcache: builder-ensure ## * Build and push the LMCache multi-process image
 	$(call bake,lmcache,--push)
+
+build-lmcache-wheel: builder-ensure ## Build the LMCache wheel image (no push)
+	$(call bake,lmcache-wheel)
 
 push-lmcache-wheel: builder-ensure ## * Build and push the LMCache wheel image
 	$(call bake,lmcache-wheel,--push)
