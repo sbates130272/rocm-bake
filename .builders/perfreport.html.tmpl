@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>__TITLE__</title>
+<!--
+  Template for .builders/perfreport.py's interactive chart. It lives in
+  its own file rather than as a string inside the script for two
+  reasons: ruff lints every .py in this repo and embedded CSS/JS blows
+  the line-length limit with no way to annotate a noqa inside a string
+  literal; and markup is easier to edit as markup. The script
+  substitutes __TITLE__, __SUB__, __XLABEL__, __YLABEL__ and __DATA__.
+-->
+<style>
+  :root {
+    color-scheme: light dark;
+    --surface:#fcfcfb; --ink:#0b0b0b; --ink2:#52514e; --grid:#e4e3df;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --surface:#1a1a19; --ink:#f0efec; --ink2:#c3c2b7; --grid:#2e2e2c; }
+  }
+  body { margin:0; padding:24px; background:var(--surface); color:var(--ink);
+    font:14px/1.5 ui-sans-serif,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif; }
+  h1 { font-size:17px; margin:0 0 2px; }
+  .sub { color:var(--ink2); font-size:12px; margin-bottom:16px; }
+  .wrap { display:flex; gap:18px; align-items:flex-start; }
+  .plot { flex:1 1 auto; min-width:0; }
+  /* Legend on the right, and it is also the filter: clicking a row
+     toggles that series. A hidden series keeps its colour slot, so
+     colour follows the builder rather than its position in the
+     surviving set. */
+  .legend { flex:0 0 auto; width:236px; padding-top:2px; }
+  .legend h2 { font-size:11px; text-transform:uppercase; letter-spacing:.06em;
+    color:var(--ink2); margin:12px 0 2px 6px; font-weight:600; }
+  .legend .dur { margin-left:auto; color:var(--ink2); font-size:11px;
+    font-variant-numeric:tabular-nums; }
+  .legend button { display:flex; align-items:center; gap:9px; width:100%;
+    background:none; border:0; padding:7px 6px; cursor:pointer; color:var(--ink);
+    font:inherit; text-align:left; border-radius:6px; }
+  .legend button:hover { background:color-mix(in srgb, var(--ink) 7%, transparent); }
+  .legend button[aria-pressed="false"] { opacity:.42; }
+  .legend .sw { width:11px; height:11px; border-radius:3px; flex:0 0 auto; }
+  .legend .val { margin-left:auto; color:var(--ink2); font-size:12px;
+    font-variant-numeric:tabular-nums; }
+  .hint { color:var(--ink2); font-size:11px; margin-top:10px; }
+  svg { display:block; width:100%; height:auto; }
+  .gridline { stroke:var(--grid); stroke-width:1; }
+  .axis { fill:var(--ink2); font-size:11px; }
+  .axlbl { fill:var(--ink2); font-size:12px; font-weight:600; }
+  .ln { fill:none; stroke-width:2; stroke-linejoin:round; stroke-linecap:round; }
+  .band { opacity:.9; }
+  .bandlbl { fill:var(--surface); font-size:10px; pointer-events:none; }
+  .cross { stroke:var(--ink2); stroke-width:1; stroke-dasharray:3 3; }
+  table { border-collapse:collapse; margin-top:22px; font-size:12px; }
+  th,td { border:1px solid var(--grid); padding:5px 10px; text-align:left; }
+  th { color:var(--ink2); font-weight:600; }
+  td.n { text-align:right; font-variant-numeric:tabular-nums; }
+</style></head><body>
+<h1>__TITLE__</h1>
+<div class="sub">__SUB__</div>
+<div class="wrap">
+  <div class="plot" id="plot"></div>
+  <div class="legend" id="legend"></div>
+</div>
+<div class="hint">
+  Click a builder to show/hide its CPU line, or a target to show/hide its
+  band. Hover the plot for values at that moment.
+</div>
+<table id="tbl"><thead><tr>
+  <th>target</th><th>builder</th><th>start</th><th>duration</th><th>phases</th>
+</tr></thead><tbody></tbody></table>
+<script>
+const DATA = __DATA__;
+const W=900,PL=120,PR=18,PT=14,PB=66;
+const SH=Math.max(34,(DATA.targets||[]).length*13+8);
+const H=320+SH;
+const pw=W-PL-PR, ph=H-PT-PB-SH;
+const hidden=new Set();
+const hiddenT=new Set();
+const xmax=DATA.xmax||1, ymax=DATA.ymax||100;
+const X=t=>PL+pw*Math.max(0,Math.min(t,xmax))/xmax;
+const Y=v=>PT+ph*(1-Math.max(0,Math.min(v,ymax))/ymax);
+
+function draw(){
+  // Ticks in seconds, to agree with the axis label. A mixed
+  // "5m00s" tick under an axis labelled (s) reads as a unit error.
+  const tick = xmax>2400?600 : xmax>1200?300 : xmax>600?120 : 60;
+  let g="";
+  for(let f=0;f<=1.001;f+=0.25){
+    const y=Y(ymax*f);
+    g+=`<line class="gridline" x1="${PL}" y1="${y}" x2="${PL+pw}" y2="${y}"/>`
+      +`<text class="axis" x="${PL-9}" y="${y+4}" text-anchor="end">`
+      +`${Math.round(ymax*f)}${DATA.unit}</text>`;
+  }
+  for(let t=0;t<=xmax;t+=tick){
+    const x=X(t);
+    g+=`<line class="gridline" x1="${x}" y1="${PT}" x2="${x}" `
+      +`y2="${PT+ph+SH}" opacity=".5"/>`
+      +`<text class="axis" x="${x}" y="${H-44}" text-anchor="middle">`
+      +`${Math.round(t)}</text>`;
+  }
+  g+=`<text class="axlbl" x="${PL+pw/2}" y="${H-18}" `
+    +`text-anchor="middle">__XLABEL__</text>`;
+  g+=`<text class="axlbl" transform="translate(16,${PT+ph/2}) rotate(-90)" `
+    +`text-anchor="middle">__YLABEL__</text>`;
+
+  // One row per visible target. The row is what says "this is
+  // vllm-wheel"; the phases inside it say what vllm-wheel was doing.
+  // Grouping by builder instead hid which target a band belonged to
+  // whenever a node ran more than one across the run.
+  let row=0;
+  for(const t of DATA.targets){
+    if(hiddenT.has(t.name)) continue;
+    if(hidden.has(t.builder)) continue;
+    const y0=PT+ph+6+row*13;
+    for(const b of t.bands){
+      const x0=X(b.start);
+      const bw=Math.max(2,X(b.start+b.dur)-x0);
+      g+=`<rect class="band" x="${x0}" y="${y0}" width="${bw}" `
+        +`height="11" rx="2" fill="${t.color}"/>`;
+      if(bw>44) g+=`<text class="bandlbl" x="${x0+4}" `
+        +`y="${y0+8.5}">${b.label}</text>`;
+    }
+    g+=`<text class="axis" x="${X(t.start)-6}" y="${y0+9}" `
+      +`text-anchor="end">${t.name}</text>`;
+    row++;
+  }
+  for(const s of DATA.series){
+    if(hidden.has(s.name)) continue;
+    const d=s.points.map((p,i)=>
+      `${i?"L":"M"}${X(p[0]).toFixed(1)},${Y(p[1]).toFixed(1)}`).join(" ");
+    g+=`<path class="ln" d="${d}" stroke="${s.color}"/>`;
+  }
+  g+=`<line id="cx" class="cross" x1="0" y1="${PT}" x2="0" `
+    +`y2="${PT+ph}" style="display:none"/>`;
+  document.getElementById("plot").innerHTML=
+    `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="__TITLE__">${g}</svg>`;
+
+  const svg=document.querySelector("#plot svg");
+  svg.addEventListener("pointermove",e=>{
+    const r=svg.getBoundingClientRect();
+    const x=(e.clientX-r.left)*(W/r.width);
+    if(x<PL||x>PL+pw){clear();return;}
+    const t=(x-PL)/pw*xmax;
+    const c=document.getElementById("cx");
+    c.setAttribute("x1",x); c.setAttribute("x2",x); c.style.display="";
+    for(const s of DATA.series){
+      const el=document.getElementById("v-"+s.id);
+      if(hidden.has(s.name)){el.textContent="";continue;}
+      let best=null,bd=1e9;
+      for(const p of s.points){
+        const d=Math.abs(p[0]-t);
+        if(d<bd){bd=d;best=p;}
+      }
+      el.textContent=best?best[1].toFixed(1)+DATA.unit:"";
+    }
+    document.getElementById("at").textContent="at "+Math.round(t)+"s";
+  });
+  svg.addEventListener("pointerleave",clear);
+}
+
+function clear(){
+  const c=document.getElementById("cx");
+  if(c) c.style.display="none";
+  for(const s of DATA.series)
+    document.getElementById("v-"+s.id).textContent=
+      s.peak.toFixed(1)+DATA.unit;
+  document.getElementById("at").textContent="peak";
+}
+
+const dur=s=>{s=Math.round(s);return s<60?s+"s":
+  Math.floor(s/60)+"m"+String(s%60).padStart(2,"0")+"s";};
+
+function legend(){
+  document.getElementById("legend").innerHTML=
+    `<div class="hint" id="at" style="margin:0 0 2px 6px">peak</div>`
+    +`<h2>Builders</h2>`
+    + DATA.series.map(s=>
+      `<button aria-pressed="true" data-k="b" data-n="${s.name}">`
+      +`<span class="sw" style="background:${s.color}"></span>`
+      +`<span>${s.name}</span>`
+      +`<span class="val" id="v-${s.id}">`
+      +`${s.peak.toFixed(1)}${DATA.unit}</span></button>`).join("")
+    +`<h2>Targets</h2>`
+    + DATA.targets.map(t=>
+      `<button aria-pressed="true" data-k="t" data-n="${t.name}">`
+      +`<span class="sw" style="background:${t.color}"></span>`
+      +`<span>${t.name}</span>`
+      +`<span class="dur">${dur(t.dur)}</span></button>`).join("");
+  for(const b of document.querySelectorAll(".legend button"))
+    b.onclick=()=>{
+      const n=b.dataset.n, set=b.dataset.k==="t"?hiddenT:hidden;
+      if(set.has(n)){set.delete(n);b.setAttribute("aria-pressed","true");}
+      else{set.add(n);b.setAttribute("aria-pressed","false");}
+      draw();
+    };
+}
+
+document.querySelector("#tbl tbody").innerHTML=DATA.targets.map(t=>
+  `<tr><td>${t.name}</td><td>${t.builder}</td>`
+  +`<td class="n">${Math.round(t.start)}s</td>`
+  +`<td class="n">${dur(t.dur)}</td>`
+  +`<td>${t.bands.map(b=>b.label).join(", ")}</td></tr>`).join("");
+legend(); draw(); clear();
+</script></body></html>

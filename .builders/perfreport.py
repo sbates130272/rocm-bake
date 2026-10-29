@@ -69,6 +69,26 @@ def load_jsonl(path):
     return rows
 
 
+def load_trace(run_dir, target):
+    """Per-step spans recovered from the builder's own history record.
+
+    Preferred over the rawjson capture. The capture is a live stream
+    redirected to a file, and on a real run all three target logs were
+    truncated back to the 8-byte `{"v":1}` header partway through,
+    losing every vertex for builds that were otherwise healthy. The
+    trace is written by BuildKit and read back afterwards, so there is
+    no stream to miss. See .builders/perftrace.py.
+    """
+    path = run_dir / f"trace-{target}.json"
+    if not path.exists():
+        return None
+    try:
+        rows = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    return {f"span:{i}": r for i, r in enumerate(rows)} or None
+
+
 def load_build_events(run_dir):
     """Vertices and transfers per target, from the rawjson streams.
 
@@ -78,9 +98,19 @@ def load_build_events(run_dir):
     turns the stream back into one row per build step.
     """
     builds = {}
-    for path in sorted(run_dir.glob("build-*.jsonl")):
-        target = path.name[len("build-"):-len(".jsonl")]
+    targets = {p.name[len("build-"):-len(".jsonl")]
+               for p in run_dir.glob("build-*.jsonl")}
+    targets |= {p.name[len("trace-"):-len(".json")]
+                for p in run_dir.glob("trace-*.json")}
+    for target in sorted(targets):
+        path = run_dir / f"build-{target}.jsonl"
         verts, xfer = {}, {}
+        traced = load_trace(run_dir, target)
+        if traced:
+            builds[target] = {"vertexes": traced, "transfers": {}}
+            continue
+        if not path.exists():
+            continue
         for row in load_jsonl(path):
             for v in row.get("vertexes") or []:
                 d = v.get("digest")
@@ -254,6 +284,7 @@ def line_chart(path, title, series, y_label, y_max=None, fmt=lambda v: f"{v:.0f}
                    f'class="l ink2">{fmt(v)}</text>')
     out.append(f'<text x="16" y="{h - 8}" class="l ink2">'
                f'{html.escape(y_label)} · elapsed {fmt_dur(x_max)}</text>')
+    ends = []
     for idx, (name, vals) in enumerate(series.items()):
         if not vals:
             continue
@@ -266,8 +297,223 @@ def line_chart(path, title, series, y_label, y_max=None, fmt=lambda v: f"{v:.0f}
         lt, lv = sorted(vals)[-1]
         out.append(f'<circle cx="{X(lt):.1f}" cy="{Y(lv):.1f}" r="4" '
                    f'class="{dcls}"/>')
-        out.append(f'<text x="{pad_l + pw + 10}" y="{Y(lv) + 4:.1f}" '
+        ends.append((Y(lv), name, dcls))
+
+    # Direct labels, pushed apart so they stay readable. Series that
+    # finish at the same value land on the same y and overprint into an
+    # unreadable smear — three idle builders all ending near 0% did
+    # exactly that. Nudging is better than dropping one: the label is
+    # what carries identity for the series whose colour sits under 3:1
+    # on the light surface.
+    GAP = 14
+    placed = []
+    for y, name, dcls in sorted(ends):
+        if placed and y - placed[-1] < GAP:
+            y = placed[-1] + GAP
+        placed.append(y)
+        out.append(f'<text x="{pad_l + pw + 10}" y="{y + 4:.1f}" '
                    f'class="v {dcls}">{html.escape(name)}</text>')
+    out.append("</svg>")
+    path.write_text("\n".join(out) + "\n")
+    return True
+
+
+# Coarse phases, in match order. A build is 16-27 vertices and most
+# are sub-second, so drawing one bar each gives a row of slivers with
+# no room for a label. Collapsing to the handful of phases anyone
+# reasons about ("it spent 38 minutes compiling") is the useful
+# granularity; per-step detail stays in the tables.
+#
+# The patterns are matched against real step text from this repo's
+# builds, not guessed. The compile pattern keys on the MAX_JOBS
+# preamble (nproc / MemAvailable / njobs) that every compile step here
+# shares — without it pytorch's 2316-second build, the single longest
+# thing in the run, fell into the catch-all and was labelled "build".
+PHASES = (
+    ("context",  r"^\[internal\] load"),
+    # Anchored. An unanchored, case-insensitive "FROM" matches the
+    # word "from" anywhere in a shell command, which swallowed both
+    # compile steps - the two longest in the run - and called them
+    # image pulls.
+    ("pull",     r"^FROM "),
+    ("clone",    r"git clone"),
+    ("download", r"^ADD |curl -|wget "),
+    ("toolchain", r"rustup|tar xzf|sccache --version"),
+    ("deps",     r"pip install|apt-get|apt install|requirements/"),
+    ("compile",  r"MemAvailable|\bnproc\b|njobs|cmake|ninja|bdist_wheel|"
+                 r"setup\.py|make -j"),
+    ("verify",   r"python -c|--show-stats|import torch|import triton"),
+    ("export",   r"^export|exporting"),
+)
+
+# Shell noise that says nothing about what the step did.
+_LEAD = re.compile(r"^(RUN|ADD|COPY)\s+|^(if|then|else|fi|set|cd)\s+")
+
+
+def phase_of(name):
+    """A coarse phase for a build step, or a short label from its text.
+
+    The fallback is the step's first couple of meaningful words rather
+    than a constant. A catch-all bucket called "build" absorbed
+    git clone, tar, and the torch compile alike, so a third of every
+    chart said "build" and meant nothing.
+    """
+    for label, pat in PHASES:
+        if re.search(pat, name, re.I):
+            return label
+    text = _LEAD.sub("", name.strip())
+    words = [w for w in re.split(r"\s+", text) if w and not w.startswith("-")]
+    return " ".join(words[:2])[:18] or "step"
+
+
+def group_steps(steps, min_frac=0.0, span=None):
+    """Merge consecutive same-phase steps into one band.
+
+    Consecutive by start time, so a compile split across several RUNs
+    reads as one compile. Bands are not merged across a gap in phase:
+    pull -> compile -> pull stays three bands, because collapsing it
+    would claim the node was compiling while it was fetching.
+    """
+    out = []
+    for st in sorted(steps, key=lambda r: r["start"]):
+        ph = phase_of(st["label"])
+        end = st["start"] + st["dur"]
+        if out and out[-1]["label"] == ph and st["start"] <= out[-1]["end"] + 2:
+            out[-1]["end"] = max(out[-1]["end"], end)
+            out[-1]["n"] += 1
+        else:
+            out.append({"label": ph, "start": st["start"], "end": end, "n": 1})
+    bands = []
+    for b in out:
+        dur = b["end"] - b["start"]
+        if span and min_frac and dur < span * min_frac:
+            continue
+        bands.append({"start": b["start"], "dur": dur,
+                      "label": f'{b["label"]} ({b["n"]})' if b["n"] > 1
+                               else b["label"]})
+    return bands
+
+
+def faceted_steps_chart(path, title, series, steps, y_label,
+                        y_max=None, fmt=lambda v: f"{v:.0f}"):
+    """One panel per builder: a metric line over a strip of build steps.
+
+    Small multiples rather than one overlaid plot. Three CPU traces and
+    three sets of build steps on shared axes is unreadable, and putting
+    steps on a second y-scale would be a dual-axis chart — the thing
+    that misleads most reliably. Faceting keeps one scale, and the
+    panels share an x-axis so a spike in one can be read against what
+    another node was doing at that instant.
+
+    The step strip sits under its own panel's line, so "what was this
+    node running when it hit 100%" is a vertical glance rather than a
+    cross-reference.
+    """
+    builders = sorted(set(series) | set(steps))
+    if not builders:
+        return False
+    pts = [p for v in series.values() for p in v]
+    if not pts:
+        return False
+    x_max = max(p[0] for p in pts) or 1
+    y_max = y_max or (max(p[1] for p in pts) or 1) * 1.1
+
+    # pad_t leaves room for the title and the legend beneath it.
+    w, pad_l, pad_r, pad_t = 900, 54, 112, 64
+    line_h, strip_h, gap = 96, 26, 26
+    panel = line_h + strip_h
+    h = pad_t + len(builders) * (panel + gap) + 44
+    pw = w - pad_l - pad_r
+
+    def X(t):
+        return pad_l + pw * (max(0.0, min(t, x_max)) / x_max)
+
+    out = svg_open(w, h, title)
+
+    # A legend as well as the per-panel direct labels. Two or more
+    # series always carry one, and here it doubles as the key for the
+    # step strips, which are the same hue as their line.
+    lx = pad_l
+    for i, b in enumerate(builders):
+        slot = list(SERIES).index(b) if b in SERIES else i
+        out.append(f'<rect x="{lx}" y="{pad_t-30}" width="10" height="10" '
+                   f'rx="2" class="d-{slot}"/>')
+        out.append(f'<text x="{lx+16}" y="{pad_t-21}" class="l ink">'
+                   f'{html.escape(b)}</text>')
+        lx += 26 + len(b) * 6.4
+
+    # Wall-clock ticks along the time axis, zeroed at the start of the
+    # run. Without them the only time reference was a total in the
+    # footer, so a feature in the trace could not be placed.
+    step = 300 if x_max > 1500 else (120 if x_max > 600 else 60)
+    t = 0
+    while t <= x_max:
+        tx = X(t)
+        out.append(f'<line x1="{tx:.1f}" y1="{pad_t-6}" x2="{tx:.1f}" '
+                   f'y2="{h-30}" class="grid" opacity="0.5"/>')
+        out.append(f'<text x="{tx:.1f}" y="{h-18}" text-anchor="middle" '
+                   f'class="l ink2">{fmt_dur(t) if t else "0"}</text>')
+        t += step
+
+    y = pad_t
+    for i, b in enumerate(builders):
+        slot = list(SERIES).index(b) if b in SERIES else i
+        cls, dcls = f"s-{slot}", f"d-{slot}"
+
+        def Y(v, top=y):
+            return top + line_h * (1 - min(max(v, 0), y_max) / y_max)
+
+        for frac in (0, 0.5, 1):
+            gy = Y(y_max * frac)
+            out.append(f'<line x1="{pad_l}" y1="{gy:.1f}" x2="{pad_l+pw}" '
+                       f'y2="{gy:.1f}" class="grid"/>')
+            out.append(f'<text x="{pad_l-8}" y="{gy+4:.1f}" text-anchor="end" '
+                       f'class="l ink2">{fmt(y_max*frac)}</text>')
+        out.append(f'<text x="{pad_l+pw+10}" y="{y+14:.0f}" '
+                   f'class="v {dcls}">{html.escape(b)}</text>')
+
+        vals = sorted(series.get(b) or [])
+        if vals:
+            d = " ".join(f"{'M' if j == 0 else 'L'}{X(t):.1f},{Y(v):.1f}"
+                         for j, (t, v) in enumerate(vals))
+            out.append(f'<path d="{d}" class="{cls}" stroke-linejoin="round"/>')
+
+        # The strip. Steps are packed greedily into rows so concurrent
+        # ones do not overdraw, same as the standalone timeline.
+        sy = y + line_h + 6
+        rows, ends = [], []
+        # Drop bands under 1% of the run: at 900px wide they are
+        # sub-pixel and only add noise.
+        banded = group_steps(steps.get(b) or [], min_frac=0.01, span=x_max)
+        for st in sorted(banded, key=lambda r: r["start"]):
+            for li, e in enumerate(ends):
+                if st["start"] >= e - 1e-9:
+                    ends[li] = st["start"] + st["dur"]
+                    rows.append((li, st))
+                    break
+            else:
+                ends.append(st["start"] + st["dur"])
+                rows.append((len(ends) - 1, st))
+        rh = max(6, strip_h // max(1, len(ends)))
+        for li, st in rows:
+            x0 = X(st["start"])
+            bw = max(1.5, X(st["start"] + st["dur"]) - x0)
+            out.append(f'<rect x="{x0:.1f}" y="{sy + li*rh:.0f}" '
+                       f'width="{bw:.1f}" height="{max(4, rh-2)}" rx="2" '
+                       f'class="{dcls}"/>')
+            room = int((bw - 8) / 5.6)
+            if room >= 5 and rh >= 10:
+                out.append(f'<text x="{x0+4:.1f}" y="{sy + li*rh + rh - 4:.0f}" '
+                           f'class="l" fill="{SURFACE[0]}" stroke="none">'
+                           f'{html.escape(st["label"][:room])}</text>')
+        if not rows:
+            out.append(f'<text x="{pad_l+4}" y="{sy+12:.0f}" class="l ink2">'
+                       f'(no step trace recovered)</text>')
+        y += panel + gap
+
+    out.append(f'<text x="16" y="{h-4}" class="l ink2">'
+               f'{html.escape(y_label)} · time from run start · '
+               f'bars below each line are that node\u2019s build steps</text>')
     out.append("</svg>")
     path.write_text("\n".join(out) + "\n")
     return True
@@ -367,6 +613,89 @@ def cumulative(events, t0):
         total += e["bytes"]
         out.append(((e["ts"] - t0).total_seconds(), total))
     return out
+
+
+# ── interactive ───────────────────────────────────────────────────
+# The SVGs stay: they embed in markdown and need no runtime. This is
+# the companion for interrogating a run. A static chart answers "what
+# was the shape"; the next questions are always "which node, and what
+# was it doing then", which wants a cursor and a way to drop the
+# series you are not asking about.
+
+TEMPLATE = Path(__file__).with_name("perfreport.html.tmpl")
+
+
+def interactive_chart(path, title, sub, series, targets,
+                      unit="%", y_max=None,
+                      x_label="Wall Clock Time (s)", y_label="CPU Load"):
+    """Standalone interactive HTML: overlaid lines, two filter groups.
+
+    Two dimensions, because they answer different questions. The lines
+    are per builder — "was this machine busy". The bands are per
+    target — "what was it building, and for how long". Earlier the
+    bands were grouped by builder and labelled only with a phase, so a
+    node running three targets over a run showed one anonymous strip
+    and the chart could not answer the question people actually bring
+    to it, which is which target is slow.
+
+    `targets` is a list of dicts: name, builder, steps (start/dur/label).
+    Band colour follows the builder that ran it, so the two groups stay
+    visually tied; the label carries the target.
+    """
+    if not TEMPLATE.exists():
+        return False
+
+    def colour_for(name, i):
+        slot = list(SERIES).index(name) if name in SERIES else i
+        return list(SERIES.values())[slot % len(SERIES)][0]
+
+    rows, xmax, peak_all = [], 0.0, 0.0
+    ordered = sorted(series.items())
+    for _, pts in ordered:
+        if pts:
+            xmax = max(xmax, max(p[0] for p in pts))
+    for i, (name, pts) in enumerate(ordered):
+        if not pts:
+            continue
+        pts = sorted(pts)
+        vals = [p[1] for p in pts]
+        peak_all = max(peak_all, max(vals))
+        rows.append({"id": f"s{i}", "name": name, "color": colour_for(name, i),
+                     "points": [[round(t, 1), round(v, 2)] for t, v in pts],
+                     "peak": max(vals), "mean": sum(vals) / len(vals)})
+    if not rows:
+        return False
+
+    builder_slot = {b["name"]: j for j, b in enumerate(rows)}
+    tgts = []
+    for k, t in enumerate(sorted(targets, key=lambda d: d.get("start", 0))):
+        bands = group_steps(t.get("steps") or [], min_frac=0.005,
+                            span=xmax or 1)
+        if not bands:
+            continue
+        b = t.get("builder", "unknown")
+        tgts.append({
+            "id": f"t{k}", "name": t["name"], "builder": b,
+            "color": colour_for(b, builder_slot.get(b, k)),
+            "start": round(min(x["start"] for x in bands), 1),
+            "dur": round(max(x["start"] + x["dur"] for x in bands)
+                         - min(x["start"] for x in bands), 1),
+            "bands": [{"start": round(x["start"], 1),
+                       "dur": round(x["dur"], 1), "label": x["label"]}
+                      for x in bands],
+        })
+
+    data = {"series": rows, "targets": tgts, "xmax": xmax or 1,
+            "ymax": y_max or max(10.0, peak_all * 1.1), "unit": unit}
+    doc = TEMPLATE.read_text()
+    for token, value in (("__DATA__", json.dumps(data)),
+                         ("__TITLE__", html.escape(title)),
+                         ("__SUB__", html.escape(sub)),
+                         ("__XLABEL__", html.escape(x_label)),
+                         ("__YLABEL__", html.escape(y_label))):
+        doc = doc.replace(token, value)
+    path.write_text(doc)
+    return True
 
 
 def main():
