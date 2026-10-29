@@ -123,6 +123,15 @@ SAMPLER=$!
 # appending to a run nobody is watching.
 trap 'kill "${SAMPLER}" 2>/dev/null || true' EXIT INT TERM
 
+# balance.sh truncates a target's log when it runs it, but a target in
+# a stage that never ran keeps whatever the last run left there — and
+# the collection loop below would copy it in as if it were ours. An
+# aborted run picked up a nixl-wheel stream from the previous day that
+# way. Clear them up front so a stale file cannot be mistaken for data.
+for t in ${STAGE_A} ${STAGE_B} ${STAGE_C}; do
+    rm -f "/tmp/balance-${t}.log"
+done
+
 START=$(date +%s)
 
 # TELEMETRY=0: telemetry/build.sh parses bake's human-readable output
@@ -149,9 +158,17 @@ wait "${SAMPLER}" 2>/dev/null
 # balance.sh writes one log per target to /tmp; with BAKE_EXTRA set
 # those are the rawjson streams. Move them in so the run directory is
 # self-contained and the next run does not overwrite them.
+# Only logs this run actually wrote. The mtime test is redundant given
+# the clear above, but the cost of a stale stream here is a report that
+# looks complete and is not, so it is worth asserting twice.
 for t in ${STAGE_A} ${STAGE_B} ${STAGE_C}; do
-    [ -f "/tmp/balance-${t}.log" ] && cp "/tmp/balance-${t}.log" \
-        "${RUN_DIR}/build-${t}.jsonl"
+    src="/tmp/balance-${t}.log"
+    [ -f "${src}" ] || continue
+    if [ "$(stat -c %Y "${src}" 2>/dev/null || echo 0)" -lt "${START}" ]; then
+        log "skipping ${t}: log predates this run"
+        continue
+    fi
+    cp "${src}" "${RUN_DIR}/build-${t}.jsonl"
 done
 
 # Slice both logs to the window. tail -c +N is 1-indexed, hence the +1.
