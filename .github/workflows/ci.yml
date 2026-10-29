@@ -51,6 +51,38 @@ jobs:
       # behind `runs-on: [self-hosted]` if a fleet runner is ever
       # registered — that is the only place they can work.
 
+  defaults:
+    name: Defaults are not duplicated
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # bake.hcl owns every build default; the Makefile reads them
+      # through its bake_default function. This fails the build if a
+      # value is declared in both, which is how the two drifted apart
+      # before. No Docker and no registry — it only parses two files.
+      - name: Check bake.hcl / Makefile defaults
+        run: .builders/check-defaults.py
+
+      # The Makefile's own resolution, exercised end to end: list-vars
+      # expands every default it reads, so an awk or $(or ...) mistake
+      # shows up as a blank value here rather than in a build. Ubuntu
+      # runners ship mawk, not gawk, which is the case worth covering.
+      - name: Resolve defaults through make
+        run: |
+          # --eval rather than parsing list-vars: this asks make for the
+          # expanded value with no colour codes or layout in the way.
+          # VLLM_TAG is in the list because it is built from three
+          # bake-sourced values, so it fails if any link in the chain
+          # resolves empty.
+          for v in PYTORCH_VERSION ROCM_VERSION PYTHON_VERSION \
+                   PYTORCH_ROCM_ARCH REGISTRY REGISTRY_NAME \
+                   WEBDAV_HOST VLLM_REF LMCACHE_REF VLLM_TAG; do
+            val=$(make -s --eval="__show:;@printf '%s' '\$($v)'" __show)
+            printf '  %-20s %s\n' "$v" "$val"
+            [ -n "$val" ] || { echo "::error::$v resolved empty"; exit 1; }
+          done
+
   lint:
     runs-on: ubuntu-latest
     steps:

@@ -66,6 +66,17 @@ busy() {
     [ -n "$running" ]
 }
 
+# One-minute load average on the node that will run the build.
+node_load() {
+    if [ "${BUILDER}" = "snoc-strix" ]; then
+        cut -d' ' -f1 /proc/loadavg
+    else
+        timeout 10 ssh -n -o BatchMode=yes \
+            "${BUILDER/snoc-think/snoc-thinkstation}" \
+            "cut -d' ' -f1 /proc/loadavg" 2>/dev/null
+    fi
+}
+
 # MemAvailable on the node that will run the build, in whole GB.
 # Same local-or-ssh split as the load sampling below: snoc-strix is
 # this host, everything else is remote.
@@ -185,6 +196,43 @@ bench_run() {
         log "  MAX_JOBS pinned to ${BENCH_MAX_JOBS}"
     fi
 
+    # Force the compile stage to run again without altering the build.
+    #
+    # Until now the only way to make a hot build actually compile was
+    # to give MAX_JOBS a value it had not had before, since changing a
+    # build arg changes the layer key. That conflated the cache-buster
+    # with the variable under test: each job count was usable exactly
+    # once per tree state, which is why almost every width in the
+    # report has n=1 and why the 133s at 32 jobs could not be checked.
+    #
+    # no-cache-filter asks buildkit to ignore cache for one stage and
+    # nothing else, so the same width can be measured repeatedly. It
+    # has to arrive as an HCL override file: bake accepts the attribute
+    # there, but `--set target.no-cache-filter=` is silently dropped
+    # (tested on buildx 0.30.1 — it does not appear in --print).
+    #
+    # Note this invalidates every step in the stage, not just the
+    # compile: the git clone, the sccache download and the pip installs
+    # all re-run. That is visible in the build log.
+    #
+    # Whether it changes the *timing* enough to matter is not
+    # established. It looked that way from two samples — 403s and 429s
+    # against a 267s pin-change run — but with every converged run
+    # counted, the pin-change method spans 203-617s and contains the
+    # forced range entirely. pytorch's hot time varies about 3x
+    # run-to-run whatever forces the compile, and that swamps any
+    # method effect this data could show.
+    #
+    # Treat the two as interchangeable until something separates them.
+    local nocache=""
+    if [ -n "${BENCH_FORCE_COMPILE:-}" ]; then
+        local hcl="/tmp/bench-nocache-$$.hcl"
+        printf 'target "%s" {\n  no-cache-filter = ["builder"]\n}\n' \
+            "${target}" > "${hcl}"
+        nocache="-f ${hcl}"
+        log "  forcing the builder stage to recompile (no-cache-filter)"
+    fi
+
     local start end rc
     start=$(date +%s)
     (
@@ -201,7 +249,7 @@ bench_run() {
         BUILDKIT_PROGRESS=plain TELEMETRY=1 \
             make "build-$(mk_name "${target}")" BUILDER="${BUILDER}" \
             ${extra_env} \
-            BAKE_EXTRA="--set *.cache-to= ${pin_jobs} ${extra}"
+            BAKE_EXTRA="--set *.cache-to= ${nocache} ${pin_jobs} ${extra}"
     ) > "${log}" 2>&1
     rc=$?
     end=$(date +%s)
@@ -212,7 +260,15 @@ bench_run() {
         sudo rm -rf "/var/cache/sccache-webdav/${prefix}" 2>/dev/null
     fi
 
-    record "${scenario}" "${target}" "$((end - start))" "${rc}" "${log}" "${load:-0}"
+    # Load again now the build is over. One sample at t=0 does not
+    # characterise a run lasting ten to twenty minutes: the slowest
+    # cold triton on record, 1168s against a 432-669s cluster, *began*
+    # at load 0.99 — the lowest of its group — and the node's
+    # fifteen-minute average reached 41 on 32 cores by the time it
+    # finished. Contention arriving after the start was invisible, and
+    # it is the best candidate for the spread these numbers carry.
+    local load_end; load_end=$(node_load)
+    record "${scenario}" "${target}" "$((end - start))" "${rc}" "${log}" "${load:-0}" "${load_end:-0}"
 }
 
 # bake target -> make target suffix, matching balance.sh's mapping.
@@ -231,7 +287,7 @@ mk_name() {
 # Pull the numbers that explain the duration out of the log, so the
 # result line stands on its own without re-reading it.
 record() {
-    local scenario="$1" target="$2" secs="$3" rc="$4" log="$5" load="$6"
+    local scenario="$1" target="$2" secs="$3" rc="$4" log="$5" load="$6" load_end="${7:-0}"
     local cached total hits misses reqs maxjobs fail=""
 
     # Anchor to this repo's Dockerfile. The builders are shared, and
@@ -339,6 +395,7 @@ record() {
     B_SECS="${secs}" B_RC="${rc}" B_CACHED="${cached:-0}" B_TOTAL="${total:-0}" \
     B_REQS="${reqs:-0}" B_HITS="${hits:-0}" B_MISSES="${misses:-0}" \
     B_JOBS="${maxjobs:-0}" B_FAIL="${fail}" B_LOG="${log}" B_LOAD="${load:-0}" \
+    B_LOAD_END="${load_end:-0}" \
     python3 -I - <<'PY' >> "${RESULTS}"
 import json, os, datetime
 def num(k):
@@ -358,6 +415,7 @@ print(json.dumps({
     "sccache_misses": num("B_MISSES"),
     "max_jobs": num("B_JOBS"),
     "node_load_at_start": float(os.environ.get("B_LOAD") or 0),
+    "node_load_at_end": float(os.environ.get("B_LOAD_END") or 0),
     "failure": os.environ.get("B_FAIL") or None,
     "log": os.environ["B_LOG"],
 }))
@@ -410,33 +468,97 @@ print()
 # every digest after the epoch changed, or one taken before the
 # compiler cache had converged — which flatter cold and understate the
 # cache. The best run of each kind is the one worth quoting.
-import math
+# Keyed by (target, builder, MAX_JOBS), and a ratio is printed only
+# when cold and hot were measured at the same job count.
+#
+# Two earlier attempts got this wrong. Taking the best run of each kind
+# looked principled but pulls in opposite directions: cold runs vary
+# far more than hot ones, so min(cold) picks an outlier that shrinks
+# the ratio while min(hot) picks one that inflates it. Switching to the
+# median then exposed the real fault — the pools were mixing runs at
+# different job counts. "pytorch hot, n=12, 244-1366s" spans pins 5 to
+# 15 and runs taken before the compiler cache had converged; no average
+# over that means anything.
+#
+# Job count is not a nuisance parameter here, it is the dominant one:
+# the same cold pytorch is 6892s at 5 jobs and 2342s at 32. So it
+# belongs in the key, and cold at one width divided by hot at another
+# is not a ratio at all.
+import statistics
 cold, compiled, skipped = {}, {}, {}
 for r in rows:
     if r["rc"] != 0:
         continue
-    key = (r["target"], r["builder"])
+    key = (r["target"], r["builder"], r["max_jobs"] or 0)
     if r["scenario"] == "cold":
         d = cold
     elif r["scenario"] == "hot":
-        d = compiled if r["sccache_requests"] else skipped
+        # Whether the compile step ran, judged on steps cached rather
+        # than on sccache having reported anything. Rows written before
+        # the sccache parser was fixed carry requests=0 because nothing
+        # was recorded, not because nothing was compiled — two triton
+        # rows at 529s and 218s have requests=0 and steps 0/3, so they
+        # plainly compiled, and counting them as layer-cache hits
+        # produced "layer cache a further 0x (-> 374s)".
+        total = r["steps_total"] or 0
+        reused = total and (r["steps_cached"] / total) >= 0.5
+        d = skipped if reused else compiled
     else:
         continue
-    d[key] = min(d.get(key, math.inf), r["seconds"])
+    d.setdefault(key, []).append(r["seconds"])   # file order: oldest first
 
-for key in sorted(set(cold) | set(compiled) | set(skipped)):
-    tgt, node = key
-    c, h, l = cold.get(key), compiled.get(key), skipped.get(key)
-    where = f'{tgt} on {node}'
-    if c and h:
-        line = f'{where}: compiler cache {c/max(h,1):.1f}x ({c}s -> {h}s)'
-        if l:
-            line += f'; layer cache a further {h/max(l,1):.0f}x (-> {l}s)'
-        print(line)
-    elif c and l:
-        print(f'{where}: layer cache {c/max(l,1):.0f}x ({c}s -> {l}s); '
-              f'no hot run that compiled, so the compiler cache is not '
-              f'separable here')
+def mid(d, key):
+    """The most recent run at this key, not the best or the median.
+
+    Each has been tried and each is wrong here. The minimum picks an
+    outlier, and picking it on both sides biases the ratio in opposite
+    directions. The median assumes the samples are drawn from one
+    population, and they are not: this pipeline changed underneath its
+    own measurements — the compiler cache converged partway through,
+    and rows written before the sccache parser was fixed record no hit
+    data at all. Averaging a run from before a fix with one from after
+    describes a system that never existed.
+
+    The question a ratio answers is what the cache buys *now*, so the
+    newest sample is the right estimator, and n with the observed range
+    is printed beside it so the spread stays visible.
+    """
+    v = d.get(key)
+    return v[-1] if v else None
+
+def spread(d, key):
+    v = d.get(key) or []
+    return f' [n={len(v)}, {min(v)}-{max(v)}s]' if len(v) > 1 else ''
+
+shown = False
+for key in sorted(set(cold) & set(compiled)):
+    tgt, node, jobs = key
+    c, h = mid(cold, key), mid(compiled, key)
+    line = (f'{tgt} on {node} at {jobs} jobs: compiler cache '
+            f'{c/max(h,1):.1f}x ({c}s{spread(cold, key)} -> '
+            f'{h}s{spread(compiled, key)})')
+    lay = mid(skipped, key)
+    # Only a saving if it is actually faster; otherwise the pools are
+    # not what they claim and a ratio would mislead.
+    if lay and lay < h:
+        line += f'; layer cache a further {h/max(lay,1):.0f}x (-> {lay}s)'
+    print(line)
+    shown = True
+
+# Anything measured at only one of the two widths is still worth
+# showing, just not as a ratio.
+singles = (set(cold) | set(compiled) | set(skipped)) - (set(cold) & set(compiled))
+for key in sorted(singles):
+    tgt, node, jobs = key
+    bits = [f'{lbl} {mid(d, key)}s{spread(d, key)}'
+            for lbl, d in (("cold", cold), ("hot", compiled),
+                           ("hot/layer-only", skipped)) if key in d]
+    print(f'{tgt} on {node} at {jobs} jobs: ' + ", ".join(bits)
+          + '  (no same-width pair, so no ratio)')
+    shown = True
+
+if not shown:
+    print("No comparable runs yet.")
 PY
 }
 

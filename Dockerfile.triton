@@ -21,7 +21,16 @@ ARG BASE_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/base:10.1.0-ful
 FROM ${BASE_IMAGE} AS builder
 
 ARG TRITON_REF=675c59878aa2280b31f722aaf42b825fcee21de8
-ARG PYTORCH_ROCM_ARCH=gfx950
+# The release the pinned commit belongs to, for tags and labels.
+# TRITON_REF is a bare SHA and carries no version, which is why the
+# published tag had no version component at all.
+ARG TRITON_VERSION=3.8.0
+# No PYTORCH_ROCM_ARCH. Triton is a compiler: it generates code for
+# whatever GPU it finds at run time, and nothing in this build consumes
+# a target architecture. The arch used to be carried here as an ARG, an
+# ENV and two labels, none of which any RUN step read — so the same
+# compiler was published twice under two arch tags, 393MB each,
+# differing only in metadata.
 ARG ROCM_VERSION=10.1.0-full
 ARG SCCACHE_WEBDAV_ENDPOINT=http://snoc-strix.fold-leaffish.ts.net:8081
 # Namespace this project's objects. The store is shared with other
@@ -62,7 +71,7 @@ ARG MAX_JOBS=
 ARG MEM_PER_JOB_GB=2
 
 LABEL org.opencontainers.image.source="https://github.com/triton-lang/triton"
-LABEL org.opencontainers.image.description="Triton built for ROCm ${ROCM_VERSION}, ${PYTORCH_ROCM_ARCH}"
+LABEL org.opencontainers.image.description="Triton ${TRITON_VERSION} built for ROCm ${ROCM_VERSION} (architecture-independent)"
 
 # MAX_JOBS is computed per node at build time, not fixed here. It was
 # 32, mirroring PyTorch CI, which assumed PyTorch CI's machines: on
@@ -72,7 +81,6 @@ LABEL org.opencontainers.image.description="Triton built for ROCm ${ROCM_VERSION
 # bound — memory is. Set MAX_JOBS explicitly to override the
 # computation; see the build step below.
 ENV ROCM_PATH=/opt/rocm \
-    PYTORCH_ROCM_ARCH=${PYTORCH_ROCM_ARCH} \
     SCCACHE_WEBDAV_ENDPOINT=${SCCACHE_WEBDAV_ENDPOINT} \
     SCCACHE_SERVER_UDS=/tmp/sccache.sock \
     SCCACHE_WEBDAV_KEY_PREFIX=${SCCACHE_WEBDAV_KEY_PREFIX} \
@@ -177,10 +185,12 @@ RUN ls -la /wheels/
 # ─── Wheel-only image ────────────────────────────────────────────
 FROM scratch AS wheel
 
-ARG PYTORCH_ROCM_ARCH
 ARG ROCM_VERSION
+# Re-declared: an ARG does not cross a FROM boundary, so the label
+# below would interpolate to empty without it.
+ARG TRITON_VERSION
 LABEL org.opencontainers.image.source="https://github.com/triton-lang/triton"
-LABEL org.opencontainers.image.description="Triton wheel for ROCm ${ROCM_VERSION}, ${PYTORCH_ROCM_ARCH}"
+LABEL org.opencontainers.image.description="Triton ${TRITON_VERSION} wheel for ROCm ${ROCM_VERSION} (architecture-independent)"
 
 COPY --from=builder /wheels/ /wheels/
 COPY --from=builder /wheels-build.log /wheels-triton-sccache-stats.txt /

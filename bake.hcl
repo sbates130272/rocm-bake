@@ -74,14 +74,56 @@ variable "GIT_REF" {
 # .ci/docker/ci_commit_pins/triton.txt. Building this commit gives the
 # triton PyTorch expects, for ROCm 10.1 instead of AMD's newest
 # published channel (7.2.0).
+# The release the pinned TRITON_REF belongs to. The ref is a bare SHA
+# and carries no version, which is why the published tag used to have
+# no version component. Bump both together.
+variable "TRITON_VERSION" {
+  default = "3.8.0"
+}
+
 variable "TRITON_REF" {
   default = "675c59878aa2280b31f722aaf42b825fcee21de8"
 }
 
-# Per-image build timestamps, supplied by the Makefile from the last
-# commit that touched each Dockerfile. Empty when bake is driven
-# directly; the arg is then omitted and BuildKit falls back to the
-# environment, or to wall-clock if that is unset too.
+# ─── Reproducible image timestamps ───────────────────────────────
+# BUILD_DATE only reaches the `created` LABEL. The image *config* has a
+# `created` field of its own, which BuildKit stamps with nanosecond
+# wall-clock time regardless — so two builds of identical content got
+# different config digests, different manifest digests, and every
+# downstream FROM missed. SOURCE_DATE_EPOCH is what pins that field.
+#
+# Per image, not per repo. Taking it from HEAD meant every commit gave
+# the base a new `created`, hence a new digest, hence a full downstream
+# rebuild — even for a commit that only touched the Makefile. Measured:
+# Dockerfile.base unchanged between cf70d3c and 87f539e, yet the base
+# digest moved 91db3c2e -> aa52684f and nothing downstream could hit.
+#
+# A constant, not a date derived from history. This was once
+# `git log -1 --format=%ct -- Dockerfile.<image>`, on the reasoning
+# that an image's timestamp should move only when its own inputs do.
+# That used commit history as a proxy for "the inputs changed", and the
+# proxy does not hold: squashing 26 commits into 3 made every remaining
+# commit touch every Dockerfile, so all five values collapsed to one
+# timestamp and every image's cache was invalidated at once. Any
+# rebase, squash or filter-branch does this.
+#
+# Content is what should decide, and content already does — it decides
+# the layer digests. The config `created` field carries no information
+# anyone reads: the real build date lives in the
+# org.opencontainers.image.created label. So pinning it to a constant
+# costs nothing and is immune to history being rewritten.
+#
+# Bump this only to force every image to a new digest deliberately.
+variable "SDE_EPOCH" {
+  default = "1700000000"
+}
+
+# Per image, so a single image can be pinned without the others. Empty
+# means "use SDE_EPOCH"; the fallback is resolved in EPOCH_* below.
+# This used to default to "" with the arg omitted entirely, which meant
+# a bake driven directly — without the Makefile to supply values — got
+# BuildKit's wall-clock and lost reproducibility silently. The defaults
+# live here now precisely so that cannot happen.
 variable "SDE_BASE"    { default = "" }
 variable "SDE_PYTORCH" { default = "" }
 variable "SDE_TRITON"  { default = "" }
@@ -90,6 +132,17 @@ variable "SDE_RUNTIME" { default = "" }
 variable "SDE_NIXL"    { default = "" }
 variable "SDE_VLLM"    { default = "" }
 variable "SDE_LMCACHE" { default = "" }
+variable "SDE_CUPY"    { default = "" }
+
+EPOCH_BASE    = SDE_BASE    != "" ? SDE_BASE    : SDE_EPOCH
+EPOCH_PYTORCH = SDE_PYTORCH != "" ? SDE_PYTORCH : SDE_EPOCH
+EPOCH_TRITON  = SDE_TRITON  != "" ? SDE_TRITON  : SDE_EPOCH
+EPOCH_AITER   = SDE_AITER   != "" ? SDE_AITER   : SDE_EPOCH
+EPOCH_RUNTIME = SDE_RUNTIME != "" ? SDE_RUNTIME : SDE_EPOCH
+EPOCH_NIXL    = SDE_NIXL    != "" ? SDE_NIXL    : SDE_EPOCH
+EPOCH_VLLM    = SDE_VLLM    != "" ? SDE_VLLM    : SDE_EPOCH
+EPOCH_LMCACHE = SDE_LMCACHE != "" ? SDE_LMCACHE : SDE_EPOCH
+EPOCH_CUPY    = SDE_CUPY    != "" ? SDE_CUPY    : SDE_EPOCH
 
 # Empty means each build derives its own job count from the node it
 # lands on, sized by memory rather than cores. Set it to pin one.
@@ -155,9 +208,11 @@ variable "PUBLISHED_INPUTS" {
 # change to the other.
 PUB_BASE    = "${REGISTRY}/${REGISTRY_NAME}/base:${ROCM_VERSION}-${PYTHON_VERSION}"
 PUB_PYTORCH = "${REGISTRY}/${REGISTRY_NAME}/pytorch:${PYTORCH_VERSION}-${ROCM_VERSION}-${ARCH_TAG}"
-PUB_TRITON  = "${REGISTRY}/${REGISTRY_NAME}/triton-wheel:${ROCM_VERSION}-${ARCH_TAG}"
+PUB_TRITON  = "${REGISTRY}/${REGISTRY_NAME}/triton-wheel:${TRITON_VERSION}-${ROCM_VERSION}"
 PUB_AITER   = "${REGISTRY}/${REGISTRY_NAME}/aiter-wheel:${PYTORCH_VERSION}-${ROCM_VERSION}-${ARCH_TAG}"
 PUB_NIXL    = "${REGISTRY}/${REGISTRY_NAME}/nixl-wheel:${NIXL_REF}-${ROCM_VERSION}-${ARCH_TAG}"
+PUB_LMCACHE = "${REGISTRY}/${REGISTRY_NAME}/lmcache-wheel:${LMCACHE_REF}-${ROCM_VERSION}-${ARCH_TAG}"
+PUB_CUPY    = "${REGISTRY}/${REGISTRY_NAME}/cupy-wheel:${CUPY_REF}-${ROCM_VERSION}-${ARCH_TAG}"
 
 USE_PUB = PUBLISHED_INPUTS != ""
 
@@ -177,6 +232,13 @@ variable "UCX_REF" {
 
 variable "VLLM_REF" {
   default = "v0.32.0"
+}
+
+# CuPy, built from source because no published wheel fits: PyPI's
+# cupy-rocm-7-0 targets ROCm 7.0 against our 10.1, and plain `cupy`
+# ships only an sdist. LMCache's MP server imports it unconditionally.
+variable "CUPY_REF" {
+  default = "v14.2.0"
 }
 
 variable "LMCACHE_REF" {
@@ -277,12 +339,27 @@ BASE_LABELS = {
 NO_PROVENANCE = ["type=provenance,disabled=true"]
 
 # Shared compiler cache on Strix (nginx WebDAV, durable on disk).
-# The Makefile overrides this with the resolved address: in-container
-# DNS for tailnet names proved unreliable under load and silently cost
-# most of the cache. See the WEBDAV_IP comment in the Makefile.
-variable "SCCACHE_WEBDAV_ENDPOINT" {
-  default = "http://snoc-strix.fold-leaffish.ts.net:8081"
+# Host and port are separate variables because the Makefile needs them
+# apart: it resolves the host to an address before handing the endpoint
+# to the builders, since in-container DNS for tailnet names proved
+# unreliable under load and silently cost most of the cache. See the
+# WEBDAV_IP comment in the Makefile.
+variable "SCCACHE_WEBDAV_HOST" {
+  default = "snoc-strix.fold-leaffish.ts.net"
 }
+
+variable "SCCACHE_WEBDAV_PORT" {
+  default = "8081"
+}
+
+# Empty means "compose it from the host and port above". The Makefile
+# sets it to the resolved-address form; anything driving bake directly
+# gets the name form, which is correct outside a build container.
+variable "SCCACHE_WEBDAV_ENDPOINT" {
+  default = ""
+}
+
+WEBDAV_ENDPOINT = SCCACHE_WEBDAV_ENDPOINT != "" ? SCCACHE_WEBDAV_ENDPOINT : "http://${SCCACHE_WEBDAV_HOST}:${SCCACHE_WEBDAV_PORT}"
 
 # Key namespace within that store. Overridable so a benchmark can run
 # against an isolated prefix and delete it afterwards without touching
@@ -337,7 +414,8 @@ group "default" {
   targets = [
     "pytorch-base", "pytorch",
     "pytorch-wheel", "triton-wheel", "aiter-wheel",
-    "nixl-wheel", "vllm", "vllm-wheel", "lmcache", "lmcache-wheel",
+    "cupy-wheel", "nixl-wheel", "vllm", "vllm-wheel",
+    "lmcache", "lmcache-wheel",
   ]
 }
 
@@ -346,7 +424,7 @@ group "default" {
 group "wheels" {
   targets = [
     "pytorch-wheel", "triton-wheel", "aiter-wheel", "nixl-wheel",
-    "vllm-wheel", "lmcache-wheel",
+    "cupy-wheel", "vllm-wheel", "lmcache-wheel",
   ]
 }
 
@@ -361,7 +439,7 @@ group "wheels" {
 #
 # This group stays as a way to build the serving stack on its own.
 group "serving" {
-  targets = ["nixl-wheel", "vllm", "vllm-wheel", "lmcache", "lmcache-wheel"]
+  targets = ["cupy-wheel", "nixl-wheel", "vllm", "vllm-wheel", "lmcache", "lmcache-wheel"]
 }
 
 # There was an `attrs = { cache-from/cache-to }` block here pointing at
@@ -394,7 +472,7 @@ target "pytorch-base" {
 
   args = {
     BUILDKIT_BUILD_NAME = "rocm-pytorch-build/base/${PYTORCH_ROCM_ARCH}/${RUN_ID}"
-    SOURCE_DATE_EPOCH   = SDE_BASE != "" ? SDE_BASE : null
+    SOURCE_DATE_EPOCH   = EPOCH_BASE
     ROCM_VERSION   = ROCM_VERSION
     PYTHON_VERSION = PYTHON_VERSION
   }
@@ -451,7 +529,7 @@ target "pytorch" {
     TRITON_WHEEL_IMAGE  = USE_PUB ? PUB_TRITON : "triton-wheels"
     BASE_IMAGE          = USE_PUB ? PUB_BASE : "base-img"
     BUILDKIT_BUILD_NAME = "rocm-pytorch-build/pytorch/${PYTORCH_ROCM_ARCH}/${RUN_ID}"
-    SOURCE_DATE_EPOCH   = SDE_PYTORCH != "" ? SDE_PYTORCH : null
+    SOURCE_DATE_EPOCH   = EPOCH_PYTORCH
     ROCM_VERSION         = ROCM_VERSION
     PYTORCH_VERSION      = PYTORCH_VERSION
     PYTHON_VERSION       = PYTHON_VERSION
@@ -466,7 +544,7 @@ target "pytorch" {
     # as nothing, which is why no build was ever compiler-cached. The
     # CMAKE_*_COMPILER_LAUNCHER values live in Dockerfile.pytorch; only
     # the port and the strictness toggle are worth overriding here.
-    SCCACHE_WEBDAV_ENDPOINT = SCCACHE_WEBDAV_ENDPOINT
+    SCCACHE_WEBDAV_ENDPOINT = WEBDAV_ENDPOINT
     SCCACHE_WEBDAV_KEY_PREFIX = SCCACHE_WEBDAV_KEY_PREFIX
     SCCACHE_LOG          = SCCACHE_LOG
     MAX_JOBS            = MAX_JOBS
@@ -511,9 +589,9 @@ target "triton-wheel" {
   target     = "wheel"
 
   tags = compact([
-    "${REGISTRY}/${REGISTRY_NAME}/triton-wheel:${ROCM_VERSION}-${ARCH_TAG}",
+    "${REGISTRY}/${REGISTRY_NAME}/triton-wheel:${TRITON_VERSION}-${ROCM_VERSION}",
     "${REGISTRY}/${REGISTRY_NAME}/triton-wheel:latest",
-    VCS_REF != "" ? "${REGISTRY}/${REGISTRY_NAME}/triton-wheel:${ROCM_VERSION}-${ARCH_TAG}-g${VCS_REF}" : "",
+    VCS_REF != "" ? "${REGISTRY}/${REGISTRY_NAME}/triton-wheel:${TRITON_VERSION}-${ROCM_VERSION}-g${VCS_REF}" : "",
   ])
 
   labels = merge(OCI_LABELS, {
@@ -538,14 +616,13 @@ target "triton-wheel" {
 
   args = {
     BASE_IMAGE          = USE_PUB ? PUB_BASE : "base-img"
-    BUILDKIT_BUILD_NAME = "rocm-pytorch-build/triton-wheel/${PYTORCH_ROCM_ARCH}/${RUN_ID}"
-    SOURCE_DATE_EPOCH   = SDE_TRITON != "" ? SDE_TRITON : null
-    BASE_IMAGE          = "${REGISTRY}/${REGISTRY_NAME}/base:${ROCM_VERSION}-${PYTHON_VERSION}"
+    BUILDKIT_BUILD_NAME = "rocm-pytorch-build/triton-wheel/noarch/${RUN_ID}"
+    SOURCE_DATE_EPOCH   = EPOCH_TRITON
     TRITON_REF          = TRITON_REF
-    PYTORCH_ROCM_ARCH   = PYTORCH_ROCM_ARCH
+    TRITON_VERSION      = TRITON_VERSION
     ROCM_VERSION        = ROCM_VERSION
     SCCACHE_VERSION     = SCCACHE_VERSION
-    SCCACHE_WEBDAV_ENDPOINT = SCCACHE_WEBDAV_ENDPOINT
+    SCCACHE_WEBDAV_ENDPOINT = WEBDAV_ENDPOINT
     SCCACHE_WEBDAV_KEY_PREFIX = SCCACHE_WEBDAV_KEY_PREFIX
     SCCACHE_LOG         = SCCACHE_LOG
     MAX_JOBS            = MAX_JOBS
@@ -597,14 +674,14 @@ target "aiter-wheel" {
 
   args = {
     BUILDKIT_BUILD_NAME = "rocm-pytorch-build/aiter-wheel/${PYTORCH_ROCM_ARCH}/${RUN_ID}"
-    SOURCE_DATE_EPOCH   = SDE_AITER != "" ? SDE_AITER : null
+    SOURCE_DATE_EPOCH   = EPOCH_AITER
     PYTORCH_IMAGE       = USE_PUB ? PUB_PYTORCH : "pytorch-img"
     TRITON_WHEEL_IMAGE  = USE_PUB ? PUB_TRITON : "triton-wheels"
     AITER_REF           = AITER_REF
     PREBUILD_KERNELS    = PREBUILD_LEVEL
     SCCACHE_VERSION     = SCCACHE_VERSION
     PYTORCH_ROCM_ARCH   = PYTORCH_ROCM_ARCH
-    SCCACHE_WEBDAV_ENDPOINT = SCCACHE_WEBDAV_ENDPOINT
+    SCCACHE_WEBDAV_ENDPOINT = WEBDAV_ENDPOINT
     SCCACHE_WEBDAV_KEY_PREFIX = SCCACHE_WEBDAV_KEY_PREFIX
   }
 
@@ -637,7 +714,7 @@ target "pytorch-run" {
 
   args = {
     BUILDKIT_BUILD_NAME = "rocm-pytorch-build/runtime/${PYTORCH_ROCM_ARCH}/${RUN_ID}"
-    SOURCE_DATE_EPOCH   = SDE_RUNTIME != "" ? SDE_RUNTIME : null
+    SOURCE_DATE_EPOCH   = EPOCH_RUNTIME
     PYTHON_VERSION = PYTHON_VERSION
   }
 
@@ -669,6 +746,54 @@ target "pytorch-test" {
 
   # run-target is not a bake attribute; target selects the stage.
   target = "test"
+}
+
+# ─── CuPy wheel ──────────────────────────────────────────────────
+# Built FROM the base image rather than pytorch: cupy has no torch
+# dependency and only needs ROCm and the venv. Consumed by lmcache,
+# whose MP server imports cupy at module scope, and transitively by
+# vllm, which installs lmcache.
+target "cupy-wheel" {
+  dockerfile = "Dockerfile.cupy"
+  platforms  = ["linux/amd64"]
+  target     = "wheel"
+
+  tags = compact([
+    "${REGISTRY}/${REGISTRY_NAME}/cupy-wheel:${CUPY_REF}-${ROCM_VERSION}-${ARCH_TAG}",
+    "${REGISTRY}/${REGISTRY_NAME}/cupy-wheel:latest",
+    VCS_REF != "" ? "${REGISTRY}/${REGISTRY_NAME}/cupy-wheel:${CUPY_REF}-${ROCM_VERSION}-${ARCH_TAG}-g${VCS_REF}" : "",
+  ])
+
+  labels = merge(OCI_LABELS, {
+    "org.opencontainers.image.title"       = "cupy wheel"
+    "org.opencontainers.image.description" = "CuPy ${CUPY_REF} for ROCm ${ROCM_VERSION}, ${PYTORCH_ROCM_ARCH}"
+    "org.opencontainers.image.version"     = "${CUPY_REF}-${ROCM_VERSION}-${ARCH_TAG}"
+  })
+
+  cache-from = [
+    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/cupy-wheel-cache:latest,mode=max,registry.insecure=true",
+    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/cupy-wheel-cache:latest-ref,mode=max,registry.insecure=true",
+  ]
+  cache-to   = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/cupy-wheel-cache:latest${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=true,ignore-error=true"]
+
+  contexts = USE_PUB ? {} : {
+    base-img = "target:pytorch-base"
+  }
+
+  args = {
+    SOURCE_DATE_EPOCH       = EPOCH_CUPY
+    BUILDKIT_BUILD_NAME     = "rocm-pytorch-build/cupy-wheel/${PYTORCH_ROCM_ARCH}/${RUN_ID}"
+    BASE_IMAGE              = USE_PUB ? PUB_BASE : "base-img"
+    CUPY_REF                = CUPY_REF
+    PYTORCH_ROCM_ARCH       = PYTORCH_ROCM_ARCH
+    ROCM_VERSION            = ROCM_VERSION
+    SCCACHE_VERSION         = SCCACHE_VERSION
+    SCCACHE_WEBDAV_ENDPOINT = WEBDAV_ENDPOINT
+    SCCACHE_WEBDAV_KEY_PREFIX = SCCACHE_WEBDAV_KEY_PREFIX
+    MAX_JOBS                = MAX_JOBS
+  }
+
+  output = ["type=image,compression=zstd"]
 }
 
 # ─── NIXL wheel ──────────────────────────────────────────────────
@@ -704,7 +829,7 @@ target "nixl-wheel" {
   }
 
   args = {
-    SOURCE_DATE_EPOCH       = SDE_NIXL != "" ? SDE_NIXL : null
+    SOURCE_DATE_EPOCH       = EPOCH_NIXL
     BUILDKIT_BUILD_NAME     = "rocm-pytorch-build/nixl-wheel/${PYTORCH_ROCM_ARCH}/${RUN_ID}"
     PYTORCH_IMAGE           = USE_PUB ? PUB_PYTORCH : "pytorch-img"
     NIXL_REF                = NIXL_REF
@@ -712,7 +837,7 @@ target "nixl-wheel" {
     PYTORCH_ROCM_ARCH       = PYTORCH_ROCM_ARCH
     ROCM_VERSION            = ROCM_VERSION
     SCCACHE_VERSION         = SCCACHE_VERSION
-    SCCACHE_WEBDAV_ENDPOINT = SCCACHE_WEBDAV_ENDPOINT
+    SCCACHE_WEBDAV_ENDPOINT = WEBDAV_ENDPOINT
     SCCACHE_WEBDAV_KEY_PREFIX = SCCACHE_WEBDAV_KEY_PREFIX
   }
 
@@ -748,19 +873,21 @@ target "vllm" {
   cache-to   = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/vllm-cache:latest${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=true,ignore-error=true"]
 
   contexts = USE_PUB ? {} : {
-    pytorch-img   = "target:pytorch"
-    triton-wheels = "target:triton-wheel"
-    aiter-wheels  = "target:aiter-wheel"
-    nixl-wheels   = "target:nixl-wheel"
+    pytorch-img    = "target:pytorch"
+    triton-wheels  = "target:triton-wheel"
+    aiter-wheels   = "target:aiter-wheel"
+    nixl-wheels    = "target:nixl-wheel"
+    lmcache-wheels = "target:lmcache-wheel"
   }
 
   args = {
-    SOURCE_DATE_EPOCH       = SDE_VLLM != "" ? SDE_VLLM : null
+    SOURCE_DATE_EPOCH       = EPOCH_VLLM
     BUILDKIT_BUILD_NAME     = "rocm-pytorch-build/vllm/${PYTORCH_ROCM_ARCH}/${RUN_ID}"
     PYTORCH_IMAGE           = USE_PUB ? PUB_PYTORCH : "pytorch-img"
     TRITON_WHEEL_IMAGE      = USE_PUB ? PUB_TRITON : "triton-wheels"
     AITER_WHEEL_IMAGE       = USE_PUB ? PUB_AITER : "aiter-wheels"
     NIXL_WHEEL_IMAGE        = USE_PUB ? PUB_NIXL : "nixl-wheels"
+    LMCACHE_WHEEL_IMAGE     = USE_PUB ? PUB_LMCACHE : "lmcache-wheels"
     VLLM_REF                = VLLM_REF
     # Same ref the aiter-wheel target built from: Dockerfile.vllm fetches
     # AITER's requirements.txt at this tag because the wheel does not
@@ -770,7 +897,7 @@ target "vllm" {
     PYTORCH_ROCM_ARCH       = PYTORCH_ROCM_ARCH
     ROCM_VERSION            = ROCM_VERSION
     SCCACHE_VERSION         = SCCACHE_VERSION
-    SCCACHE_WEBDAV_ENDPOINT = SCCACHE_WEBDAV_ENDPOINT
+    SCCACHE_WEBDAV_ENDPOINT = WEBDAV_ENDPOINT
     SCCACHE_WEBDAV_KEY_PREFIX = SCCACHE_WEBDAV_KEY_PREFIX
   }
 
@@ -826,19 +953,21 @@ target "lmcache" {
     pytorch-img   = "target:pytorch"
     triton-wheels = "target:triton-wheel"
     nixl-wheels   = "target:nixl-wheel"
+    cupy-wheels   = "target:cupy-wheel"
   }
 
   args = {
-    SOURCE_DATE_EPOCH       = SDE_LMCACHE != "" ? SDE_LMCACHE : null
+    SOURCE_DATE_EPOCH       = EPOCH_LMCACHE
     BUILDKIT_BUILD_NAME     = "rocm-pytorch-build/lmcache/${PYTORCH_ROCM_ARCH}/${RUN_ID}"
     PYTORCH_IMAGE           = USE_PUB ? PUB_PYTORCH : "pytorch-img"
     TRITON_WHEEL_IMAGE      = USE_PUB ? PUB_TRITON : "triton-wheels"
     NIXL_WHEEL_IMAGE        = USE_PUB ? PUB_NIXL : "nixl-wheels"
+    CUPY_WHEEL_IMAGE        = USE_PUB ? PUB_CUPY : "cupy-wheels"
     LMCACHE_REF             = LMCACHE_REF
     PYTORCH_ROCM_ARCH       = PYTORCH_ROCM_ARCH
     ROCM_VERSION            = ROCM_VERSION
     SCCACHE_VERSION         = SCCACHE_VERSION
-    SCCACHE_WEBDAV_ENDPOINT = SCCACHE_WEBDAV_ENDPOINT
+    SCCACHE_WEBDAV_ENDPOINT = WEBDAV_ENDPOINT
     SCCACHE_WEBDAV_KEY_PREFIX = SCCACHE_WEBDAV_KEY_PREFIX
   }
 

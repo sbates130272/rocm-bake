@@ -43,6 +43,9 @@ ARG SCCACHE_WEBDAV_ENDPOINT=http://snoc-strix.fold-leaffish.ts.net:8081
 ARG SCCACHE_WEBDAV_KEY_PREFIX=rocm-pytorch
 # Empty means "derive from the node"; set it to pin a job count.
 ARG MAX_JOBS=
+# Memory budget per compile job, used to derive MAX_JOBS. Shared
+# convention with Dockerfile.pytorch; 2GB is measured for cc1plus.
+ARG MEM_PER_JOB_GB=2
 
 LABEL org.opencontainers.image.source="https://github.com/ai-dynamo/nixl"
 LABEL org.opencontainers.image.description="NIXL ${NIXL_REF} with ROCm UCX, for ${PYTORCH_ROCM_ARCH}"
@@ -146,7 +149,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN njobs="${MAX_JOBS}"; \
     if [ -z "${njobs}" ]; then \
         cores=$(nproc); \
-        njobs=$(awk '/^MemAvailable:/ {print int($2/1024/1024/2)}' /proc/meminfo); \
+        njobs=$(awk -v per="${MEM_PER_JOB_GB}" '/^MemAvailable:/ {print int($2/1024/1024/per)}' /proc/meminfo); \
         [ -n "${njobs}" ] || njobs=${cores}; \
         [ "${njobs}" -ge 1 ] || njobs=1; \
         [ "${njobs}" -le "${cores}" ] || njobs=${cores}; \

@@ -21,9 +21,11 @@
 ARG PYTORCH_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/pytorch:latest
 ARG TRITON_WHEEL_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/triton-wheel:latest
 ARG NIXL_WHEEL_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/nixl-wheel:latest
+ARG CUPY_WHEEL_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/cupy-wheel:latest
 
 FROM ${TRITON_WHEEL_IMAGE} AS tritonwheels
 FROM ${NIXL_WHEEL_IMAGE} AS nixlwheels
+FROM ${CUPY_WHEEL_IMAGE} AS cupywheels
 
 # ─── Shared environment ──────────────────────────────────────────
 FROM ${PYTORCH_IMAGE} AS deps
@@ -36,6 +38,7 @@ ENV ROCM_PATH=/opt/rocm \
 
 COPY --from=tritonwheels /wheels/ /opt/wheels/triton/
 COPY --from=nixlwheels   /wheels/ /opt/wheels/nixl/
+COPY --from=cupywheels   /wheels/ /opt/wheels/cupy/
 
 # --no-deps on triton: upstream triton has no ROCm 10.1 build, and
 # letting pip resolve it as a transitive dependency would shadow ours.
@@ -44,10 +47,14 @@ COPY --from=nixlwheels   /wheels/ /opt/wheels/nixl/
 # PyPI `nixl` meta-package, which installs the CUDA backends — that
 # extra is deliberately never used in this image; the wheel installed
 # here provides the same top-level `nixl` module.
+# cupy --no-deps: it wants numpy, which is already installed here, and
+# letting pip resolve would reconsider it against our pins.
 RUN pip install --no-cache-dir --no-deps /opt/wheels/triton/*.whl && \
     pip install --no-cache-dir /opt/wheels/nixl/*.whl && \
+    pip install --no-cache-dir --no-deps /opt/wheels/cupy/*.whl && \
     python -c "import triton; print('triton', triton.__version__)" && \
-    python -c "from nixl._api import nixl_agent; print('nixl ok')"
+    python -c "from nixl._api import nixl_agent; print('nixl ok')" && \
+    python -c "import cupy; print('cupy', cupy.__version__)"
 
 # A pip constraint pinning torch and triton to exactly what is installed.
 # LMCache's common.txt names a bare `torch`, and its transitive closure
@@ -78,6 +85,9 @@ ARG SCCACHE_WEBDAV_ENDPOINT=http://snoc-strix.fold-leaffish.ts.net:8081
 # builds' sccache servers cross. See the long note in Dockerfile.aiter.
 ARG SCCACHE_WEBDAV_KEY_PREFIX=rocm-pytorch
 ARG MAX_JOBS=
+# Memory budget per compile job, used to derive MAX_JOBS. Shared
+# convention with Dockerfile.pytorch; 2GB is measured for cc1plus.
+ARG MEM_PER_JOB_GB=2
 
 LABEL org.opencontainers.image.source="https://github.com/LMCache/LMCache"
 LABEL org.opencontainers.image.description="LMCache ${LMCACHE_REF} for ROCm ${ROCM_VERSION}, ${PYTORCH_ROCM_ARCH}"
@@ -109,9 +119,22 @@ WORKDIR /opt/lmcache
 #
 # What goes and why:
 #   cufile-python, nvtx   CUDA-only; there is no ROCm equivalent to install
-#   cupy-rocm-7-0         (rocm_core.txt) a ROCm 7.0 build, wrong major for
-#                         ROCm 10.1 and no cp314 wheel; LMCache only uses
-#                         cupy for its optional cupy-backed allocator
+#   cupy-rocm-7-0         (rocm_core.txt) a ROCm 7.0 build, wrong major
+#                         for our 10.1. We build cupy from source
+#                         instead — see Dockerfile.cupy — and install
+#                         that wheel above.
+#
+#                         An earlier version of this comment also said
+#                         "no cp314 wheel" and called cupy optional.
+#                         Both were wrong: cupy-rocm-7-0 14.2.0 does
+#                         publish cp314, and the MP server imports cupy
+#                         at module scope in
+#                         v1/platform/devices/cuda/cache_context.py to
+#                         build a cupy.cuda.ExternalStream. ROCm does
+#                         not avoid it — the rocm device platform is
+#                         two files that both import from the cuda one.
+#                         Without cupy the server dies on the first
+#                         request.
 #   numpy<=2.2.6          upper-capped for NIXL's numba, which on cp314
 #                         needs a numpy newer than the cap allows. The cap
 #                         is lifted rather than the version pinned down.
@@ -153,7 +176,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN njobs="${MAX_JOBS}"; \
     if [ -z "${njobs}" ]; then \
         cores=$(nproc); \
-        njobs=$(awk '/^MemAvailable:/ {print int($2/1024/1024/2)}' /proc/meminfo); \
+        njobs=$(awk -v per="${MEM_PER_JOB_GB}" '/^MemAvailable:/ {print int($2/1024/1024/per)}' /proc/meminfo); \
         [ -n "${njobs}" ] || njobs=${cores}; \
         [ "${njobs}" -ge 1 ] || njobs=1; \
         [ "${njobs}" -le "${cores}" ] || njobs=${cores}; \
@@ -261,3 +284,11 @@ LABEL org.opencontainers.image.description="LMCache ${LMCACHE_REF} wheel for ${P
 
 COPY --from=builder /wheels/ /wheels/
 COPY --from=builder /wheels-build.log /wheels-arch.txt /
+
+# The patched requirements travel with the wheel. A consumer that
+# installs this wheel needs them: the wheel is built with the CUDA-only
+# entries stripped from install_requires, so pip alone cannot reproduce
+# the dependency set, and resolving install_requires instead would pull
+# the entries this build deliberately removed. Dockerfile.vllm installs
+# lmcache from here and uses exactly these files.
+COPY --from=builder /opt/lmcache/requirements/ /requirements/

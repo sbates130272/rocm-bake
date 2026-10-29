@@ -178,8 +178,18 @@ pytorch (depends on pytorch-base)
     ├──► nixl-wheel (pytorch; builds UCX from source)
     │         │
     │         ├──► vllm    (pytorch + triton + aiter + nixl)
-    │         └──► lmcache (pytorch + triton + nixl)
+    │         └──► lmcache (pytorch + triton + nixl + cupy)
+    │                   ▲
+pytorch-base ──► cupy-wheel (base only; no torch dependency)
 ```
+
+`cupy-wheel` hangs off the base rather than off `pytorch` because CuPy
+does not depend on torch. It is not optional: LMCache's MP server
+imports cupy at module scope to build a `cupy.cuda.ExternalStream`, and
+no published wheel fits this stack — PyPI's `cupy-rocm-7-0` is built for
+a different ROCm major and plain `cupy` ships only an sdist. Without it
+the server dies on the first request and vLLM waits five minutes before
+reporting a generic engine failure. See `Dockerfile.cupy`.
 
 Everything below `pytorch` is reached through bake `target:` contexts,
 so a single invocation can build the whole chain without anything having
@@ -343,7 +353,18 @@ printf 'stats\r\nquit\r\n' | nc snoc-strix.fold-leaffish.ts.net 11211 \
 
 ### Environment Variables
 
-Edit `bake.hcl` variables or override at build time:
+`bake.hcl` is the single source for every build default. The Makefile
+does not keep its own copy of any of them — it reads them out of
+`bake.hcl` at parse time (`bake_default`), so `make build-pytorch` and a
+bare `docker buildx bake pytorch` always agree. `.builders/check-defaults.py`
+fails CI if a default is re-declared in the Makefile, or if the Makefile
+reads a variable `bake.hcl` does not define.
+
+Change a default by editing its `variable` block in `bake.hcl`.
+`make list-vars` prints everything the targets read, with the values
+actually in effect.
+
+Override at build time without editing anything:
 
 ```bash
 # Custom PyTorch version
@@ -363,22 +384,34 @@ docker buildx bake -f bake.hcl \
 docker buildx bake -f bake.hcl \
   --set "*.args.GIT_REF=refs/heads/develop" pytorch
 
-# Point at a different compiler-cache store
-docker buildx bake -f bake.hcl \
-  --set "*.args.SCCACHE_MEMCACHED=tcp://other-host:11211" pytorch
+# Point at a different compiler-cache store. The endpoint is a bake
+# variable, so the environment is the way in — not --set, which would
+# add the arg to every target and change their cache keys.
+SCCACHE_WEBDAV_ENDPOINT=http://other-host:8081 \
+  docker buildx bake -f bake.hcl pytorch
 
 # Build even though the compiler cache is unreachable
 docker buildx bake -f bake.hcl \
   --set "*.args.REQUIRE_SCCACHE=0" pytorch
 ```
 
+Defaults below are the ones in `bake.hcl`; `make list-vars` is
+authoritative if this table has aged.
+
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `REGISTRY` | `snoc-strix.fold-leaffish.ts.net:8080` | Zot registry |
-| `SCCACHE_MEMCACHED` | `tcp://snoc-strix…:11211` | Shared compiler-cache store |
-| `SCCACHE_SERVER_PORT` | `4250` | In-container sccache port; must not be 4226 |
+| `SCCACHE_WEBDAV_HOST` | `snoc-strix.fold-leaffish.ts.net` | Shared compiler-cache store (nginx WebDAV) |
+| `SCCACHE_WEBDAV_PORT` | `8081` | Port for the above |
+| `SCCACHE_WEBDAV_ENDPOINT` | composed from host:port | Set to override; the Makefile supplies the resolved address |
 | `REQUIRE_SCCACHE` | `1` | Fail the build if the store is unreachable |
 | `PYTORCH_ROCM_ARCH` | `gfx950` | Semicolon-separated GPU arch list |
+| `SDE_EPOCH` | `1700000000` | `SOURCE_DATE_EPOCH` pinned into every image config |
+
+There is no `SCCACHE_SERVER_PORT`: the build containers reach their
+sccache server over a unix socket, because the builders run with
+`network=host` and a fixed port would be shared fleet-wide. memcached
+was the store until it proved not to survive a reboot.
 
 `TELEMETRY=0 make build-pytorch` skips the telemetry wrapper.
 
@@ -408,6 +441,7 @@ docker buildx bake -f bake.hcl \
 | `triton-wheel` | Triton 3.8.0 built for ROCm 10.1 | `rocm-pytorch/triton-wheel:10.1.0-full-gfx950` |
 | `aiter-wheel` | AITER wheel | `rocm-pytorch/aiter-wheel:2.14.1-10.1.0-full-gfx950` |
 | `nixl-wheel` | NIXL + ROCm UCX wheel | `rocm-pytorch/nixl-wheel:v1.5.1-10.1.0-full-gfx950` |
+| `cupy-wheel` | CuPy built for ROCm, required by LMCache | `rocm-pytorch/cupy-wheel:v14.2.0-10.1.0-full-gfx950` |
 | `vllm` | vLLM serving image | `rocm-pytorch/vllm:v0.32.0-10.1.0-full-gfx950` |
 | `vllm-wheel` | vLLM wheel artifact | `rocm-pytorch/vllm-wheel:v0.32.0-10.1.0-full-gfx950` |
 | `lmcache` | LMCache multi-process runtime | `rocm-pytorch/lmcache:v0.5.6-10.1.0-full-gfx950` |
@@ -439,7 +473,39 @@ make fetch-nixl-wheel          # pull a wheel artifact into ./dist
 Refs are overridable per invocation and default to the latest release of
 each: `make push-serving VLLM_REF=v0.31.0 NIXL_REF=v1.5.0`.
 
-Running them:
+### Running the stack
+
+`serving/docker-compose.yml` runs vLLM and the LMCache MP server as a
+pair, over `DOCKER_HOST=ssh://$GPU_HOST`, so the file stays here under
+version control while the engine runs on the machine with the GPU.
+
+```bash
+make serve-stack               # vLLM + LMCache MP (KV_TIER=cpu|file)
+make serve-vllm                # vLLM alone — the no-offload baseline
+make serve-test                # prove the cache is actually working
+make serve-logs                # both containers, merged, live
+make serve-logs-cache          # same, filtered to hit/miss/store lines
+make serve-down                # stop and remove
+```
+
+The image tags come from the GPU host, not from the build defaults:
+`SERVE_ARCH` asks it which GPU it has. The build default is gfx950
+(Strix Halo) while the serving host here is a gfx1201 RX 9070 XT, and
+deriving the tag from the build arch asked Zot for an image nobody had
+built.
+
+`make serve-test` exists because `/health` is not evidence. LMCache on
+ROCm has a failure mode where the endpoint serves every request
+correctly and caches nothing — [LMCache#4419][lmcache-4419], where a
+reporter ran eight days at a zero hit rate with no error anywhere. The
+test sends the same long prefix twice, requires the second prefill to
+be measurably cheaper, and then reads LMCache's own log for the store
+and the retrieve, because vLLM's own prefix caching can make the timing
+alone look fine.
+
+[lmcache-4419]: https://github.com/LMCache/LMCache/issues/4419
+
+Running the images directly, without compose:
 
 ```bash
 # vLLM. AITER is installed but off by default; VLLM_ROCM_USE_AITER=1 turns

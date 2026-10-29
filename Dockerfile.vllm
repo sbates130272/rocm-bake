@@ -20,10 +20,19 @@ ARG PYTORCH_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/pytorch:late
 ARG TRITON_WHEEL_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/triton-wheel:latest
 ARG AITER_WHEEL_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/aiter-wheel:latest
 ARG NIXL_WHEEL_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/nixl-wheel:latest
+# LMCache is a dependency of vLLM, not an optional companion. vLLM ships
+# its own connector, vllm/distributed/kv_transfer/kv_connector/v1/
+# lmcache_mp_connector.py, and that module imports lmcache.utils and
+# lmcache.integration.vllm.utils at top level — so `--kv-transfer-config
+# '{"kv_connector":"LMCacheMPConnector"}'` fails at import without the
+# package present. The cache engine still runs in its own container;
+# only this client-side shim lives here.
+ARG LMCACHE_WHEEL_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/lmcache-wheel:latest
 
 FROM ${TRITON_WHEEL_IMAGE} AS tritonwheels
 FROM ${AITER_WHEEL_IMAGE} AS aiterwheels
 FROM ${NIXL_WHEEL_IMAGE} AS nixlwheels
+FROM ${LMCACHE_WHEEL_IMAGE} AS lmcachewheels
 
 # ─── Build environment: torch + the accelerator wheels ───────────
 # Shared by the compile and by the final image, so both resolve the same
@@ -129,6 +138,9 @@ ARG SCCACHE_WEBDAV_ENDPOINT=http://snoc-strix.fold-leaffish.ts.net:8081
 ARG SCCACHE_WEBDAV_KEY_PREFIX=rocm-pytorch
 # Empty means "derive from the node"; set it to pin a job count.
 ARG MAX_JOBS=
+# Memory budget per compile job, used to derive MAX_JOBS. Shared
+# convention with Dockerfile.pytorch; 2GB is measured for cc1plus.
+ARG MEM_PER_JOB_GB=2
 # vLLM v0.32 builds a Rust extension (vllm/vllm-rs) as part of setup.py.
 # The channel tracks the repo's rust-toolchain.toml.
 ARG RUST_VERSION=1.95
@@ -233,7 +245,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN njobs="${MAX_JOBS}"; \
     if [ -z "${njobs}" ]; then \
         cores=$(nproc); \
-        njobs=$(awk '/^MemAvailable:/ {print int($2/1024/1024/2)}' /proc/meminfo); \
+        njobs=$(awk -v per="${MEM_PER_JOB_GB}" '/^MemAvailable:/ {print int($2/1024/1024/per)}' /proc/meminfo); \
         [ -n "${njobs}" ] || njobs=${cores}; \
         [ "${njobs}" -ge 1 ] || njobs=1; \
         [ "${njobs}" -le "${cores}" ] || njobs=${cores}; \
@@ -295,24 +307,84 @@ RUN pip install --no-cache-dir -r /opt/vllm-requirements/rocm.txt && \
     python -c "import vllm; print('vLLM', vllm.__version__)" && \
     python -c "import torch; assert torch.version.hip, 'torch lost its HIP build'"
 
-# AITER is installed but not switched on by default: it replaces several
-# attention and MoE kernels, and which of them are faster depends on the
-# model and the shape. Turn it on per-run with VLLM_ROCM_USE_AITER=1.
-# No HSA_OVERRIDE_GFX_VERSION — see the note in Dockerfile.base. It was
-# pinned to 11.0.2 here too, inherited from that file, and it is what
-# made this image report device_count 0 on a real gfx1201: stripping it
-# from the container env is the difference between "no GPU visible to
-# torch" and "AMD Radeon RX 9070 XT gfx1201" running a correct matmul.
-# Set it per-run if some host genuinely needs it.
-ENV SAFETENSORS_FAST_GPU=1
+# ─── LMCache client ──────────────────────────────────────────────
+# Not an optional companion. vLLM ships the connector itself —
+# vllm/distributed/kv_transfer/kv_connector/v1/lmcache_mp_connector.py
+# — and that module imports lmcache.utils and
+# lmcache.integration.vllm.utils at top level, so serving with
+# --kv-offloading-backend lmcache fails at import without the package.
+# Upstream's own example says as much: "Requires lmcache to be installed".
+# The cache engine still runs in its own container; this is the client.
+COPY --from=lmcachewheels /wheels/ /opt/wheels/lmcache/
+COPY --from=lmcachewheels /requirements/ /opt/lmcache-requirements/
 
-EXPOSE 8000
+# Pin grpcio to what vLLM already resolved, before LMCache's
+# requirements are installed. The two dependency sets overlap, and left
+# alone pip moves it:
+#
+#     vllm 0.32.0 requires grpcio==1.78.0, but you have grpcio 1.85.0
+#
+# LMCache asks for grpcio>=1.78.0, a floor rather than a conflict, so
+# holding the installed version satisfies both and pip's upward
+# resolution was gratuitous.
+#
+# opentelemetry is deliberately NOT pinned, and the first version of
+# this pinned it and broke the build. vLLM resolves
+# opentelemetry-api 1.45.1; LMCache requires ">=1.20.0, <=1.40.0".
+# Pinning vLLM's version contradicts LMCache's cap and turns a
+# resolvable conflict into an unresolvable one:
+#
+#     ERROR: Cannot install opentelemetry-api<=1.40.0 and >=1.20.0
+#            because these package versions have conflicting dependencies
+#     ERROR: ResolutionImpossible
+#
+# Pinning only fixes a floor-vs-exact mismatch. A real version
+# disagreement it cannot, so LMCache's cap wins and opentelemetry is
+# downgraded. That costs vLLM's OTLP exporter, which wants
+# sdk~=1.45.1 — but vLLM tracing is opt-in (--otlp-traces-endpoint) and
+# unused here, while LMCache loads its observability on every start.
+# This breaks the path nobody exercises rather than the one that always
+# runs.
+RUN python -c "\
+import importlib.metadata as md;\
+print(f'grpcio=={md.version(\"grpcio\")}')" \
+    >> /etc/pip-constraints.txt && \
+    sort -u /etc/pip-constraints.txt -o /etc/pip-constraints.txt && \
+    cat /etc/pip-constraints.txt
 
-# `vllm`, not `python`: the parent image sets ENTRYPOINT ["python"], and
-# inheriting that here would make `docker run <img> serve <model>` try to
-# run a script called "serve".
-ENTRYPOINT ["vllm"]
-CMD ["--help"]
+# --ignore-requires-python: LMCache declares ">=3.10,<3.14" and this
+# lane is cp314 — see the same note in Dockerfile.lmcache.
+#
+# --no-deps on the wheel with the patched requirements installed first,
+# so pip cannot re-resolve install_requires and reintroduce the
+# CUDA-only entries that build stripped.
+RUN pip install --no-cache-dir -r /opt/lmcache-requirements/common.txt && \
+    pip install --no-cache-dir --no-deps --ignore-requires-python \
+        /opt/wheels/lmcache/*.whl && \
+    python -c "import lmcache; print('LMCache', lmcache.__version__)" && \
+    python -c "import torch; assert torch.version.hip, 'torch lost its HIP build'"
+
+# What this Dockerfile actually controls: the two modules vLLM's
+# connector imports at top level. Checking those proves the wheel is
+# installed and importable, which is the point of the step above.
+#
+# Importing vllm...lmcache_mp_connector itself would be the stronger
+# test and cannot pass here. It pulls in transformers, which imports
+# torchvision from image_utils, and the torchvision in this image is
+# the PyPI CUDA build that cannot load on ROCm:
+#
+#     transformers/image_utils.py:54
+#       from torchvision.io import ImageReadMode, decode_image
+#     torchvision/__init__.py:8 -> fails
+#
+# That is a defect in Dockerfile.pytorch's optional-extras step, not in
+# anything here, and it is why serving currently needs the CPU
+# torchvision swapped in at container start. Restore the stronger
+# assertion once a HIP torchvision wheel is built against our torch.
+RUN python -c "\
+from lmcache.utils import init_logger;\
+from lmcache.integration.vllm.utils import mla_enabled;\
+print('lmcache client imports OK — what vllm lmcache_mp_connector needs')"
 
 # ─── Wheel-only image ────────────────────────────────────────────
 FROM scratch AS wheel
