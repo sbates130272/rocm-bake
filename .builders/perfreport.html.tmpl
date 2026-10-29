@@ -50,6 +50,19 @@
   .band { opacity:.9; }
   .bandlbl { fill:var(--surface); font-size:10px; pointer-events:none; }
   .cross { stroke:var(--ink2); stroke-width:1; stroke-dasharray:3 3; }
+  /* Per-band tooltip. The bands are the part that says what the node
+     was doing; without this they can say "compile" and nothing more. */
+  #tip { position:fixed; z-index:10; max-width:560px; display:none;
+    background:var(--surface); color:var(--ink); border:1px solid var(--grid);
+    border-radius:8px; padding:10px 12px; font-size:12px; line-height:1.45;
+    box-shadow:0 6px 24px rgba(0,0,0,.18); pointer-events:none; }
+  #tip .hd { font-weight:600; margin-bottom:5px; }
+  #tip .mt { color:var(--ink2); margin-bottom:6px; }
+  #tip code { display:block; white-space:pre-wrap; word-break:break-word;
+    font:11px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;
+    color:var(--ink2); margin:3px 0 0; }
+  .band { cursor:default; }
+  .band:hover { stroke:var(--ink); stroke-width:1.5; }
   table { border-collapse:collapse; margin-top:22px; font-size:12px; }
   th,td { border:1px solid var(--grid); padding:5px 10px; text-align:left; }
   th { color:var(--ink2); font-weight:600; }
@@ -57,6 +70,7 @@
 </style></head><body>
 <h1>__TITLE__</h1>
 <div class="sub">__SUB__</div>
+<div id="tip"></div>
 <div class="wrap">
   <div class="plot" id="plot"></div>
   <div class="legend" id="legend"></div>
@@ -116,7 +130,8 @@ function draw(){
       const x0=X(b.start);
       const bw=Math.max(2,X(b.start+b.dur)-x0);
       g+=`<rect class="band" x="${x0}" y="${y0}" width="${bw}" `
-        +`height="11" rx="2" fill="${t.color}"/>`;
+        +`height="11" rx="2" fill="${t.color}" `
+        +`data-t="${t.id}" data-b="${t.bands.indexOf(b)}"/>`;
       if(bw>44) g+=`<text class="bandlbl" x="${x0+4}" `
         +`y="${y0+8.5}">${b.label}</text>`;
     }
@@ -155,7 +170,37 @@ function draw(){
     }
     document.getElementById("at").textContent="at "+Math.round(t)+"s";
   });
-  svg.addEventListener("pointerleave",clear);
+  svg.addEventListener("pointerleave",()=>{clear();hideTip();});
+
+  // Band tooltips. Delegated rather than per-rect listeners: a long
+  // run can draw hundreds of bands and they are redrawn on every
+  // toggle, so binding each one leaks handlers.
+  const tip=document.getElementById("tip");
+  svg.addEventListener("pointerover",e=>{
+    const r=e.target.closest(".band"); if(!r){hideTip();return;}
+    const t=DATA.targets.find(x=>x.id===r.dataset.t);
+    if(!t) return;
+    const b=t.bands[+r.dataset.b]; if(!b) return;
+    const pct=(100*b.dur/(DATA.xmax||1)).toFixed(1);
+    tip.innerHTML=
+      `<div class="hd">${t.name} &middot; ${b.phase}</div>`
+      +`<div class="mt">${t.builder} &middot; starts ${Math.round(b.start)}s `
+      +`&middot; ${dur(b.dur)} (${pct}% of run) &middot; `
+      +`${b.steps.length} step${b.steps.length===1?"":"s"}</div>`
+      + b.steps.map(st=>
+          `<code>${dur(st.dur).padStart(6)}  ${esc(st.cmd)}</code>`).join("");
+    tip.style.display="block";
+    place(e);
+  });
+  svg.addEventListener("pointermove",e=>{ if(tip.style.display==="block") place(e); });
+  function place(e){
+    const pad=14, w=tip.offsetWidth, h=tip.offsetHeight;
+    let x=e.clientX+pad, y=e.clientY+pad;
+    if(x+w>innerWidth-8) x=e.clientX-w-pad;
+    if(y+h>innerHeight-8) y=Math.max(8,e.clientY-h-pad);
+    tip.style.left=x+"px"; tip.style.top=y+"px";
+  }
+  function hideTip(){ tip.style.display="none"; }
 }
 
 function clear(){
@@ -167,6 +212,7 @@ function clear(){
   document.getElementById("at").textContent="peak";
 }
 
+const esc=t=>String(t).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
 const dur=s=>{s=Math.round(s);return s<60?s+"s":
   Math.floor(s/60)+"m"+String(s%60).padStart(2,"0")+"s";};
 

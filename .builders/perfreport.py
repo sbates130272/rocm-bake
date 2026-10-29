@@ -378,17 +378,26 @@ def group_steps(steps, min_frac=0.0, span=None):
     for st in sorted(steps, key=lambda r: r["start"]):
         ph = phase_of(st["label"])
         end = st["start"] + st["dur"]
+        # Keep the raw command and its duration. A band that says
+        # "compile 38m" is the headline; the question straight after
+        # is always "compiling what", and the answer is already here.
+        detail = {"cmd": re.sub(r"\s+", " ", st["label"]).strip()[:300],
+                  "dur": round(st["dur"], 1),
+                  "start": round(st["start"], 1)}
         if out and out[-1]["label"] == ph and st["start"] <= out[-1]["end"] + 2:
             out[-1]["end"] = max(out[-1]["end"], end)
             out[-1]["n"] += 1
+            out[-1]["steps"].append(detail)
         else:
-            out.append({"label": ph, "start": st["start"], "end": end, "n": 1})
+            out.append({"label": ph, "start": st["start"], "end": end,
+                        "n": 1, "steps": [detail]})
     bands = []
     for b in out:
         dur = b["end"] - b["start"]
         if span and min_frac and dur < span * min_frac:
             continue
         bands.append({"start": b["start"], "dur": dur,
+                      "phase": b["label"], "steps": b["steps"],
                       "label": f'{b["label"]} ({b["n"]})' if b["n"] > 1
                                else b["label"]})
     return bands
@@ -681,7 +690,9 @@ def interactive_chart(path, title, sub, series, targets,
             "dur": round(max(x["start"] + x["dur"] for x in bands)
                          - min(x["start"] for x in bands), 1),
             "bands": [{"start": round(x["start"], 1),
-                       "dur": round(x["dur"], 1), "label": x["label"]}
+                       "dur": round(x["dur"], 1), "label": x["label"],
+                       "phase": x.get("phase", x["label"]),
+                       "steps": x.get("steps", [])}
                       for x in bands],
         })
 

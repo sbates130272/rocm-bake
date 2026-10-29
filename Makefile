@@ -477,6 +477,15 @@ WATCH_LINES ?= 20
 # Build records shown per builder. The full list grows without bound and
 # pushes the running build off screen.
 WATCH_HISTORY ?= 5
+# A busy builder answers its control API slowly - a node saturating
+# its uplink on a cache export measured 9.2s against 0.08s for an idle
+# one. At the old 3s this timed out, SIGTERMed the docker client, and
+# the client's "got 1 SIGTERM/SIGINTs, forcing shutdown" was captured
+# into WATCH_TMP and printed straight into the panel. The filter below
+# already dropped one flavour of that noise; it now drops the rest,
+# and the timeout is no longer tighter than a loaded node's latency.
+WATCH_LOG_TIMEOUT ?= 12
+
 WATCH_TMP := /tmp/.rocm-build-watch.log
 # Every snoc-* builder, so a build started on any node shows up. The pool
 # keeps its own buildkit instances separate from the single-node
@@ -542,10 +551,10 @@ watch: ## Live build history across all snoc-* builders (WATCH_BUILDERS=, WATCH_
 			for id in $$(docker buildx history ls --builder $$b \
 					--filter status=running --format "{{.Ref}}" 2>/dev/null); do \
 				printf "\\033[36m──── %s / %s ────\\033[0m\\n" "$$b" "$$id"; \
-				timeout 3 docker buildx history logs "$$id" --builder $$b \
+				timeout $(WATCH_LOG_TIMEOUT) docker buildx history logs "$$id" --builder $$b \
 					> $(WATCH_TMP) 2>&1 || true; \
 				grep -v "^$$" $(WATCH_TMP) \
-					| grep -v "rpc error: code = Canceled" \
+					| grep -vE "rpc error: code = Canceled|SIGTERM/SIGINT|error during connect|context canceled|failed to list workers" \
 					| tail -$(WATCH_LINES); \
 				echo; \
 			done; \
