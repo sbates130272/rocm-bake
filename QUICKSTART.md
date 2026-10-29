@@ -146,18 +146,19 @@ cross-compile for gfx950 but cannot run the GPU test stage — keep
 ## Step 4 — Deploy the shared compiler cache (Strix only)
 
 Every build node compiles against one shared sccache store, so an object
-compiled on any node is a cache hit on the others. The store is
-memcached on Strix: 8GB in RAM, then spilling to a 200GB file on disk.
+compiled on any node is a cache hit on the others. The store is an nginx
+WebDAV endpoint on Strix, serving a directory tree on disk — so it
+survives a reboot.
 
 ```bash
-sudo ./.builders/deploy-memcached.sh
+sudo ./.builders/deploy-webdav.sh
 ```
 
-Verify it is up and reachable from the other nodes:
+Verify it is up, and reachable from the other nodes:
 
 ```bash
-printf 'stats\r\nquit\r\n' | nc snoc-strix.fold-leaffish.ts.net 11211 \
-  | grep -E 'curr_items|get_hits|get_misses|extstore_pages_free'
+make cache-summary   # size, disk, deltas and hit rates
+make cache-check     # every build node can reach it
 ```
 
 There is nothing to install on thinkstation or gaming: each build
@@ -278,6 +279,6 @@ make clean-cache   # drop the registry cache images
 - [README.md](README.md) is the reference: architecture, how the three
   caches fit together, every bake variable, and troubleshooting
 - `.github/workflows/` contains CI, build, and version-check workflows
-- `.builders/` holds the node setup: buildkitd config, the memcached
+- `.builders/` holds the node setup: buildkitd config, the WebDAV
   store deployer, and the optional host-level sccache service
 - Zot is not managed here: `systemctl status zot`, `make zot-logs`

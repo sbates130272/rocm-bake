@@ -203,9 +203,9 @@ across nodes — see the note on `build-all` in the Makefile.
 
 1. **BuildKit Layer Cache** → Stored in Zot as OCI artifacts, so a layer
    built on one node is reusable from any of them
-2. **sccache Compiler Cache** → One shared store on Strix (memcached,
-   8GB RAM then spilling to a 200GB file on disk). An object compiled on
-   any node is a hit on the others
+2. **sccache Compiler Cache** → One shared store on Strix (nginx
+   WebDAV over a directory tree, so it survives a reboot). An object
+   compiled on any node is a hit on the others
 3. **Pull-Through Cache** → Zot syncs Docker Hub/GHCR/Quay on demand
 4. **Multi-Builder** → Targets fan out across Strix, Thinkstation and Gaming
 
@@ -222,11 +222,13 @@ platform   = linux/amd64
 ### sccache Integration
 
 Each build container runs its own sccache server, and all of them share
-one store: memcached on Strix, reached over the tailnet.
+one store: an nginx WebDAV endpoint on Strix, reached over the tailnet.
+The objects are files on disk, so a power cycle does not cost the fleet
+its compiler cache.
 
 ```
-SCCACHE_MEMCACHED=tcp://snoc-strix.fold-leaffish.ts.net:11211
-SCCACHE_SERVER_PORT=4250
+SCCACHE_WEBDAV_ENDPOINT=http://snoc-strix.fold-leaffish.ts.net:8081
+SCCACHE_WEBDAV_KEY_PREFIX=rocm-pytorch
 CMAKE_C_COMPILER_LAUNCHER=sccache
 CMAKE_CXX_COMPILER_LAUNCHER=sccache
 CMAKE_HIP_COMPILER_LAUNCHER=sccache
@@ -234,7 +236,13 @@ CMAKE_HIP_COMPILER_LAUNCHER=sccache
 
 sccache intercepts compiler invocations (gcc, g++, hipcc), caches object
 files by a hash of source plus flags, and returns the cached object when
-both match. Deploy the store with `.builders/deploy-memcached.sh`.
+both match. Deploy the store with `.builders/deploy-webdav.sh`, and
+inspect it with `make cache-summary`.
+
+The key prefix is a directory inside the store, which is what lets a
+benchmark run against an isolated copy: `bench.sh` sets it to a
+throwaway `bench-cold-<stamp>` so a cold run never evicts the fleet's
+working cache.
 
 Three constraints make this work, and each one fails quietly if broken:
 
@@ -348,9 +356,13 @@ wrapper falls back and says so.
 To inspect the shared compiler cache itself:
 
 ```bash
-printf 'stats\r\nquit\r\n' | nc snoc-strix.fold-leaffish.ts.net 11211 \
-  | grep -E 'get_hits|get_misses|bytes|extstore_pages_used|evictions'
+make cache-summary
 ```
+
+Size, object count, disk headroom, the delta and rate since the last
+call, and the hit rate of the last build of each target — the last of
+those read back out of the telemetry the wrapper writes, since the
+WebDAV store has no stats verb of its own.
 
 ## Configuration
 
@@ -413,8 +425,7 @@ authoritative if this table has aged.
 
 There is no `SCCACHE_SERVER_PORT`: the build containers reach their
 sccache server over a unix socket, because the builders run with
-`network=host` and a fixed port would be shared fleet-wide. memcached
-was the store until it proved not to survive a reboot.
+`network=host` and a fixed port would be shared fleet-wide.
 
 `TELEMETRY=0 make build-pytorch` skips the telemetry wrapper.
 
@@ -765,12 +776,15 @@ The build refuses to start when the store is unreachable, so a silent
 no-cache build should not happen. If it does:
 
 ```bash
-# Is the shared store up and reachable from this node?
-printf 'stats\r\nquit\r\n' | nc snoc-strix.fold-leaffish.ts.net 11211 \
-  | grep -E 'get_hits|get_misses|evictions|extstore_pages_used'
+# State, deltas and the last recorded hit rate, in one place
+make cache-summary
 
-# Is it filling? bytes_written climbing means objects are landing
-systemctl status memcached        # on Strix
+# Is the store reachable from every build node, not just this one?
+make cache-check
+
+# Raw: is the endpoint answering?
+curl -sI http://snoc-strix.fold-leaffish.ts.net:8081/ | head -1
+systemctl status nginx            # on Strix
 ```
 
 Three failure modes have distinct signatures:

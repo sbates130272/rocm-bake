@@ -42,6 +42,26 @@ mkdir -p "${LOGS}"
 BUILDER="${BUILDER:-snoc-think}"
 TARGETS_DEFAULT="pytorch-base triton-wheel pytorch"
 
+# The arch every run in this invocation is measured at, recorded with
+# the result. Builds for different GPUs are not comparable — vLLM's
+# kernel prebuild is ~50 min on gfx950 and hours on gfx1201, and AITER
+# drops to PREBUILD_KERNELS=0 on RDNA — so pooling them would be the
+# same mistake as pooling runs at different MAX_JOBS, which the report
+# already guards against for exactly this reason.
+#
+# Resolved through make rather than defaulted here: the Makefile
+# already takes PYTORCH_ROCM_ARCH from the environment before falling
+# back to the bake default, so asking it gives exactly the answer a
+# build would use. A literal "gfx950" in this file would be a second
+# copy of a value rocm-bake.hcl owns — the drift check-defaults.py
+# exists to catch.
+#
+# Exported, not just read, so make and bake downstream see it. That is
+# what makes `PYTORCH_ROCM_ARCH=gfx1201 ./bench.sh cold ...` actually
+# measure gfx1201 rather than silently measuring the default.
+BENCH_ARCH=$(make -s --eval='__a:;@printf "%s" "$(PYTORCH_ROCM_ARCH)"' __a 2>/dev/null)
+export PYTORCH_ROCM_ARCH="${BENCH_ARCH}"
+
 export no_proxy="${no_proxy:-localhost,127.0.0.1,::1,.ts.net,.local,10.0.0.0/8,100.64.0.0/10}"
 export NO_PROXY="${no_proxy}"
 
@@ -392,6 +412,7 @@ record() {
     # failure message containing a quote or backslash would otherwise
     # produce invalid Python and lose the whole result line.
     B_SCENARIO="${scenario}" B_TARGET="${target}" B_BUILDER="${BUILDER}" \
+    B_ARCH="${BENCH_ARCH}" \
     B_SECS="${secs}" B_RC="${rc}" B_CACHED="${cached:-0}" B_TOTAL="${total:-0}" \
     B_REQS="${reqs:-0}" B_HITS="${hits:-0}" B_MISSES="${misses:-0}" \
     B_JOBS="${maxjobs:-0}" B_FAIL="${fail}" B_LOG="${log}" B_LOAD="${load:-0}" \
@@ -406,6 +427,7 @@ print(json.dumps({
     "scenario": os.environ["B_SCENARIO"],
     "target": os.environ["B_TARGET"],
     "builder": os.environ["B_BUILDER"],
+    "arch": os.environ.get("B_ARCH") or "gfx950",
     "seconds": num("B_SECS"),
     "rc": num("B_RC"),
     "steps_cached": num("B_CACHED"),
@@ -439,8 +461,8 @@ except FileNotFoundError:
 if not rows:
     print("No results yet."); raise SystemExit
 
-print("| scenario | target | time | steps cached | sccache hit | jobs | result |")
-print("|---|---|---|---|---|---|---|")
+print("| scenario | target | arch | time | steps cached | sccache hit | jobs | result |")
+print("|---|---|---|---|---|---|---|---|")
 for r in rows:
     secs = r["seconds"]
     t = f"{secs//60}m{secs%60:02d}s" if secs >= 60 else f"{secs}s"
@@ -448,8 +470,8 @@ for r in rows:
     req = r["sccache_requests"]
     hit = f'{100*r["sccache_hits"]//req}%' if req else "-"
     res = "ok" if r["rc"] == 0 else "FAIL"
-    print(f'| {r["scenario"]} | {r["target"]} | {t} | {steps} | {hit} | '
-          f'{r["max_jobs"] or "-"} | {res} |')
+    print(f'| {r["scenario"]} | {r["target"]} | {r.get("arch", "gfx950")} '
+          f'| {t} | {steps} | {hit} | {r["max_jobs"] or "-"} | {res} |')
 
 print()
 # Two caches, two ratios. Dividing cold by whichever hot run came last
@@ -489,7 +511,16 @@ cold, compiled, skipped = {}, {}, {}
 for r in rows:
     if r["rc"] != 0:
         continue
-    key = (r["target"], r["builder"], r["max_jobs"] or 0)
+    # Arch is in the key for the same reason MAX_JOBS is: it is a
+    # dominant parameter, not a nuisance one. vLLM's kernel prebuild is
+    # ~50 min on gfx950 and hours on gfx1201, and AITER drops to
+    # PREBUILD_KERNELS=0 on RDNA, so cold on one arch over hot on
+    # another is not a ratio. Rows predating the field are gfx950:
+    # bench never set PYTORCH_ROCM_ARCH, so they used the bake default,
+    # which has been gfx950 since c0d7830 (2026-10-26) — before the
+    # oldest result here.
+    key = (r["target"], r["builder"], r.get("arch", "gfx950"),
+           r["max_jobs"] or 0)
     if r["scenario"] == "cold":
         d = cold
     elif r["scenario"] == "hot":
@@ -532,9 +563,9 @@ def spread(d, key):
 
 shown = False
 for key in sorted(set(cold) & set(compiled)):
-    tgt, node, jobs = key
+    tgt, node, arch, jobs = key
     c, h = mid(cold, key), mid(compiled, key)
-    line = (f'{tgt} on {node} at {jobs} jobs: compiler cache '
+    line = (f'{tgt} [{arch}] on {node} at {jobs} jobs: compiler cache '
             f'{c/max(h,1):.1f}x ({c}s{spread(cold, key)} -> '
             f'{h}s{spread(compiled, key)})')
     lay = mid(skipped, key)
@@ -549,11 +580,11 @@ for key in sorted(set(cold) & set(compiled)):
 # showing, just not as a ratio.
 singles = (set(cold) | set(compiled) | set(skipped)) - (set(cold) & set(compiled))
 for key in sorted(singles):
-    tgt, node, jobs = key
+    tgt, node, arch, jobs = key
     bits = [f'{lbl} {mid(d, key)}s{spread(d, key)}'
             for lbl, d in (("cold", cold), ("hot", compiled),
                            ("hot/layer-only", skipped)) if key in d]
-    print(f'{tgt} on {node} at {jobs} jobs: ' + ", ".join(bits)
+    print(f'{tgt} [{arch}] on {node} at {jobs} jobs: ' + ", ".join(bits)
           + '  (no same-width pair, so no ratio)')
     shown = True
 

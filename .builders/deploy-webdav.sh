@@ -1,10 +1,10 @@
 #!/bin/bash
 # deploy-webdav.sh - Durable sccache object store on SNOC Strix.
 #
-# Replaces the memcached store. memcached holds everything in RAM and
-# has no persistence: a power cycle on Strix wiped the compiler cache
-# for the whole fleet. extstore did not help — it is an overflow tier,
-# not durable storage, and memcached never reads it back at startup.
+# Durable by design: the objects are files on disk, so a power cycle
+# on Strix leaves the fleet's compiler cache intact. An in-RAM store
+# does not survive one, and an overflow-to-disk tier is not the same
+# thing — it is a spill target, not something read back at startup.
 #
 # WebDAV rather than S3/MinIO: dl.min.io is blocked by the corporate
 # proxy and MinIO is not packaged, whereas nginx with the dav modules
@@ -91,7 +91,7 @@ server {
     create_full_put_path on;
     dav_access user:rw group:rw all:r;
 
-    # Access control is the tailnet, as with Zot and the old memcached.
+    # Access control is the tailnet, as with Zot.
     # Do not add a public interface to the listen lines above.
     autoindex on;
 }
@@ -130,4 +130,4 @@ echo "Store:   http://${TAILNET_IP}:${PORT}"
 echo "Data:    ${DATA_DIR} (durable; survives reboot)"
 echo ""
 echo "Builds use it via SCCACHE_WEBDAV_ENDPOINT, already the default in"
-echo "rocm-bake.hcl. Inspect it with: make cache-stats"
+echo "rocm-bake.hcl. Inspect it with: make cache-summary"
