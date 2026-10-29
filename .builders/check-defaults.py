@@ -134,7 +134,8 @@ def main():
         )
 
     # 2. Every bake_default call must name a variable bake.hcl declares.
-    for m in re.finditer(r"\$\(call\s+bake_default\s*,\s*([A-Za-z0-9_]+)\s*\)", mk_text):
+    call_re = r"\$\(call\s+bake_default\s*,\s*([A-Za-z0-9_]+)\s*\)"
+    for m in re.finditer(call_re, mk_text):
         name = m.group(1)
         if name not in variables:
             lineno = mk_text[: m.start()].count("\n") + 1
