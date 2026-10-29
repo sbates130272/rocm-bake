@@ -1183,10 +1183,17 @@ setup: zot-check builder-setup ## Full setup: check Zot, then builders
 
 ##@ Help
 
+# The title line names one arch because one build is one arch — that is
+# what PYTORCH_ROCM_ARCH means and it has not changed. ARCHES is a
+# separate thing and gets its own line: it is what arches-* fans out
+# over, it defaults to three, and each one is a full pass over every
+# target. A multiplier on build time that large should not be something
+# you only find out from a comment in here.
 help: ## Show this help
 	@printf '\n\033[1mROCm PyTorch Build\033[0m — PyTorch %s on ROCm %s for %s\n' \
 		"$(PYTORCH_VERSION)" "$(ROCM_VERSION)" "$(PYTORCH_ROCM_ARCH)"
 	@printf 'Registry %s · builder %s\n' "$(REGISTRY)" "$(BUILDER)"
+	@printf 'One arch per build · \033[36mmake arches-*\033[0m covers ARCHES = %s\n' "$(ARCHES)"
 	@printf 'Usage: make <target> [VAR=value]\n'
 	@awk 'BEGIN {FS = ":.*?## "; cmd = "sort"} \
 		/^##@/ { if (insec) close(cmd); printf "\n\033[1m%s\033[0m\n", substr($$0, 5); insec = 1; next } \
