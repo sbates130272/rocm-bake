@@ -138,23 +138,51 @@ jobs:
       # two indexes from identically-named wheels and proves each
       # resolves to its own. Synthetic wheels, no registry and no GPU —
       # this runs on a bare runner in seconds.
+      # The demo wheels are assembled with zipfile rather than built
+      # with setuptools. A wheel is a zip with a dist-info directory,
+      # and the test needs two of them that differ only in payload —
+      # not a build backend. The first version shelled out to
+      # `setup.py bdist_wheel`, which is deprecated, and relied on
+      # setuptools being present, which since 3.12 ensurepip no longer
+      # guarantees. It failed here for exactly that reason, and the
+      # `>/dev/null 2>&1` on that line meant the log said nothing about
+      # why — the next command just could not find a .whl. No output is
+      # discarded now.
       - name: Index two archs from identically-named wheels
         run: |
           set -e
-          python -m pip install -q --upgrade pip wheel
           for arch in gfx950 gfx1201; do
-            d="work/$arch"; mkdir -p "$d/src/demo"
-            # Same name and version for both archs; only the payload
-            # differs. That is exactly the real situation.
-            cat > "$d/src/setup.py" <<'EOF'
-          from setuptools import setup
-          setup(name="demopkg", version="1.0.0", packages=["demo"])
+            d="work/$arch"; mkdir -p "$d"
+            ARCH="$arch" DEST="$d" python - <<'EOF'
+          import base64, csv, hashlib, io, os, zipfile
+          arch, dest = os.environ["ARCH"], os.environ["DEST"]
+          di = "demopkg-1.0.0.dist-info"
+          files = {
+              "demo/__init__.py": f"ARCH = {arch!r}\n",
+              f"{di}/METADATA": ("Metadata-Version: 2.1\n"
+                                 "Name: demopkg\nVersion: 1.0.0\n"),
+              f"{di}/WHEEL": ("Wheel-Version: 1.0\nGenerator: ci\n"
+                              "Root-Is-Purelib: true\nTag: py3-none-any\n"),
+          }
+          rows = []
+          for n, b in files.items():
+              raw = b.encode()
+              h = base64.urlsafe_b64encode(
+                  hashlib.sha256(raw).digest()).rstrip(b"=").decode()
+              rows.append((n, f"sha256={h}", str(len(raw))))
+          rows.append((f"{di}/RECORD", "", ""))
+          buf = io.StringIO()
+          csv.writer(buf, lineterminator="\n").writerows(rows)
+          files[f"{di}/RECORD"] = buf.getvalue()
+          # Same name and version for both archs; only the payload
+          # differs. That is exactly the real situation.
+          with zipfile.ZipFile(
+                  f"{dest}/demopkg-1.0.0-py3-none-any.whl", "w") as z:
+              for n, b in files.items():
+                  z.writestr(n, b)
           EOF
-            echo "ARCH = '$arch'" > "$d/src/demo/__init__.py"
-            (cd "$d/src" && python setup.py -q bdist_wheel >/dev/null 2>&1)
-            cp "$d"/src/dist/*.whl "$d/"
             echo "$arch" > "$d/wheels-arch.txt"
-            ls "$d"/*.whl
+            ls -l "$d"/*.whl
             .builders/wheelindex.py "$d" --arch "$arch" \
               --out "index/$arch" --version 10.1.0-full
           done
