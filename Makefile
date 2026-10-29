@@ -106,21 +106,38 @@ export BUILD_DATE
 # Dockerfile.base unchanged between cf70d3c and 87f539e, yet the base
 # digest moved 91db3c2e -> aa52684f and nothing downstream could hit.
 #
-# Keying each image to the last commit that touched its own Dockerfile
-# means an image's timestamp moves only when its inputs do. These are
-# passed as build args rather than exported, because the arg takes
-# precedence over the environment and bake builds several images in one
+# A constant, not a date derived from history.
+#
+# This was `git log -1 --format=%ct -- Dockerfile.<image>`, on the
+# reasoning that an image's timestamp should move only when its own
+# inputs do. That used commit history as a proxy for "the inputs
+# changed", and the proxy does not hold: squashing 26 commits into 3
+# made every remaining commit touch every Dockerfile, so all five
+# values collapsed to one timestamp and every image's cache was
+# invalidated at once. Any rebase, squash or filter-branch does this.
+#
+# Content is what should decide, and content already does — it decides
+# the layer digests. The config `created` field carries no information
+# anyone reads: the real build date lives in the
+# org.opencontainers.image.created label, and BASE_LABELS deliberately
+# omits even that. So pinning it to a constant costs nothing and is
+# immune to history being rewritten. Changing a Dockerfile still
+# changes that image's digest, because its layers change.
+#
+# Bump this only to force every image to a new digest deliberately.
+SDE_EPOCH   ?= 1700000000
+# Per image still, so a single image can be pinned without the others.
+# Passed as build args rather than exported: the arg takes precedence
+# over the environment, and bake builds several images in one
 # invocation — one env var cannot describe them all.
-SDE_FALLBACK := $(shell git log -1 --format=%ct 2>/dev/null || date -u +%s)
-sde = $(or $(shell git log -1 --format=%ct -- $(1) 2>/dev/null),$(SDE_FALLBACK))
-SDE_BASE    ?= $(call sde,Dockerfile.base)
-SDE_PYTORCH ?= $(call sde,Dockerfile.pytorch)
-SDE_TRITON  ?= $(call sde,Dockerfile.triton)
-SDE_AITER   ?= $(call sde,Dockerfile.aiter)
-SDE_RUNTIME ?= $(call sde,Dockerfile.runtime)
-SDE_NIXL    ?= $(call sde,Dockerfile.nixl)
-SDE_VLLM    ?= $(call sde,Dockerfile.vllm)
-SDE_LMCACHE ?= $(call sde,Dockerfile.lmcache)
+SDE_BASE    ?= $(SDE_EPOCH)
+SDE_PYTORCH ?= $(SDE_EPOCH)
+SDE_TRITON  ?= $(SDE_EPOCH)
+SDE_AITER   ?= $(SDE_EPOCH)
+SDE_RUNTIME ?= $(SDE_EPOCH)
+SDE_NIXL    ?= $(SDE_EPOCH)
+SDE_VLLM    ?= $(SDE_EPOCH)
+SDE_LMCACHE ?= $(SDE_EPOCH)
 export SDE_BASE SDE_PYTORCH SDE_TRITON SDE_AITER SDE_RUNTIME
 export SDE_NIXL SDE_VLLM SDE_LMCACHE
 
@@ -136,7 +153,7 @@ endif
         builder-snoc-pool builder-status builder-logs builder-restart \
         build-status build-logs build-inspect builder-ensure watch \
         build-stop gpu-test \
-        cold-build push-aiter-wheel fetch-aiter-wheel push-wheels \
+        cold-build push-aiter-wheel fetch-aiter-wheel push-wheels _push-wheels \
         build-torch-wheel build-triton-wheel build-aiter-wheel \
         _build-all _push-all \
         push-torch-wheel fetch-torch-wheel \
@@ -624,7 +641,24 @@ push-all: ## Build and push everything (* targets) — the usual way to build
 _push-all: builder-ensure
 	$(call bake,,--push)
 
-push-wheels: builder-ensure ## Push just the wheel artifacts (torch, triton, aiter, nixl)
+# Same pool/node split as push-all, and for the same reason. The old
+# recipe called bake directly, so BUILDER=snoc-pool resolved through
+# `balance.sh --best` — which returns a single node by definition. Every
+# one of the six wheel targets then built on that one machine while the
+# other two sat idle.
+#
+# The staged path reuses balance.sh: stages 2 and 3 already produce the
+# torch, triton, aiter and nixl wheels, so only the serving wheels need
+# adding on the end.
+push-wheels: ## Push the wheel artifacts (torch, triton, aiter, nixl, vllm, lmcache)
+	@if [ "$(BUILDER)" = "$(POOL_BUILDER)" ]; then \
+		BALANCE_STREAM=$(BALANCE_STREAM) \
+		STAGE_4="vllm-wheel lmcache-wheel" .builders/balance.sh; \
+	else \
+		$(MAKE_BIN) --no-print-directory _push-wheels BUILDER=$(BUILDER); \
+	fi
+
+_push-wheels: builder-ensure
 	$(call bake,wheels,--push)
 
 ##@ Wheels
@@ -673,13 +707,13 @@ fetch-nixl-wheel: ## Fetch the NIXL wheel from Zot into ./dist
 
 # ─── Serving stack ────────────────────────────────────────────────
 # vLLM and LMCache, plus the NIXL wheel they both transfer KV cache
-# through. Not part of build-all/push-all: each builds FROM the pytorch
-# image and takes longer than that whole group, so they are driven
-# explicitly rather than on every rebuild.
+# through. These are part of build-all/push-all now: bake resolves the
+# ordering itself from the `target:` contexts, and the balancer reaches
+# them through STAGE_4/STAGE_5 with PUBLISHED_INPUTS=1.
 #
-# Like build-all, the build-* variants are single-builder only. Their
-# inputs arrive through `target:` contexts, which the balancer cannot
-# carry across nodes — see the comment on build-all.
+# The build-* variants here remain single-builder. They take their
+# inputs through `target:` contexts, which only resolve within one bake
+# invocation — the balancer swaps those for published images instead.
 ##@ Serving (vLLM / LMCache)
 
 # Exported, not passed as --set "*.args.X": a bake variable reads from

@@ -21,6 +21,60 @@ STEP_RE = re.compile(r"#(\d+) \[[a-z]* ?\d+/\d+\]")
 CACHED_RE = re.compile(r"#(\d+) CACHED")
 
 
+STOPFILE = os.environ.get("BUILD_STOPFILE", "/tmp/.rocm-build.stopped")
+
+
+def _stop_times():
+    """Timestamps at which build-stop.sh cancelled whatever was running.
+
+    buildkit records a client disconnect as status "Error" with no
+    detail, so a deliberate `make build-stop` is indistinguishable from
+    a real failure in `make watch` — the panel showed a red "error" for
+    a build the operator had just stopped on purpose.
+    """
+    try:
+        with open(STOPFILE) as fh:
+            out = []
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    out.append(datetime.fromisoformat(
+                        line.replace("Z", "+00:00")))
+                except ValueError:
+                    pass
+            return out
+    except OSError:
+        return []
+
+
+def status_of(record, stops):
+    """Render status, relabelling builds that build-stop.sh cancelled.
+
+    A record was stopped by us only if it was actually in flight at that
+    moment: started before the stop and ended at or after it. A failure
+    that begins after the stop has created_at past the marker and is
+    left as "Error", so a stale marker cannot mislabel later builds.
+    """
+    status = record.get("status", "?")
+    if status != "Error" or not stops:
+        return status
+    created = record.get("created_at")
+    ended = record.get("completed_at") or created
+    if not created:
+        return status
+    try:
+        began = datetime.fromisoformat(created.replace("Z", "+00:00"))
+        fin = datetime.fromisoformat(ended.replace("Z", "+00:00"))
+    except ValueError:
+        return status
+    for stop in stops:
+        if began <= stop <= fin + timedelta(seconds=5):
+            return "Stopped"
+    return status
+
+
 def duration(record):
     """Elapsed time, from the timestamps; ls only reports it in table mode."""
     started = record.get("created_at")
@@ -44,6 +98,26 @@ def duration(record):
     if secs < 60:
         return f"{secs}s{suffix}"
     return f"{secs // 60}m{secs % 60:02d}s{suffix}"
+
+
+def finished(record):
+    """Local clock time the build stopped, or "-" while it is running.
+
+    `elapsed` answers "how long did it take"; this answers "when did it
+    land", which is what you want when reading the panel against a log
+    or a commit. Local time, not UTC: the records are UTC but the person
+    reading the panel is not.
+    """
+    if record.get("status") == "Running":
+        return "-"
+    ended = record.get("completed_at")
+    if not ended:
+        return "-"
+    try:
+        end = datetime.fromisoformat(ended.replace("Z", "+00:00"))
+    except ValueError:
+        return "-"
+    return end.astimezone().strftime("%H:%M:%S")
 
 
 def layers(record, builder):
@@ -82,20 +156,59 @@ def image_key(name):
 OUR_IMAGES = {
     "base", "pytorch", "triton", "aiter", "runtime",
     "torch-wheel", "triton-wheel", "aiter-wheel",
+    # The serving stack. Absent until now, so vllm, lmcache and
+    # nixl-wheel never appeared in the layer-reuse panel at all — they
+    # were filtered here and, before the prefix was normalised, again
+    # by the "rocm-pytorch-build/" test in ours().
+    "nixl-wheel", "vllm", "vllm-wheel", "lmcache", "lmcache-wheel",
 }
+
+
+
+# "rpb/" was the prefix the serving targets emitted before it was
+# normalised. Records are kept by buildkit indefinitely, so the old form
+# has to stay readable or those builds render with "rpb" as their target
+# and vanish from the by-image panel.
+NAME_PREFIXES = ("rocm-pytorch-build/", "rpb/")
+
+
+def strip_prefix(raw):
+    """Record name with this repo's prefix removed, or None if foreign."""
+    for pre in NAME_PREFIXES:
+        if raw.startswith(pre):
+            return raw[len(pre):]
+    return None
 
 
 def ours(raw):
     """This repo's image name from a history record, or None."""
-    if not raw.startswith("rocm-pytorch-build/"):
+    rest = strip_prefix(raw)
+    if rest is None:
         return None
-    rest = raw[len("rocm-pytorch-build/"):]
     # Current form is <image>/<arch>/<run-id>; older records are
     # Dockerfile.<image> (<stage>) and predate BUILDKIT_BUILD_NAME.
     name = (rest.split("/")[0] if "/" in rest
             else rest.replace("Dockerfile.", "").replace(" (final)", ""))
     stem = name.split(" ")[0]
     return name if stem in OUR_IMAGES else None
+
+
+
+def run_id(record):
+    """RUN_ID the build was stamped with, or "-" for older records.
+
+    BUILDKIT_BUILD_NAME is <repo>/<image>/<arch>/<run-id>, so the run is
+    the last segment. Records predating that arg are
+    Dockerfile.<image> (<stage>) and carry no run, hence "-".
+
+    Worth a column of its own: two runs of the same target are
+    indistinguishable in the panel otherwise, and re-running after a
+    stop with the same RUN_ID interleaves both in a way that reads as
+    one confused run.
+    """
+    raw = record.get("name") or ""
+    parts = raw.split("/")
+    return parts[-1] if len(parts) >= 4 else "-"
 
 
 def records_for(builder):
@@ -171,9 +284,11 @@ def by_image(builders):
             if prev is None or created > prev[0]:
                 node = rec.get("ref", "").split("/")
                 latest[name] = (created,
+                                run_id(rec),
                                 node[1] if len(node) >= 3 else builder,
-                                rec.get("status", "?"),
+                                status_of(rec, STOPS),
                                 duration(rec),
+                                finished(rec),
                                 layers(rec, builder))
 
     if not latest:
@@ -189,16 +304,19 @@ def by_image(builders):
         ("wheels", [n for n in latest if n.endswith("(wheel)")]),
     ]
     print(f"  \033[2m{'':<22} {'layers':<13} {'node':<14} "
-          f"{'status':<10} {'elapsed':>8}\033[0m")
+          f"{'status':<10} {'elapsed':>8}  {'when':>8}  {'id':<16}\033[0m")
     for title, names in (g for g in groups if g[1]):
         print(f"  \033[2m{title}\033[0m")
         for name in sorted(names, key=image_key):
-            _, node, status, dur, lyr = latest[name]
+            _, rid, node, status, dur, when, lyr = latest[name]
             # The stage is dropped here, not in the record: the group
             # already says wheel, so repeating it in every row is noise.
             show = name.replace(" (wheel)", "")
             print(f"  {show:<22} {lyr:<13} {node:<14} "
-                  f"{status.lower():<10} {dur:>8}")
+                  f"{status.lower():<10} {dur:>8}  {when:>8}  {rid:<16}")
+
+
+STOPS = _stop_times()
 
 
 def main():
@@ -230,10 +348,16 @@ def main():
         parts = rec.get("ref", "").split("/")
         node = parts[1] if len(parts) >= 3 else "-"
         build = parts[-1][:12]
-        name = (rec.get("name") or "-").replace("rocm-pytorch-build/", "")
-        name = name.replace("Dockerfile.", "")
-        rows.append((node, build, name[:24], rec.get("status", "?"),
-                     duration(rec), layers(rec, builder)))
+        # Just the target. The arch and run-id used to be crammed into
+        # the same 24 columns and were usually truncated away; the run
+        # now has a column of its own and the arch is a build-wide
+        # constant, so neither belongs here.
+        rest = strip_prefix(rec.get("name") or "")
+        raw = rest if rest is not None else (rec.get("name") or "-")
+        name = raw.split("/")[0].replace("Dockerfile.", "")
+        rows.append((node, build, name[:20], status_of(rec, STOPS),
+                     duration(rec), finished(rec), layers(rec, builder),
+                     run_id(rec)))
 
     if not rows:
         return
@@ -241,10 +365,12 @@ def main():
     # another cache number next to sccache's, and they measure
     # different things — whole build steps skipped, versus individual
     # compiles served from the compiler cache.
-    print(f"  \033[2m{'node':<14} {'build':<13} {'target':<24} "
-          f"{'status':<10} {'elapsed':>8}  {'layers':>9}\033[0m")
-    for node, build, name, status, dur, lyr in rows[:limit]:
-        print(f"  {node:<14} {build:<13} {name:<24} {status:<10} {dur:>8}  {lyr:>9}")
+    print(f"  \033[2m{'node':<14} {'build':<13} {'target':<20} "
+          f"{'status':<10} {'elapsed':>8}  {'when':>8}  {'layers':>9}  "
+          f"{'id':<16}\033[0m")
+    for node, build, name, status, dur, when, lyr, rid in rows[:limit]:
+        print(f"  {node:<14} {build:<13} {name:<20} {status:<10} "
+              f"{dur:>8}  {when:>8}  {lyr:>9}  {rid:<16}")
 
 
 if __name__ == "__main__":

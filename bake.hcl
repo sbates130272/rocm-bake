@@ -99,8 +99,11 @@ variable "MAX_JOBS" {
 
 # Compile AITER's kernel modules at build time rather than leaving them
 # to JIT on first use. See Dockerfile.aiter for what each level excludes.
+#
+# Empty means "decide from the architecture" — see PREBUILD_LEVEL below.
+# Set it to a level to pin one for every target.
 variable "PREBUILD_KERNELS" {
-  default = "2"
+  default = ""
 }
 
 # Two-tier layer cache. Reads always consult both the rolling tag and a
@@ -128,6 +131,35 @@ variable "RUN_ID" {
 variable "AITER_REF" {
   default = "v0.1.27"
 }
+
+# ─── Input wiring ────────────────────────────────────────────────
+# Targets take their inputs from sibling targets through `target:`
+# named contexts. That is bake's dependency mechanism, and the only one
+# it has: bake derives the build DAG from these contexts and orders the
+# graph itself, which is why asking for `vllm` alone also builds
+# pytorch, triton-wheel, aiter-wheel and nixl-wheel, in that order. A
+# target with no context on its inputs is, as far as bake is concerned,
+# independent — and may run concurrently with the thing it needs.
+#
+# Set PUBLISHED_INPUTS=1 to resolve those inputs from the registry
+# instead. balance.sh needs it: it runs one bake per target, each pinned
+# to a different node, and hands results between them through Zot. A
+# `target:` context there would rebuild the whole chain on every node
+# rather than pulling what the previous stage just pushed.
+variable "PUBLISHED_INPUTS" {
+  default = ""
+}
+
+# The refs each context collapses to under PUBLISHED_INPUTS. These must
+# track the `tags` of the target they mirror — a change to one is a
+# change to the other.
+PUB_BASE    = "${REGISTRY}/${REGISTRY_NAME}/base:${ROCM_VERSION}-${PYTHON_VERSION}"
+PUB_PYTORCH = "${REGISTRY}/${REGISTRY_NAME}/pytorch:${PYTORCH_VERSION}-${ROCM_VERSION}-${ARCH_TAG}"
+PUB_TRITON  = "${REGISTRY}/${REGISTRY_NAME}/triton-wheel:${ROCM_VERSION}-${ARCH_TAG}"
+PUB_AITER   = "${REGISTRY}/${REGISTRY_NAME}/aiter-wheel:${PYTORCH_VERSION}-${ROCM_VERSION}-${ARCH_TAG}"
+PUB_NIXL    = "${REGISTRY}/${REGISTRY_NAME}/nixl-wheel:${NIXL_REF}-${ROCM_VERSION}-${ARCH_TAG}"
+
+USE_PUB = PUBLISHED_INPUTS != ""
 
 # ─── Serving stack refs ──────────────────────────────────────────
 # All four are release tags, never branches: a moving ref would be
@@ -174,6 +206,39 @@ variable "SOURCE_URL" {
 # an image tagged gfx950. Derive it instead: PYTORCH_ROCM_ARCH is a
 # semicolon-separated list, which is not legal in a tag.
 ARCH_TAG = replace(PYTORCH_ROCM_ARCH, ";", "_")
+
+# AITER's kernel prebuild is CDNA-only in practice, so the level is
+# chosen from the architecture rather than fixed at 2.
+#
+# On gfx1201 every one of the 13844 kernels compiled and the build then
+# failed in the JIT *module* phase: 6 of 68 modules carry CDNA-only code
+# — MFMA templates, GFX9 DPP broadcasts ("broadcasts are not supported
+# on GFX10+"), CDNA inline asm (v_pk_mul_f32), gfx950/ header trees —
+# and setup.py treats a failed module as fatal. bdist_wheel exited 1
+# after 51 minutes and no wheel was produced. Reproduced twice.
+# Upstream documents this: AITER lists gfx1201 as Experimental, with
+# most CK and ASM kernels CDNA-only.
+#
+# Level 0 costs nothing we can use on RDNA. Those six modules cannot run
+# there whatever we do, every other module stays reachable because AITER
+# JIT-compiles on first use, and the prebuild is a startup-latency
+# optimisation rather than a capability. A wheel that exists beats a
+# faster first inference that never happens.
+#
+# This reverses the reasoning in cbb7186, which set 2 because 0
+# "compiles nothing at package time". That still holds on CDNA, which is
+# why 2 remains the default there.
+#
+# Substring test rather than a regex: replace() is already used above,
+# and if removing a substring changes the string then it was present.
+# PYTORCH_ROCM_ARCH may be a ";"-separated list, so this is true when
+# any entry is RDNA.
+IS_RDNA = (
+  PYTORCH_ROCM_ARCH != replace(PYTORCH_ROCM_ARCH, "gfx11", "") ||
+  PYTORCH_ROCM_ARCH != replace(PYTORCH_ROCM_ARCH, "gfx12", "")
+)
+
+PREBUILD_LEVEL = PREBUILD_KERNELS != "" ? PREBUILD_KERNELS : (IS_RDNA ? "0" : "2")
 
 # Shared OCI provenance. Without revision and created there is no way to
 # work back from a running container to the commit that built it.
@@ -272,22 +337,29 @@ group "default" {
   targets = [
     "pytorch-base", "pytorch",
     "pytorch-wheel", "triton-wheel", "aiter-wheel",
+    "nixl-wheel", "vllm", "vllm-wheel", "lmcache", "lmcache-wheel",
   ]
 }
 
 # The wheel artifacts. Separate because each builds FROM an image that
 # must already be published, so they cannot run from a cold registry.
 group "wheels" {
-  targets = ["pytorch-wheel", "triton-wheel", "aiter-wheel", "nixl-wheel"]
+  targets = [
+    "pytorch-wheel", "triton-wheel", "aiter-wheel", "nixl-wheel",
+    "vllm-wheel", "lmcache-wheel",
+  ]
 }
 
 # The serving stack: vLLM and LMCache, plus the NIXL wheel both of them
 # transfer KV cache through.
 #
-# Deliberately not in `default`. These build FROM the pytorch image and
-# each takes considerably longer than everything in that group put
-# together, so folding them in would turn every `make push-all` into an
-# hours-long run whether or not anything about them had changed.
+# Also in `default`, so push-all covers them. The old note here said
+# folding them in would make every push-all an hours-long run; that
+# argument no longer holds, because STAGE_3 already contains aiter-wheel
+# and its kernel prebuild dominates everything else (~50 min on gfx950,
+# hours on gfx1201). push-all was already that long.
+#
+# This group stays as a way to build the serving stack on its own.
 group "serving" {
   targets = ["nixl-wheel", "vllm", "vllm-wheel", "lmcache", "lmcache-wheel"]
 }
@@ -365,12 +437,19 @@ target "pytorch" {
   # building x first and feeding its result straight in, so pytorch is
   # buildable in one invocation with its inputs. The same pattern as
   # aiter-wheel below.
-  contexts = {
+  # base-img is the edge that was missing. Dockerfile.pytorch does
+  # `FROM ${BASE_IMAGE}` with a registry ref as its ARG default, so
+  # without this context pytorch silently built on the last *published*
+  # base rather than the one built beside it — and with no edge between
+  # them, bake was free to run the two concurrently.
+  contexts = USE_PUB ? {} : {
     triton-wheels = "target:triton-wheel"
+    base-img      = "target:pytorch-base"
   }
 
   args = {
-    TRITON_WHEEL_IMAGE  = "triton-wheels"
+    TRITON_WHEEL_IMAGE  = USE_PUB ? PUB_TRITON : "triton-wheels"
+    BASE_IMAGE          = USE_PUB ? PUB_BASE : "base-img"
     BUILDKIT_BUILD_NAME = "rocm-pytorch-build/pytorch/${PYTORCH_ROCM_ARCH}/${RUN_ID}"
     SOURCE_DATE_EPOCH   = SDE_PYTORCH != "" ? SDE_PYTORCH : null
     ROCM_VERSION         = ROCM_VERSION
@@ -449,7 +528,16 @@ target "triton-wheel" {
   ]
   cache-to   = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/triton-wheel-cache:latest${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=true,ignore-error=true"]
 
+  # Same missing edge pytorch had: Dockerfile.triton does
+  # `FROM ${BASE_IMAGE}` with a registry ref as its ARG default, so
+  # without this it built on the last *published* base and bake saw no
+  # reason to order it after pytorch-base.
+  contexts = USE_PUB ? {} : {
+    base-img = "target:pytorch-base"
+  }
+
   args = {
+    BASE_IMAGE          = USE_PUB ? PUB_BASE : "base-img"
     BUILDKIT_BUILD_NAME = "rocm-pytorch-build/triton-wheel/${PYTORCH_ROCM_ARCH}/${RUN_ID}"
     SOURCE_DATE_EPOCH   = SDE_TRITON != "" ? SDE_TRITON : null
     BASE_IMAGE          = "${REGISTRY}/${REGISTRY_NAME}/base:${ROCM_VERSION}-${PYTHON_VERSION}"
@@ -502,7 +590,7 @@ target "aiter-wheel" {
   # building x first and feeding its result straight in. That makes
   # aiter-wheel buildable in the same invocation as its inputs, instead
   # of requiring them to be pushed in a previous run.
-  contexts = {
+  contexts = USE_PUB ? {} : {
     pytorch-img   = "target:pytorch"
     triton-wheels = "target:triton-wheel"
   }
@@ -510,10 +598,10 @@ target "aiter-wheel" {
   args = {
     BUILDKIT_BUILD_NAME = "rocm-pytorch-build/aiter-wheel/${PYTORCH_ROCM_ARCH}/${RUN_ID}"
     SOURCE_DATE_EPOCH   = SDE_AITER != "" ? SDE_AITER : null
-    PYTORCH_IMAGE       = "pytorch-img"
-    TRITON_WHEEL_IMAGE  = "triton-wheels"
+    PYTORCH_IMAGE       = USE_PUB ? PUB_PYTORCH : "pytorch-img"
+    TRITON_WHEEL_IMAGE  = USE_PUB ? PUB_TRITON : "triton-wheels"
     AITER_REF           = AITER_REF
-    PREBUILD_KERNELS    = PREBUILD_KERNELS
+    PREBUILD_KERNELS    = PREBUILD_LEVEL
     SCCACHE_VERSION     = SCCACHE_VERSION
     PYTORCH_ROCM_ARCH   = PYTORCH_ROCM_ARCH
     SCCACHE_WEBDAV_ENDPOINT = SCCACHE_WEBDAV_ENDPOINT
@@ -559,7 +647,15 @@ target "pytorch-run" {
   # directory" — latent until pytorch-run was first built. Referencing
   # the target also removes the need for pytorch to be pushed first, and
   # fixes the hardcoded gfx950 that ignored PYTORCH_ROCM_ARCH.
-  contexts = {
+  # Unlike the others, this context cannot simply be dropped under
+  # PUBLISHED_INPUTS: Dockerfile.runtime says `COPY --from=pytorch`,
+  # naming the context directly rather than going through an ARG, so the
+  # name has to resolve in both modes. It needs the explicit
+  # docker-image:// scheme for the reason in the comment above — a bare
+  # ref is read as a local directory.
+  contexts = USE_PUB ? {
+    pytorch = "docker-image://${PUB_PYTORCH}"
+  } : {
     pytorch = "target:pytorch"
   }
 
@@ -603,14 +699,14 @@ target "nixl-wheel" {
   ]
   cache-to   = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/nixl-wheel-cache:latest${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=true,ignore-error=true"]
 
-  contexts = {
+  contexts = USE_PUB ? {} : {
     pytorch-img = "target:pytorch"
   }
 
   args = {
     SOURCE_DATE_EPOCH       = SDE_NIXL != "" ? SDE_NIXL : null
-    BUILDKIT_BUILD_NAME     = "rpb/nixl-wheel/${PYTORCH_ROCM_ARCH}/${RUN_ID}"
-    PYTORCH_IMAGE           = "pytorch-img"
+    BUILDKIT_BUILD_NAME     = "rocm-pytorch-build/nixl-wheel/${PYTORCH_ROCM_ARCH}/${RUN_ID}"
+    PYTORCH_IMAGE           = USE_PUB ? PUB_PYTORCH : "pytorch-img"
     NIXL_REF                = NIXL_REF
     UCX_REF                 = UCX_REF
     PYTORCH_ROCM_ARCH       = PYTORCH_ROCM_ARCH
@@ -651,7 +747,7 @@ target "vllm" {
   ]
   cache-to   = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/vllm-cache:latest${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=true,ignore-error=true"]
 
-  contexts = {
+  contexts = USE_PUB ? {} : {
     pytorch-img   = "target:pytorch"
     triton-wheels = "target:triton-wheel"
     aiter-wheels  = "target:aiter-wheel"
@@ -660,11 +756,11 @@ target "vllm" {
 
   args = {
     SOURCE_DATE_EPOCH       = SDE_VLLM != "" ? SDE_VLLM : null
-    BUILDKIT_BUILD_NAME     = "rpb/vllm/${PYTORCH_ROCM_ARCH}/${RUN_ID}"
-    PYTORCH_IMAGE           = "pytorch-img"
-    TRITON_WHEEL_IMAGE      = "triton-wheels"
-    AITER_WHEEL_IMAGE       = "aiter-wheels"
-    NIXL_WHEEL_IMAGE        = "nixl-wheels"
+    BUILDKIT_BUILD_NAME     = "rocm-pytorch-build/vllm/${PYTORCH_ROCM_ARCH}/${RUN_ID}"
+    PYTORCH_IMAGE           = USE_PUB ? PUB_PYTORCH : "pytorch-img"
+    TRITON_WHEEL_IMAGE      = USE_PUB ? PUB_TRITON : "triton-wheels"
+    AITER_WHEEL_IMAGE       = USE_PUB ? PUB_AITER : "aiter-wheels"
+    NIXL_WHEEL_IMAGE        = USE_PUB ? PUB_NIXL : "nixl-wheels"
     VLLM_REF                = VLLM_REF
     # Same ref the aiter-wheel target built from: Dockerfile.vllm fetches
     # AITER's requirements.txt at this tag because the wheel does not
@@ -726,7 +822,7 @@ target "lmcache" {
   ]
   cache-to   = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/lmcache-cache:latest${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=true,ignore-error=true"]
 
-  contexts = {
+  contexts = USE_PUB ? {} : {
     pytorch-img   = "target:pytorch"
     triton-wheels = "target:triton-wheel"
     nixl-wheels   = "target:nixl-wheel"
@@ -734,10 +830,10 @@ target "lmcache" {
 
   args = {
     SOURCE_DATE_EPOCH       = SDE_LMCACHE != "" ? SDE_LMCACHE : null
-    BUILDKIT_BUILD_NAME     = "rpb/lmcache/${PYTORCH_ROCM_ARCH}/${RUN_ID}"
-    PYTORCH_IMAGE           = "pytorch-img"
-    TRITON_WHEEL_IMAGE      = "triton-wheels"
-    NIXL_WHEEL_IMAGE        = "nixl-wheels"
+    BUILDKIT_BUILD_NAME     = "rocm-pytorch-build/lmcache/${PYTORCH_ROCM_ARCH}/${RUN_ID}"
+    PYTORCH_IMAGE           = USE_PUB ? PUB_PYTORCH : "pytorch-img"
+    TRITON_WHEEL_IMAGE      = USE_PUB ? PUB_TRITON : "triton-wheels"
+    NIXL_WHEEL_IMAGE        = USE_PUB ? PUB_NIXL : "nixl-wheels"
     LMCACHE_REF             = LMCACHE_REF
     PYTORCH_ROCM_ARCH       = PYTORCH_ROCM_ARCH
     ROCM_VERSION            = ROCM_VERSION

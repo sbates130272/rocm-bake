@@ -96,19 +96,26 @@ bench_run() {
             extra="${extra} --no-cache"
             ;;
         warm)
-            # What a new commit does: same content, later timestamp.
+            # What a new commit costs. Under the current design that is
+            # nothing, and this scenario exists to keep it that way.
             #
-            # Bumping SOURCE_DATE_EPOCH alone is a no-op here. Each
-            # image now receives its own timestamp as a build arg
-            # (SDE_BASE, SDE_PYTORCH, ...), computed by the Makefile
-            # from the last commit touching its Dockerfile, and a build
-            # arg takes precedence over the environment. The env var is
-            # only consulted when the arg is absent, which never
-            # happens through make — so warm silently measured hot.
-            epoch=$((epoch + 60))
-            extra_env="SDE_BASE=${epoch} SDE_PYTORCH=${epoch} \
-                       SDE_TRITON=${epoch} SDE_AITER=${epoch} \
-                       SDE_RUNTIME=${epoch}"
+            # It used to force SDE_BASE, SDE_PYTORCH and the rest to
+            # HEAD's commit time plus a minute, back when the Makefile
+            # derived them from `git log -1 -- Dockerfile.<image>` and
+            # a new commit really did move them. The Makefile now pins
+            # them to a constant, SDE_EPOCH, so no commit can move
+            # them — and overriding them here priced something the
+            # pipeline cannot do to itself. Measured at the time: 220s
+            # against hot's 3s, for a condition only this harness could
+            # create.
+            #
+            # So warm builds exactly what hot builds, and the result is
+            # the assertion rather than the number: if warm ever
+            # diverges from hot, some per-commit value has found its
+            # way back into the image digest. That has happened twice
+            # (HEAD's timestamp, then a squash collapsing the per-image
+            # timestamps), which is why it is worth a standing check.
+            :
             ;;
         hot) ;;
     esac
@@ -387,13 +394,49 @@ for r in rows:
           f'{r["max_jobs"] or "-"} | {res} |')
 
 print()
-best = collections.defaultdict(dict)
+# Two caches, two ratios. Dividing cold by whichever hot run came last
+# conflated them and printed "2297.3x" — the cold run against a 3s
+# layer-cache hit that compiled nothing at all. The compiler cache and
+# the layer cache answer different questions and are worth separating:
+#
+#   compiler cache  cold vs a hot run that still compiled (sccache
+#                   served the requests instead of the compiler)
+#   layer cache     that run vs a hot run where buildkit skipped the
+#                   compile step outright, so sccache saw no requests
+# Keyed by (target, builder), and the best run of each kind rather
+# than the last. Two reasons. Nodes differ by 16x in memory, so a cold
+# run on the 15GB box against a hot run on the 30GB one is not a
+# ratio. And "last" picks up one-offs — the run that re-established
+# every digest after the epoch changed, or one taken before the
+# compiler cache had converged — which flatter cold and understate the
+# cache. The best run of each kind is the one worth quoting.
+import math
+cold, compiled, skipped = {}, {}, {}
 for r in rows:
-    if r["rc"] == 0:
-        best[r["target"]][r["scenario"]] = r["seconds"]
-for tgt, s in best.items():
-    if "cold" in s and "hot" in s and s["cold"]:
-        print(f'{tgt}: hot is {s["cold"]/max(s["hot"],1):.1f}x faster than cold')
+    if r["rc"] != 0:
+        continue
+    key = (r["target"], r["builder"])
+    if r["scenario"] == "cold":
+        d = cold
+    elif r["scenario"] == "hot":
+        d = compiled if r["sccache_requests"] else skipped
+    else:
+        continue
+    d[key] = min(d.get(key, math.inf), r["seconds"])
+
+for key in sorted(set(cold) | set(compiled) | set(skipped)):
+    tgt, node = key
+    c, h, l = cold.get(key), compiled.get(key), skipped.get(key)
+    where = f'{tgt} on {node}'
+    if c and h:
+        line = f'{where}: compiler cache {c/max(h,1):.1f}x ({c}s -> {h}s)'
+        if l:
+            line += f'; layer cache a further {h/max(l,1):.0f}x (-> {l}s)'
+        print(line)
+    elif c and l:
+        print(f'{where}: layer cache {c/max(l,1):.0f}x ({c}s -> {l}s); '
+              f'no hot run that compiled, so the compiler cache is not '
+              f'separable here')
 PY
 }
 

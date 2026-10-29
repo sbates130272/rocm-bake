@@ -51,6 +51,15 @@ if [ "${#alive[@]}" -eq 0 ]; then
     exit 0
 fi
 
+# Record when we stopped, so `make watch` can tell a deliberate stop
+# from a failure. buildkit files a client disconnect as status "Error"
+# with no detail, which made a stopped build look broken in the panel.
+# history.py relabels only records that were in flight at this instant.
+STOPFILE="${BUILD_STOPFILE:-/tmp/.rocm-build.stopped}"
+date -u +%Y-%m-%dT%H:%M:%SZ >> "$STOPFILE"
+# Keep the marker from growing without bound; only recent stops matter.
+tail -20 "$STOPFILE" > "$STOPFILE.tmp" 2>/dev/null && mv "$STOPFILE.tmp" "$STOPFILE"
+
 for pid in "${alive[@]}"; do
     printf '  stopping %-8s %s\n' "$pid" \
         "$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | cut -c1-70)"
