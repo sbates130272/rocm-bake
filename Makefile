@@ -147,6 +147,12 @@ else
 BAKE = ./telemetry/build.sh
 endif
 
+# Bake without the telemetry wrapper, for the recipes that want to read
+# bake's own output rather than run a build. build.sh prints timings and
+# sccache stats around the build, so $(BAKE) --print is not parseable
+# JSON — it fed jq a progress line and failed with a parse error.
+BAKE_PRINT = docker buildx bake -f bake.hcl
+
 .PHONY: help zot-check zot-catalog zot-tags zot-wheels zot-wheelhouse zot-logs \
         builder-setup builder-snoc-strix builder-snoc-think builder-snoc-gaming \
         builder-snoc-pool builder-status builder-logs builder-restart \
@@ -709,6 +715,133 @@ push-wheels: ## Push the wheel artifacts (torch, triton, aiter, nixl, vllm, lmca
 _push-wheels: builder-ensure
 	$(call bake,wheels,--push)
 
+##@ Multi-GFX
+
+# The archs the fleet runs: snoc-strix is gfx950, snoc-think and
+# snoc-gaming are gfx1201. PYTORCH_ROCM_ARCH stays single-valued and
+# still defaults to gfx950, so every existing target is unchanged; this
+# is the list the arches-* wrappers fan out over.
+#
+# gfx1250 (MI450) is in the list without being in the fleet. The
+# builders already cross-compile — the two gfx1201 nodes build gfx950
+# today — so having no such card only means `make test` and `make
+# gpu-test` cannot cover it, not that it cannot be built. The ROCm 10.1
+# toolchain in our base image compiles it:
+#   clang -x hip --offload-arch=gfx1250 -nogpulib -c   # exits 0
+# Note it is NOT RDNA despite the gfx12 number; see ARCH_RDNA_TEST in
+# bake.hcl for what that would otherwise have broken.
+#
+# Each arch is a full pass over every target, so this list is a
+# multiplier on build time. Narrow it per invocation when iterating:
+#   make arches-push-all ARCHES=gfx950
+#
+# A space-separated list of single archs, not the ";"-separated form
+# PYTORCH_ROCM_ARCH takes. Those are different things: "gfx950;gfx1201"
+# is one fat build carrying both code objects, while ARCHES is two
+# builds producing two separately-tagged sets of artifacts. The fat
+# build is still available — set PYTORCH_ROCM_ARCH to the ";" form —
+# but it costs both compiles and ships every card the larger binary.
+ARCHES ?= gfx950 gfx1201 gfx1250
+
+# `make arches-push-all`, `make arches-build-pytorch`, `make
+# arches-push-wheels` — any target, once per arch. Sequential: the
+# archs contend for the same three builders and the same sccache store,
+# so running them concurrently just makes both slower.
+#
+# Safe to repeat now that bake.hcl scopes the layer cache by arch
+# (CACHE_ARCH). Before that, alternating archs through this loop would
+# have been the worst case for it — each pass evicting the last.
+arches-%:
+	@set -e; for a in $(ARCHES); do \
+		printf '\n\033[36m== %s  PYTORCH_ROCM_ARCH=%s\033[0m\n' "$*" "$$a"; \
+		$(MAKE_BIN) --no-print-directory "$*" \
+			PYTORCH_ROCM_ARCH="$$a" BUILDER=$(BUILDER); \
+	done
+
+arches-list: ## Show the archs the arches-* wrappers fan out over
+	@printf 'ARCHES = %s\n' "$(ARCHES)"
+	@for a in $(ARCHES); do \
+		printf '  %-10s pytorch:%s-%s-%s\n' "$$a" \
+			"$(PYTORCH_VERSION)" "$(ROCM_VERSION)" "$$a"; \
+	done
+	@printf '\nusage: make arches-push-all        # every target, every arch\n'
+	@printf '       make arches-push-wheels     # just the wheel artifacts\n'
+	@printf '       make arches-build-pytorch ARCHES=gfx1201\n'
+
+# ─── Per-arch pip index ──────────────────────────────────────────
+# The wheels this repo builds have arch-independent filenames — torch
+# is torch-2.14.1a0+git5c48869-cp314-cp314-linux_x86_64.whl whether it
+# was compiled for gfx950 or gfx1201 — so the arch has to live in the
+# path. One PEP 503 index per arch, selected by index URL, with a
+# generated rocm-torch metapackage in each offering a device-<arch>
+# extra that pins the whole set. See .builders/wheelindex.py.
+WHEELS_DIR ?= dist/wheels
+INDEX_DIR  ?= dist/index
+
+# Fetched by arch-specific tag, never :latest. :latest is written by
+# whichever arch was pushed last and the wheels inside cannot be told
+# apart afterwards, which is the entire failure this index exists to
+# prevent. The tags come from bake --print rather than being rebuilt
+# here: bake.hcl owns tag construction (PUB_* and ARCH_TAG), and a
+# second copy in the Makefile is exactly the drift check-defaults.py
+# exists to catch.
+wheel-index: ## Fetch each arch's wheels and build a pip index (ARCHES=)
+	@set -e; \
+	for a in $(ARCHES); do \
+		dest="$(WHEELS_DIR)/$$a"; \
+		rm -rf "$$dest"; mkdir -p "$$dest"; \
+		echo "== $$a"; \
+		for t in $(WHEEL_REPOS); do \
+			ref=$$(PYTORCH_ROCM_ARCH="$$a" $(BAKE_PRINT) --print "$$t" 2>/dev/null \
+				| jq -r ".target[\"$$t\"].tags[0]"); \
+			printf '   %-16s %s\n' "$$t" "$$ref"; \
+			printf 'FROM %s\n' "$$ref" \
+				| docker buildx build --builder $(BUILDER) \
+					--output type=local,dest="$$dest" - 2>/dev/null \
+				|| { echo "   (not published for $$a — skipped)"; continue; }; \
+		done; \
+		if [ -d "$$dest/wheels" ]; then \
+			mv "$$dest"/wheels/*.whl "$$dest"/ 2>/dev/null || true; \
+			[ -f "$$dest/wheels-arch.txt" ] || true; \
+		fi; \
+		python3 .builders/wheelindex.py "$$dest" --arch "$$a" \
+			--out "$(INDEX_DIR)/$$a" --version "$(ROCM_VERSION)" \
+			--python "$(PYTHON_VERSION)"; \
+	done
+	@printf '\nserve it with:  python3 -m http.server 8081 --directory dist\n'
+	@printf 'install with:   pip install \\\n'
+	@printf '                  --index-url http://<host>:8081/index/<arch>/ \\\n'
+	@printf '                  --extra-index-url https://pypi.org/simple \\\n'
+	@printf '                  "rocm-torch[device-<arch>]"\n'
+
+# --extra-index-url is not optional. --index-url replaces PyPI outright,
+# so without it the first wheel with an ordinary dependency (numpy, via
+# triton-kernels) fails to resolve. download.pytorch.org has the same
+# property and the same workaround.
+#
+# --ignore-requires-python for the same reason the Dockerfiles use it:
+# LMCache v0.5.6 declares ">=3.10,<3.14" and this lane is cp314
+# throughout. See docker/Dockerfile.lmcache, which carries the full
+# rationale. wheelindex.py names every wheel this applies to rather
+# than letting the flag hide them.
+wheel-index-check: ## Install each generated index into a throwaway venv
+	@set -e; \
+	port=8099; \
+	python3 -m http.server $$port --directory dist >/dev/null 2>&1 & \
+	srv=$$!; trap 'kill '"$$srv"' 2>/dev/null || true' EXIT; sleep 2; \
+	for a in $(ARCHES); do \
+		[ -d "$(INDEX_DIR)/$$a" ] || { echo "no index for $$a — run make wheel-index"; continue; }; \
+		v=$$(mktemp -d); python3 -m venv "$$v" >/dev/null; \
+		echo "== $$a"; \
+		no_proxy=127.0.0.1,localhost NO_PROXY=127.0.0.1,localhost \
+		"$$v/bin/pip" install -q --no-cache-dir --ignore-requires-python \
+			--index-url "http://127.0.0.1:$$port/index/$$a/" \
+			--extra-index-url https://pypi.org/simple \
+			"rocm-torch[device-$$a]" \
+			&& "$$v/bin/pip" list 2>/dev/null | sed 's/^/     /'; \
+		rm -rf "$$v"; \
+	done
+
 ##@ Wheels
 
 push-torch-wheel: builder-ensure ## * Build and push the torch wheel image to Zot
@@ -1026,10 +1159,16 @@ validate: ## Validate bake file
 bake-plan: ## Print build plan
 	@docker buildx bake -f bake.hcl --print | jq .
 
-clean: ## Remove built images from local registry
+# Over ARCHES, not the single build arch: these tags are per-arch, and
+# the gfx950 here used to be hardcoded — so on a gfx1201 build `clean`
+# quietly removed nothing and reported success. runtime is in the loop
+# because its tag carries the arch now too.
+clean: ## Remove built images from local registry (every arch in ARCHES)
 	@docker rmi $(REGISTRY)/$(REGISTRY_NAME)/base:$(ROCM_VERSION)-$(PYTHON_VERSION) 2>/dev/null || true
-	@docker rmi $(REGISTRY)/$(REGISTRY_NAME)/pytorch:$(PYTORCH_VERSION)-$(ROCM_VERSION)-gfx950 2>/dev/null || true
-	@docker rmi $(REGISTRY)/$(REGISTRY_NAME)/runtime:$(PYTORCH_VERSION)-$(ROCM_VERSION) 2>/dev/null || true
+	@for a in $(ARCHES); do \
+		docker rmi $(REGISTRY)/$(REGISTRY_NAME)/pytorch:$(PYTORCH_VERSION)-$(ROCM_VERSION)-$$a 2>/dev/null || true; \
+		docker rmi $(REGISTRY)/$(REGISTRY_NAME)/runtime:$(PYTORCH_VERSION)-$(ROCM_VERSION)-$$a 2>/dev/null || true; \
+	done
 	@echo "Local images cleaned"
 
 clean-cache: ## Remove cache images from Zot
@@ -1073,6 +1212,7 @@ list-vars: ## Show the variables these targets read, and their values
 	@printf '  \033[36m%-24s\033[0m %s\n' LMCACHE_REF "$(LMCACHE_REF)"
 	@printf '  \033[36m%-24s\033[0m %s\n' CUPY_REF "$(call bake_default,CUPY_REF)  (bake)"
 	@printf '  \033[36m%-24s\033[0m %s\n' PYTORCH_ROCM_ARCH "$(PYTORCH_ROCM_ARCH)"
+	@printf '  \033[36m%-24s\033[0m %s\n' ARCHES "$(ARCHES)  (what arches-* fans out over)"
 	@printf '  \033[36m%-24s\033[0m %s\n' MAX_JOBS "$(if $(MAX_JOBS),$(MAX_JOBS),(derived per node from free memory))"
 	@printf '\n\033[1mLocation\033[0m\n'
 	@printf '  \033[36m%-24s\033[0m %s\n' BUILDER "$(BUILDER)"

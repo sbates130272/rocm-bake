@@ -107,6 +107,9 @@ Automated build pipeline for PyTorch with ROCm support optimized for AMD Strix H
 
 ### Docker Image Lifecycle
 
+Every Dockerfile lives in `docker/`; the build context stays the repo
+root, so `bake.hcl` names them as `docker/Dockerfile.<image>`.
+
 ```
 Dockerfile.base          Dockerfile.pytorch        Dockerfile.runtime
         │                          │                        │
@@ -189,7 +192,7 @@ imports cupy at module scope to build a `cupy.cuda.ExternalStream`, and
 no published wheel fits this stack — PyPI's `cupy-rocm-7-0` is built for
 a different ROCm major and plain `cupy` ships only an sdist. Without it
 the server dies on the first request and vLLM waits five minutes before
-reporting a generic engine failure. See `Dockerfile.cupy`.
+reporting a generic engine failure. See `docker/Dockerfile.cupy`.
 
 Everything below `pytorch` is reached through bake `target:` contexts,
 so a single invocation can build the whole chain without anything having
@@ -248,7 +251,7 @@ Three constraints make this work, and each one fails quietly if broken:
   `cache storage failed to read ... I/O error`, which reads like a dead
   store rather than a DNS fault.
 
-`Dockerfile.pytorch` refuses to start a compile when the store is
+`docker/Dockerfile.pytorch` refuses to start a compile when the store is
 unreachable, rather than spending an hour rebuilding uncached. Override
 with `--set '*.args.REQUIRE_SCCACHE=0'`. The build prints
 `sccache --show-stats` as its last action, which is where the telemetry
@@ -458,7 +461,7 @@ against torch's C++ ABI, so a wheel built for AMD's ROCm 7.x torch and
 ours cannot share a process — the same constraint that forces AITER to
 be built here.
 
-NIXL is built once (`Dockerfile.nixl`) and consumed by both. The wheel is
+NIXL is built once (`docker/Dockerfile.nixl`) and consumed by both. The wheel is
 self-contained: UCX is compiled from source with `--with-rocm` (Ubuntu's
 libucx has no ROCm memory-type support, so without it every device-memory
 transfer bounces through host staging) and auditwheel bundles it, so
@@ -547,13 +550,100 @@ Three upstream constraints are worth knowing about:
 - **`torchvision` is a CUDA wheel in these images, and that is not fixed
   here.** `/etc/pip-constraints.txt` pins torch and triton to the ROCm
   builds, but there is no ROCm torchvision in this pipeline — it is
-  resolved from PyPI by `Dockerfile.pytorch`'s optional-extras step, and
+  resolved from PyPI by `docker/Dockerfile.pytorch`'s optional-extras step, and
   vLLM's `requirements/rocm.txt` keeps it reachable through `timm`. Its
   `_C_stable.so` links `libtorch_cuda` / `libc10_cuda`, so `import
   torchvision` fails at load time. Nothing in the text-model serving path
   touches it, which is why the build and the import checks stay green —
   but vision and video models will fail at serve time until a ROCm
   torchvision is built the way torch and triton are.
+
+## Multiple GFX architectures
+
+`PYTORCH_ROCM_ARCH` picks the arch for one build and still defaults to
+`gfx950`, so every command in this README behaves as it always has.
+`ARCHES` is the list the `arches-*` wrappers fan out over:
+
+```bash
+make arches-push-all                      # every target, every arch
+make arches-push-wheels                   # just the wheel artifacts
+make arches-build-pytorch ARCHES=gfx1201  # narrow it while iterating
+make arches-list                          # what ARCHES resolves to
+```
+
+`ARCHES` defaults to `gfx950 gfx1201 gfx1250`. Each arch is a full pass
+over every target, so treat the list as a multiplier on build time.
+
+Two things that are easy to confuse:
+
+| | what it produces |
+|---|---|
+| `PYTORCH_ROCM_ARCH='gfx950;gfx1201'` | one fat build, both code objects in one binary, one set of tags |
+| `ARCHES='gfx950 gfx1201'` | two builds, two separately tagged sets of artifacts |
+
+`gfx1250` (MI450) is in the default list without being in the fleet —
+the builders cross-compile, so the only thing missing is that `make
+test` and `make gpu-test` cannot cover it. Note it is **not** RDNA
+despite the `gfx12` number; see `ARCH_RDNA_TEST` in `bake.hcl` for what
+that would otherwise have silently broken in AITER's kernel prebuild.
+
+### The layer cache is scoped by arch
+
+Image tags have carried the arch since `ARCH_TAG` landed, but the
+registry cache refs did not — every arch-sensitive target wrote
+`<repo>-cache:latest`. A gfx1201 build overwrote the gfx950 cache with
+layers gfx950 can never hit, and the next gfx950 build rebuilt cold and
+did the same back, so alternating archs cost two cold builds every
+time. `CACHE_ARCH` in `bake.hcl` now scopes those refs.
+
+`pytorch-base` and `triton-wheel` stay on the shared ref deliberately:
+neither takes `PYTORCH_ROCM_ARCH`, Triton is a compiler that publishes
+one noarch wheel, and both are therefore built once for the whole
+fleet.
+
+### Per-arch pip index (`device-<arch>` extras)
+
+Every wheel here has an arch-independent filename. `torch` is
+`torch-2.14.1a0+git5c48869-cp314-cp314-linux_x86_64.whl` whether it was
+built for gfx950 or gfx1201, and `amd_aiter-0.1.27` is 131 MB for one
+arch and 481 MB for the other. In one directory they overwrite each
+other and `--find-links` serves whichever landed last. So the arch
+lives in the path:
+
+```bash
+make wheel-index                  # fetch per arch, generate the indexes
+make wheel-index-check            # install each one into a throwaway venv
+python3 -m http.server 8081 --directory dist
+```
+
+```bash
+pip install \
+  --index-url http://<host>:8081/index/gfx950/ \
+  --extra-index-url https://pypi.org/simple \
+  "rocm-torch[device-gfx950]"
+```
+
+`rocm-torch` is generated per index by `.builders/wheelindex.py`; its
+`device-<arch>` extra pins every wheel in that index at once. Each
+index declares only its own arch's extra, so asking gfx950's index for
+`[device-gfx1201]` fails rather than installing mismatched binaries.
+`make zot-wheels` prints the extra beside each published tag.
+
+`--extra-index-url` is not optional: `--index-url` replaces PyPI
+outright, and the first ordinary dependency (numpy, via
+`triton-kernels`) then fails to resolve. `download.pytorch.org` has the
+same property and the same workaround.
+
+This is the shape TheRock ships ROCm in — `pip install
+"rocm[device-gfx1153]"` — rather than the WheelNext variant mechanism.
+Variants (PEP 817/825) are the better long-term answer and AMD ships an
+`amd-variant-provider` plugin, but both PEPs are Draft, installer
+support is prototype-only forks of pip and uv, and the published
+provider matches PyTorch 2.9 on ROCm 6.3/6.4 against a gfx list that
+does not include gfx950. None of that resolves this stack today. The
+extra is spelled `device-<arch>` so that when variants do land, the
+arch is already a first-class coordinate and only the selection
+mechanism has to change.
 
 ## Architecture Optimization
 

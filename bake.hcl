@@ -269,6 +269,20 @@ variable "SOURCE_URL" {
 # semicolon-separated list, which is not legal in a tag.
 ARCH_TAG = replace(PYTORCH_ROCM_ARCH, ";", "_")
 
+# Image tags have carried the arch since ARCH_TAG landed, but the cache
+# refs did not: every arch-sensitive target wrote
+# `<repo>-cache:latest`, so a gfx1201 build overwrote the gfx950 cache
+# with layers gfx950 can never hit, and the next gfx950 build rebuilt
+# from scratch and did the same back. Alternating archs meant two cold
+# builds, every time. Scope the ref by arch so each one keeps its own.
+#
+# Only targets that take PYTORCH_ROCM_ARCH as an arg use this.
+# pytorch-base and triton-wheel compile no device code — Triton is a
+# compiler and publishes one noarch wheel, which is why wheelhouse.py
+# parses its tags without a gfx component — so they stay on the shared
+# ref and are built once for the whole fleet.
+CACHE_ARCH = "-${ARCH_TAG}"
+
 # AITER's kernel prebuild is CDNA-only in practice, so the level is
 # chosen from the architecture rather than fixed at 2.
 #
@@ -295,9 +309,20 @@ ARCH_TAG = replace(PYTORCH_ROCM_ARCH, ";", "_")
 # and if removing a substring changes the string then it was present.
 # PYTORCH_ROCM_ARCH may be a ";"-separated list, so this is true when
 # any entry is RDNA.
+#
+# gfx125x is the exception the substring test cannot see. gfx1250 and
+# gfx1251 are gfx12-numbered but are MI450-class datacenter parts, not
+# RDNA: upstream LLVM gates `amdgpu-sched-strategy=coexec` on gfx1250
+# and gfx950 together, and gives gfx1250 tensor instructions no RDNA
+# part has. Left to the bare "gfx12" test they would read as RDNA and
+# silently drop AITER's kernel prebuild to level 0 — turning off, on
+# the one arch that most wants it, an optimisation that exists for
+# exactly this class of card. Strip gfx125 before testing.
+ARCH_RDNA_TEST = replace(PYTORCH_ROCM_ARCH, "gfx125", "")
+
 IS_RDNA = (
-  PYTORCH_ROCM_ARCH != replace(PYTORCH_ROCM_ARCH, "gfx11", "") ||
-  PYTORCH_ROCM_ARCH != replace(PYTORCH_ROCM_ARCH, "gfx12", "")
+  ARCH_RDNA_TEST != replace(ARCH_RDNA_TEST, "gfx11", "") ||
+  ARCH_RDNA_TEST != replace(ARCH_RDNA_TEST, "gfx12", "")
 )
 
 PREBUILD_LEVEL = PREBUILD_KERNELS != "" ? PREBUILD_KERNELS : (IS_RDNA ? "0" : "2")
@@ -450,7 +475,7 @@ group "serving" {
 
 # ─── Base ROCm image with dev toolchain ──────────────────────────
 target "pytorch-base" {
-  dockerfile = "Dockerfile.base"
+  dockerfile = "docker/Dockerfile.base"
   tags = compact([
     "${REGISTRY}/${REGISTRY_NAME}/base:${ROCM_VERSION}-${PYTHON_VERSION}",
     "${REGISTRY}/${REGISTRY_NAME}/base:latest",
@@ -485,7 +510,7 @@ target "pytorch-base" {
 # ─── Full PyTorch build ──────────────────────────────────────────
 target "pytorch" {
   inherits = ["pytorch-base"]
-  dockerfile = "Dockerfile.pytorch"
+  dockerfile = "docker/Dockerfile.pytorch"
   # Explicit: without it buildkit builds the LAST stage in the file, so
   # appending the wheel stage silently made this target publish a
   # scratch image with no shell.
@@ -504,12 +529,16 @@ target "pytorch" {
 
   # Inherit base cache + pytorch-specific cache
   cache-from = [
+    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/pytorch-cache:latest${CACHE_ARCH},mode=max,registry.insecure=true",
+    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/pytorch-cache:latest${CACHE_ARCH}-ref,mode=max,registry.insecure=true",
+    # Transitional: the pre-arch-scoping ref, read-only. Every arch
+    # starts cold without it. Delete once each arch in ARCHES has
+    # been built once and has a warm ${CACHE_ARCH} cache.
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/pytorch-cache:latest,mode=max,registry.insecure=true",
-    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/pytorch-cache:latest-ref,mode=max,registry.insecure=true",
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/base-cache:latest,mode=max,registry.insecure=true",
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/base-cache:latest-ref,mode=max,registry.insecure=true",
   ]
-  cache-to = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/pytorch-cache:latest${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=true,ignore-error=true"]
+  cache-to = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/pytorch-cache:latest${CACHE_ARCH}${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=true,ignore-error=true"]
 
   # Named context, not a registry ref: bake resolves "target:x" by
   # building x first and feeding its result straight in, so pytorch is
@@ -564,7 +593,7 @@ target "pytorch" {
 target "pytorch-wheel" {
   inherits   = ["pytorch"]
   target     = "wheel"
-  dockerfile = "Dockerfile.pytorch"
+  dockerfile = "docker/Dockerfile.pytorch"
 
   tags = compact([
     "${REGISTRY}/${REGISTRY_NAME}/pytorch-wheel:${PYTORCH_VERSION}-${ROCM_VERSION}-${ARCH_TAG}",
@@ -584,7 +613,7 @@ target "pytorch-wheel" {
 # while PyTorch pulls cmake 4.x, so they cannot share an environment.
 # That also means it can build in parallel with pytorch on another node.
 target "triton-wheel" {
-  dockerfile = "Dockerfile.triton"
+  dockerfile = "docker/Dockerfile.triton"
   platforms  = ["linux/amd64"]
   target     = "wheel"
 
@@ -638,7 +667,7 @@ target "triton-wheel" {
 # only makes sense once that has been pushed. Build it explicitly, and
 # on whichever node is free — it is independent of the runtime image.
 target "aiter-wheel" {
-  dockerfile = "Dockerfile.aiter"
+  dockerfile = "docker/Dockerfile.aiter"
   # Pinned, not left to the last stage in the file: appending a stage
   # to Dockerfile.aiter would otherwise silently repoint this target,
   # which is what happened to "pytorch" before 680b4cc.
@@ -658,10 +687,14 @@ target "aiter-wheel" {
   })
 
   cache-from = [
+    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/aiter-wheel-cache:latest${CACHE_ARCH},mode=max,registry.insecure=true",
+    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/aiter-wheel-cache:latest${CACHE_ARCH}-ref,mode=max,registry.insecure=true",
+    # Transitional: the pre-arch-scoping ref, read-only. Every arch
+    # starts cold without it. Delete once each arch in ARCHES has
+    # been built once and has a warm ${CACHE_ARCH} cache.
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/aiter-wheel-cache:latest,mode=max,registry.insecure=true",
-    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/aiter-wheel-cache:latest-ref,mode=max,registry.insecure=true",
   ]
-  cache-to   = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/aiter-wheel-cache:latest${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=true,ignore-error=true"]
+  cache-to   = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/aiter-wheel-cache:latest${CACHE_ARCH}${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=true,ignore-error=true"]
 
   # Named contexts, not registry refs: bake resolves "target:x" by
   # building x first and feeding its result straight in. That makes
@@ -690,27 +723,43 @@ target "aiter-wheel" {
 
 # ─── Minimal runtime image ───────────────────────────────────────
 target "pytorch-run" {
-  dockerfile = "Dockerfile.runtime"
+  dockerfile = "docker/Dockerfile.runtime"
+  # ARCH_TAG, like every other artifact. This target takes no
+  # PYTORCH_ROCM_ARCH arg — it compiles nothing — but it COPYs the torch
+  # wheel out of `pytorch`, so what it ships is as arch-specific as that
+  # wheel is. Without the arch here, a gfx1201 runtime overwrote the
+  # gfx950 one at the same tag and the only way to tell them apart was
+  # the digest. Every other published repo already carried it; this one
+  # was missed because its arch arrives through a context rather than
+  # an arg.
   tags = compact([
-    "${REGISTRY}/${REGISTRY_NAME}/runtime:${PYTORCH_VERSION}-${ROCM_VERSION}",
+    "${REGISTRY}/${REGISTRY_NAME}/runtime:${PYTORCH_VERSION}-${ROCM_VERSION}-${ARCH_TAG}",
     "${REGISTRY}/${REGISTRY_NAME}/runtime:latest",
-    VCS_REF != "" ? "${REGISTRY}/${REGISTRY_NAME}/runtime:${PYTORCH_VERSION}-${ROCM_VERSION}-g${VCS_REF}" : "",
+    VCS_REF != "" ? "${REGISTRY}/${REGISTRY_NAME}/runtime:${PYTORCH_VERSION}-${ROCM_VERSION}-${ARCH_TAG}-g${VCS_REF}" : "",
   ])
   labels = merge(OCI_LABELS, {
     "org.opencontainers.image.title"       = "rocm-pytorch runtime"
-    "org.opencontainers.image.description" = "Minimal PyTorch ${PYTORCH_VERSION} runtime for ROCm ${ROCM_VERSION}"
-    "org.opencontainers.image.version"     = "${PYTORCH_VERSION}-${ROCM_VERSION}"
+    "org.opencontainers.image.description" = "Minimal PyTorch ${PYTORCH_VERSION} runtime for ROCm ${ROCM_VERSION}, ${PYTORCH_ROCM_ARCH}"
+    "org.opencontainers.image.version"     = "${PYTORCH_VERSION}-${ROCM_VERSION}-${ARCH_TAG}"
   })
   platforms  = ["linux/amd64"]
 
   # Inherit pytorch build cache
   cache-from = [
+    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/runtime-cache:latest${CACHE_ARCH},mode=max,registry.insecure=true",
+    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/runtime-cache:latest${CACHE_ARCH}-ref,mode=max,registry.insecure=true",
+    # Transitional: the pre-arch-scoping ref, read-only. Every arch
+    # starts cold without it. Delete once each arch in ARCHES has
+    # been built once and has a warm ${CACHE_ARCH} cache.
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/runtime-cache:latest,mode=max,registry.insecure=true",
-    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/runtime-cache:latest-ref,mode=max,registry.insecure=true",
+    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/pytorch-cache:latest${CACHE_ARCH},mode=max,registry.insecure=true",
+    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/pytorch-cache:latest${CACHE_ARCH}-ref,mode=max,registry.insecure=true",
+    # Transitional: the pre-arch-scoping ref, read-only. Every arch
+    # starts cold without it. Delete once each arch in ARCHES has
+    # been built once and has a warm ${CACHE_ARCH} cache.
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/pytorch-cache:latest,mode=max,registry.insecure=true",
-    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/pytorch-cache:latest-ref,mode=max,registry.insecure=true",
   ]
-  cache-to = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/runtime-cache:latest${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=true,ignore-error=true"]
+  cache-to = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/runtime-cache:latest${CACHE_ARCH}${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=true,ignore-error=true"]
 
   args = {
     BUILDKIT_BUILD_NAME = "rocm-pytorch-build/runtime/${PYTORCH_ROCM_ARCH}/${RUN_ID}"
@@ -754,7 +803,7 @@ target "pytorch-test" {
 # whose MP server imports cupy at module scope, and transitively by
 # vllm, which installs lmcache.
 target "cupy-wheel" {
-  dockerfile = "Dockerfile.cupy"
+  dockerfile = "docker/Dockerfile.cupy"
   platforms  = ["linux/amd64"]
   target     = "wheel"
 
@@ -771,10 +820,14 @@ target "cupy-wheel" {
   })
 
   cache-from = [
+    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/cupy-wheel-cache:latest${CACHE_ARCH},mode=max,registry.insecure=true",
+    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/cupy-wheel-cache:latest${CACHE_ARCH}-ref,mode=max,registry.insecure=true",
+    # Transitional: the pre-arch-scoping ref, read-only. Every arch
+    # starts cold without it. Delete once each arch in ARCHES has
+    # been built once and has a warm ${CACHE_ARCH} cache.
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/cupy-wheel-cache:latest,mode=max,registry.insecure=true",
-    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/cupy-wheel-cache:latest-ref,mode=max,registry.insecure=true",
   ]
-  cache-to   = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/cupy-wheel-cache:latest${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=true,ignore-error=true"]
+  cache-to   = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/cupy-wheel-cache:latest${CACHE_ARCH}${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=true,ignore-error=true"]
 
   contexts = USE_PUB ? {} : {
     base-img = "target:pytorch-base"
@@ -802,7 +855,7 @@ target "cupy-wheel" {
 # lmcache. UCX is built inside it — see Dockerfile.nixl for why apt's
 # libucx is not usable here.
 target "nixl-wheel" {
-  dockerfile = "Dockerfile.nixl"
+  dockerfile = "docker/Dockerfile.nixl"
   platforms  = ["linux/amd64"]
   target     = "wheel"
 
@@ -819,10 +872,14 @@ target "nixl-wheel" {
   })
 
   cache-from = [
+    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/nixl-wheel-cache:latest${CACHE_ARCH},mode=max,registry.insecure=true",
+    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/nixl-wheel-cache:latest${CACHE_ARCH}-ref,mode=max,registry.insecure=true",
+    # Transitional: the pre-arch-scoping ref, read-only. Every arch
+    # starts cold without it. Delete once each arch in ARCHES has
+    # been built once and has a warm ${CACHE_ARCH} cache.
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/nixl-wheel-cache:latest,mode=max,registry.insecure=true",
-    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/nixl-wheel-cache:latest-ref,mode=max,registry.insecure=true",
   ]
-  cache-to   = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/nixl-wheel-cache:latest${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=true,ignore-error=true"]
+  cache-to   = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/nixl-wheel-cache:latest${CACHE_ARCH}${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=true,ignore-error=true"]
 
   contexts = USE_PUB ? {} : {
     pytorch-img = "target:pytorch"
@@ -850,7 +907,7 @@ target "nixl-wheel" {
 # aiter and nixl and hand each result straight in — same reasoning as
 # aiter-wheel.
 target "vllm" {
-  dockerfile = "Dockerfile.vllm"
+  dockerfile = "docker/Dockerfile.vllm"
   platforms  = ["linux/amd64"]
   target     = "final"
 
@@ -867,10 +924,14 @@ target "vllm" {
   })
 
   cache-from = [
+    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/vllm-cache:latest${CACHE_ARCH},mode=max,registry.insecure=true",
+    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/vllm-cache:latest${CACHE_ARCH}-ref,mode=max,registry.insecure=true",
+    # Transitional: the pre-arch-scoping ref, read-only. Every arch
+    # starts cold without it. Delete once each arch in ARCHES has
+    # been built once and has a warm ${CACHE_ARCH} cache.
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/vllm-cache:latest,mode=max,registry.insecure=true",
-    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/vllm-cache:latest-ref,mode=max,registry.insecure=true",
   ]
-  cache-to   = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/vllm-cache:latest${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=true,ignore-error=true"]
+  cache-to   = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/vllm-cache:latest${CACHE_ARCH}${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=true,ignore-error=true"]
 
   contexts = USE_PUB ? {} : {
     pytorch-img    = "target:pytorch"
@@ -908,7 +969,7 @@ target "vllm" {
 target "vllm-wheel" {
   inherits   = ["vllm"]
   target     = "wheel"
-  dockerfile = "Dockerfile.vllm"
+  dockerfile = "docker/Dockerfile.vllm"
 
   tags = compact([
     "${REGISTRY}/${REGISTRY_NAME}/vllm-wheel:${VLLM_REF}-${ROCM_VERSION}-${ARCH_TAG}",
@@ -927,7 +988,7 @@ target "vllm-wheel" {
 # No aiter context: LMCache's extension is cache movement, not GEMMs,
 # and it has no AITER code path.
 target "lmcache" {
-  dockerfile = "Dockerfile.lmcache"
+  dockerfile = "docker/Dockerfile.lmcache"
   platforms  = ["linux/amd64"]
   target     = "final"
 
@@ -944,10 +1005,14 @@ target "lmcache" {
   })
 
   cache-from = [
+    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/lmcache-cache:latest${CACHE_ARCH},mode=max,registry.insecure=true",
+    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/lmcache-cache:latest${CACHE_ARCH}-ref,mode=max,registry.insecure=true",
+    # Transitional: the pre-arch-scoping ref, read-only. Every arch
+    # starts cold without it. Delete once each arch in ARCHES has
+    # been built once and has a warm ${CACHE_ARCH} cache.
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/lmcache-cache:latest,mode=max,registry.insecure=true",
-    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/lmcache-cache:latest-ref,mode=max,registry.insecure=true",
   ]
-  cache-to   = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/lmcache-cache:latest${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=true,ignore-error=true"]
+  cache-to   = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/lmcache-cache:latest${CACHE_ARCH}${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=true,ignore-error=true"]
 
   contexts = USE_PUB ? {} : {
     pytorch-img   = "target:pytorch"
@@ -978,7 +1043,7 @@ target "lmcache" {
 target "lmcache-wheel" {
   inherits   = ["lmcache"]
   target     = "wheel"
-  dockerfile = "Dockerfile.lmcache"
+  dockerfile = "docker/Dockerfile.lmcache"
 
   tags = compact([
     "${REGISTRY}/${REGISTRY_NAME}/lmcache-wheel:${LMCACHE_REF}-${ROCM_VERSION}-${ARCH_TAG}",

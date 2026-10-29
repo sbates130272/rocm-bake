@@ -47,6 +47,24 @@ def parse_tag(tag):
             d["build"] or "-")
 
 
+def device_extra(arch):
+    """The pip extra that selects this tag's wheel, for the index
+    wheelindex.py generates.
+
+    Spelling it out beside the arch is the point: the arch is a
+    property of the tag, while the extra is the string you actually
+    type at an install, and deriving one from the other in your head is
+    where the mistake happens — these wheels have arch-independent
+    filenames, so installing the wrong one is silent until the GPU
+    rejects the kernels.
+
+    "-" for the arch-independent wheels: triton publishes one noarch
+    wheel and carries no device extra, so it is pulled in by whichever
+    arch's metapackage asked for it.
+    """
+    return "-" if arch in ("noarch", "-") else f"device-{arch}"
+
+
 def fetch(url):
     # Relies on no_proxy covering the tailnet; the Makefile exports it.
     req = urllib.request.Request(url, headers={"Accept": ACCEPT})
@@ -262,8 +280,16 @@ def main():
             print(f"  \033[1m{repo}\033[0m  {size / 1048576:.1f} MB"
                   f"  ({len(tags)} tags)")
             if shown:
+                # Every header is left-aligned, size included, even
+                # though its values are right-aligned underneath. The
+                # alignment of a column of numbers and the alignment of
+                # the word naming it are separate choices: the numbers
+                # line up on their units so they can be compared, while
+                # a right-aligned header was the only one in the row
+                # that did not start where its column does.
                 print(f"      \033[2m{'published':<17} {'arch':<9} "
-                      f"{'version':<9} {'rocm':<13} {'size':>9}  "
+                      f"{'extra':<16} "
+                      f"{'version':<9} {'rocm':<13} {'size':<9}  "
                       f"{'build':<16} wheel\033[0m")
             # Each tag is sized separately rather than assumed to alias
             # the repo's latest. Usually they do, but a tag left behind
@@ -281,7 +307,8 @@ def main():
                 # the same repo land on one day and the ordering is
                 # unreadable without the clock.
                 stamp = (when or "").replace("T", " ")[:16] or "-"
-                print(f"      {stamp:<17} {arch:<9} {version:<9} "
+                print(f"      {stamp:<17} {arch:<9} {device_extra(arch):<16} "
+                      f"{version:<9} "
                       f"{rocm:<13} {mb:>9}  {build:<16} "
                       f"{wheel_filename(base, tag)}")
             if hidden:

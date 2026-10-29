@@ -194,7 +194,7 @@ services:
     entrypoint: ["/bin/bash", "-c"]
     # One install before serving, working around an image defect:
     #
-    #  torchvision  Dockerfile.pytorch installs the PyPI (CUDA) build,
+    #  torchvision  docker/Dockerfile.pytorch installs the PyPI (CUDA) build,
     #               whose extension cannot load on ROCm. Present-but-
     #               broken is worse than absent: transformers imports it
     #               eagerly and `torchvision::nms does not exist` kills
@@ -206,7 +206,7 @@ services:
     #               Real fix: a HIP torchvision wheel built against our
     #               torch, as a bake target.
     #
-    # lmcache is NOT installed here any more: Dockerfile.vllm carries it
+    # lmcache is NOT installed here any more: docker/Dockerfile.vllm carries it
     # at build time. vLLM ships the MP connector itself but imports
     # lmcache.utils from it, so it is a real dependency of the image
     # rather than something to bolt on at startup. Installing it at run
