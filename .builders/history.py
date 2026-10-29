@@ -223,6 +223,23 @@ def run_id(record):
     return parts[-1] if len(parts) >= 4 else "-"
 
 
+def arch_of(record):
+    """The gfx target the build was for, or "-" for older records.
+
+    BUILDKIT_BUILD_NAME is <repo>/<image>/<arch>/<run-id>, so the arch
+    has been sitting in every record all along; the panel just threw
+    it away. Worth a column: the fleet builds several arches, a target
+    name alone does not say which, and two runs of the same image for
+    different GPUs are otherwise indistinguishable in the panel —
+    which is the same confusion the arch field fixed in bench.sh.
+
+    Triton stamps "noarch" here on purpose: it is a compiler and its
+    wheel is architecture-independent.
+    """
+    parts = (record.get("name") or "").split("/")
+    return parts[-2] if len(parts) >= 4 else "-"
+
+
 def records_for(builder):
     """Raw history records for one builder, newest first."""
     try:
@@ -297,6 +314,7 @@ def by_image(builders):
                 node = rec.get("ref", "").split("/")
                 latest[name] = (created,
                                 run_id(rec),
+                                arch_of(rec),
                                 node[1] if len(node) >= 3 else builder,
                                 status_of(rec, STOPS),
                                 duration(rec),
@@ -324,29 +342,31 @@ def by_image(builders):
     rows = []
     for title, names in (g for g in groups if g[1]):
         for name in sorted(names, key=image_key):
-            _, rid, node, status, dur, when, lyr = latest[name]
+            _, rid, arch, node, status, dur, when, lyr = latest[name]
             # The stage is dropped here, not in the record: the group
             # already says wheel, so repeating it in every row is noise.
             rows.append((title, name.replace(" (wheel)", ""),
-                         lyr, node, status.lower(), dur, when, rid))
+                         arch, lyr, node, status.lower(), dur, when, rid))
     def w(i, head):
         return max([len(head)] + [len(r[i]) for r in rows])
 
-    wn, wl, wnd, ws = w(1, ""), w(2, "layers"), w(3, "node"), w(4, "status")
-    wd, ww = w(5, "elapsed"), w(6, "when")
+    wn, wa, wl = w(1, ""), w(2, "gfx"), w(3, "layers")
+    wnd, ws = w(4, "node"), w(5, "status")
+    wd, ww = w(6, "elapsed"), w(7, "when")
 
     # Headers all left-aligned, including over the right-aligned
     # elapsed and when columns. Where a number lines up and where its
     # name starts are separate questions: the values align on their
     # units so they compare, the titles align with each other.
-    print(f"  \033[2m{'':<{wn}} {'layers':<{wl}} {'node':<{wnd}} "
-          f"{'status':<{ws}} {'elapsed':<{wd}}  {'when':<{ww}}  id\033[0m")
+    print(f"  \033[2m{'':<{wn}} {'gfx':<{wa}} {'layers':<{wl}} "
+          f"{'node':<{wnd}} {'status':<{ws}} {'elapsed':<{wd}}  "
+          f"{'when':<{ww}}  id\033[0m")
     shown = None
-    for title, show, lyr, node, status, dur, when, rid in rows:
+    for title, show, arch, lyr, node, status, dur, when, rid in rows:
         if title != shown:
             print(f"  \033[2m{title}\033[0m")
             shown = title
-        print(f"  {show:<{wn}} {lyr:<{wl}} {node:<{wnd}} "
+        print(f"  {show:<{wn}} {arch:<{wa}} {lyr:<{wl}} {node:<{wnd}} "
               f"{status:<{ws}} {dur:>{wd}}  {when:>{ww}}  {rid}")
 
 
