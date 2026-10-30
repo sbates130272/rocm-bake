@@ -372,9 +372,9 @@ def main():
         for f in FAIL:
             print(f"  {f}", file=sys.stderr)
         return 1
-    print("contracts ok: nginx log_format, balance placement, sample shape, "
-          "perf stages, build-* rules, build-record names, target-costs and versioncheck's "
-          "wheel repos all agree")
+    print("contracts ok: nginx log_format, balance placement, sample "
+          "shape, perf stages, build-* rules, build-record names, "
+          "target-costs and versioncheck's wheel repos all agree")
     return 0
 
 

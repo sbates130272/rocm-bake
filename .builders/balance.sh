@@ -276,7 +276,13 @@ load_deps() {
 # hits against 801. Ordering is what recovers those 615; co-location
 # would have bought nothing extra and would have wasted a node.
 df_busy() {
-    local t="$1" f="${DF[$t]:-}"
+    # Two `local`s, not one. Every argument to `local` is expanded
+    # before any of them is assigned, so `local t="$1" f="${DF[$t]:-}"`
+    # read DF at the CALLER's t, not at "$1". Every call site happens to
+    # pass the same name it already has in scope, so it worked by
+    # coincidence and the stub tests passed. shellcheck SC2318.
+    local t="$1"
+    local f="${DF[$t]:-}"
     [ -n "$f" ] || return 1
     [ -n "${DFBUSY[$f]:-}" ]
 }
@@ -302,7 +308,7 @@ ready_targets() {
         df_busy "$t" && continue
         ok=1
         for d in $(blocking_deps "$t"); do
-            [ "${STATE[$d]}" = done ] || { ok=0; break; }
+            [ "${STATE[$d]}" = "done" ] || { ok=0; break; }
         done
         [ "$ok" = 1 ] && printf '%s %s\n' "$(cost_of "$t")" "$t"
     done | sort -rn | awk '{print $2}'
@@ -399,7 +405,7 @@ run_dag() {
         BUSY[$node]=""
         [ -n "${DF[$t]:-}" ] && DFBUSY[${DF[$t]}]=""
         if [ "$prc" = 0 ]; then
-            STATE[$t]=done
+            STATE[$t]="done"
             echo "   $node: finished $t"
         else
             STATE[$t]=failed
@@ -455,7 +461,7 @@ plan_dag() {
             # read_placement parses for stage-format logs, and
             # check-contracts.py asserts the two still agree.
             echo "   $target -> $node   (log: /tmp/balance-$target.log)"
-            STATE[$target]=done
+            STATE[$target]="done"
         done
     done
     local left=""
