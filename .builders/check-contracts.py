@@ -182,15 +182,39 @@ def check_costs():
     bake = read("rocm-bake.hcl")
     m = re.search(r'group\s+"wheels"\s*\{(.*?)\}', bake, re.S)
     wheels = set(re.findall(r'"([a-z0-9-]+)"', m.group(1))) if m else set()
-    for kind in ("build", "cache"):
-        missing = wheels - seen[kind]
-        if missing:
-            fail("costs", f"no `{kind}` line for {sorted(missing)}; those "
-                          f"targets would be scheduled as if free")
-        extra = seen[kind] - wheels
-        if extra:
-            fail("costs", f"`{kind}` lines for targets not in bake's wheels "
-                          f"group: {sorted(extra)}")
+    # `build` must cover everything balance.sh can schedule, not just
+    # the wheels. It defaults TARGETS to bake's `default` group, which
+    # includes four image targets — and all four were missing until
+    # 2026-10-30. cost_of returned 1 for each, so `pytorch`, the most
+    # expensive target in the graph, sorted last and was handed the
+    # weakest node. A missing row and a one-second target look
+    # identical to awk, which is exactly why this has to be asserted.
+    m = re.search(r'group\s+"default"\s*\{(.*?)\}', bake, re.S)
+    schedulable = set(re.findall(r'"([a-z0-9-]+)"', m.group(1))) if m else set()
+    missing = schedulable - seen["build"]
+    if missing:
+        fail("costs", f"no `build` line for {sorted(missing)}; cost_of "
+                      f"falls back to 1s, so LPT sorts them last and "
+                      f"earliest-finish hands them the weakest free node")
+    extra = seen["build"] - schedulable
+    if extra:
+        fail("costs", f"`build` lines for targets not in bake's default "
+                      f"group: {sorted(extra)}")
+
+    # `cache` stays scoped to the wheels. The network term needs a
+    # measured export size and only the wheels have one; inventing
+    # figures for the image targets to satisfy a checker would be
+    # worse than letting cost_of fall back to the build term, which is
+    # what it does when the cache row is absent.
+    missing = wheels - seen["cache"]
+    if missing:
+        fail("costs", f"no `cache` line for {sorted(missing)}; their "
+                      f"exports would be costed as free and cache-heavy "
+                      f"targets would pile onto whichever node is slowest")
+    extra = seen["cache"] - wheels
+    if extra:
+        fail("costs", f"`cache` lines for targets not in bake's wheels "
+                      f"group: {sorted(extra)}")
 
     hit = re.search(r'NODES="\$\{NODES:-([^}]*)\}"', read(".builders/balance.sh"))
     nodes = set(hit.group(1).split()) if hit else set()
@@ -199,6 +223,46 @@ def check_costs():
         fail("costs", f"no `netmb` line for {sorted(missing)}; their exports "
                       f"would be costed as free and cache-heavy targets "
                       f"would pile onto whichever is slowest")
+
+
+# ── 8. BUILDKIT_BUILD_NAME uniqueness ─────────────────────────────
+def check_build_names():
+    """Two targets must never share a build record name.
+
+    buildx history is keyed by that name, so a shared one gives both
+    targets a single record. perftrace.py then fetches the same record
+    for each and the report draws one target's timeline under both
+    names, while build-status cannot say which of the two a row is.
+    pytorch/pytorch-wheel and vllm/vllm-wheel did exactly this until
+    2026-10-30 — on run 20261030T182519Z, trace-pytorch.json and
+    trace-pytorch-wheel.json were byte-identical. It also made the
+    `build pytorch` and `build vllm` rows in target-costs unmeasurable
+    by direct observation.
+
+    Shape matters too: history.py reads the arch from parts[-2] and the
+    run id from parts[-1], so a name with fewer than four components
+    silently degrades both columns to "-".
+    """
+    names = re.findall(r'BUILDKIT_BUILD_NAME\s*=\s*"([^"]+)"',
+                       read("rocm-bake.hcl"))
+    if not names:
+        return fail("buildnames", "no BUILDKIT_BUILD_NAME in rocm-bake.hcl")
+
+    seen = {}
+    for raw in names:
+        parts = raw.split("/")
+        if len(parts) != 4:
+            fail("buildnames",
+                 f"{raw!r} is not <repo>/<image>/<arch>/<run-id>; "
+                 f"history.py would lose its arch and run-id columns")
+            continue
+        key = (parts[1], parts[2])
+        if key in seen:
+            fail("buildnames",
+                 f"two targets share the build record name "
+                 f"{'/'.join(parts[:3])}/...; buildx history keys on it, "
+                 f"so their traces and history rows are indistinguishable")
+        seen[key] = raw
 
 
 # ── 5 & 6. perf target set ↔ bake groups ↔ make rules ─────────────
@@ -299,6 +363,7 @@ def main():
     check_placement(report)
     check_sample_shape(report, sample)
     check_stages()
+    check_build_names()
     check_costs()
     check_version_wheel_repos()
 
@@ -308,7 +373,7 @@ def main():
             print(f"  {f}", file=sys.stderr)
         return 1
     print("contracts ok: nginx log_format, balance placement, sample shape, "
-          "perf stages, build-* rules, target-costs and versioncheck's "
+          "perf stages, build-* rules, build-record names, target-costs and versioncheck's "
           "wheel repos all agree")
     return 0
 

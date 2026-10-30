@@ -131,6 +131,25 @@ BUILD_DATE ?= $(shell git log -1 --format=%cI 2>/dev/null || date -u +%Y-%m-%dT%
 export VCS_REF
 export BUILD_DATE
 
+# Identifies a run in the build records: it is the last component of
+# every target's BUILDKIT_BUILD_NAME, and the column `make build-status`
+# and `make watch` print. The bake default is "dev", which made every
+# build since the beginning of time look like the same run.
+#
+# `:=`, not `?=`. A recursively-expanded `?=` re-runs its $(shell) at
+# every reference, so a timestamp would differ between two uses inside
+# one build. VCS_REF above gets away with `?=` only because a commit
+# hash is stable. $(or $(RUN_ID),...) keeps the override: make imports
+# the environment, and a command-line RUN_ID=x beats the assignment.
+#
+# Safe to vary per build. RUN_ID reaches no layer: it appears only in
+# BUILDKIT_BUILD_NAME, which is a reserved BuildKit frontend arg that
+# no Dockerfile declares as an ARG, so it cannot enter any build
+# environment or any cache key. That was worth checking before making
+# it change on every invocation.
+RUN_ID := $(or $(RUN_ID),$(shell date -u +%Y%m%dT%H%M%SZ)-$(VCS_REF))
+export RUN_ID
+
 # SOURCE_DATE_EPOCH used to be computed and exported from here, one
 # value per image. It lives in rocm-bake.hcl now — see the SDE_EPOCH block
 # there for why it is a constant rather than a date from git history.

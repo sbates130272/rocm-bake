@@ -45,15 +45,20 @@ LABEL org.opencontainers.image.description="PyTorch ${PYTORCH_VERSION} ROCm ${RO
 # that changes it. PyTorch has 36 submodules at v2.15.0, so the clone
 # is 37 sequential fetches.
 #
-# The band this is aimed at measured 206-209s across two cold runs,
-# ~9% of this target. That is the figure BEFORE this flag; the effect
-# of the flag is NOT yet measured. Expect somewhere near 60-90s rather
-# than 206/8, since concurrency is bounded below by the single largest
-# submodule, and part of the band is the checkout of ~80k files, which
-# --jobs does not touch at all. Take the real number from the clone
-# band of the next cold run (`make perf-run` then `make perf-report`;
-# perf runs pass --no-cache, so that band is cold by construction) and
-# replace this paragraph with it.
+# Measured, and it is a far smaller win than it looks like it should
+# be:
+#
+#   serial (no --jobs)   206.0s, 209.3s   two cold runs
+#   --jobs 8             179.5s           cold, same clone step
+#
+# ~27s, or 13%. Not the ~60-90s a naive 36-way-serial model predicts,
+# which means submodule FETCHING was never the dominant term in this
+# band. The floor is the checkout of ~80k files plus the superproject,
+# and --jobs does not touch either. Raising it further is very unlikely
+# to pay: there is only ~27s of parallelisable work in the whole step.
+#
+# Keep the flag anyway — 27s for one word, with no measured downside.
+# But do not reach for this pattern elsewhere expecting more.
 #
 # COLD ONLY. On a normal run this layer is a cache hit — target-costs
 # records pytorch-wheel moving 17KB on a warm build — so none of the

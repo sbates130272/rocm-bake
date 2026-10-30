@@ -625,6 +625,22 @@ target "pytorch" {
 # Same idea as the aiter target: the wheel as its own image so it can
 # live in Zot and be pulled without rebuilding PyTorch.
 target "pytorch-wheel" {
+  # Its own build record name. Inheriting the parent's meant this
+  # target and pytorch shared one, so `docker buildx history` held a
+  # single record for both: perftrace.py fetched it twice and the
+  # report drew the same bands under both names, while build-status
+  # could not tell which of the two a row described. Verified by
+  # md5sum on run 20261030T182519Z — trace-pytorch.json and
+  # trace-pytorch-wheel.json were byte-identical.
+  #
+  # Keeps the <repo>/<image>/<arch>/<run-id> shape history.py parses
+  # for its arch and run-id columns. Costs nothing to change:
+  # BUILDKIT_BUILD_NAME is a reserved frontend arg that no Dockerfile
+  # declares, so it reaches no cache key.
+  args = {
+    BUILDKIT_BUILD_NAME = "rocm-pytorch-build/pytorch-wheel/${PYTORCH_ROCM_ARCH}/${RUN_ID}"
+  }
+
   inherits   = ["pytorch"]
   target     = "wheel"
   dockerfile = "docker/Dockerfile.pytorch"
@@ -1001,6 +1017,22 @@ target "vllm" {
 
 # ─── vLLM wheel artifact ─────────────────────────────────────────
 target "vllm-wheel" {
+  # Its own build record name. Inheriting the parent's meant this
+  # target and vllm shared one, so `docker buildx history` held a
+  # single record for both: perftrace.py fetched it twice and the
+  # report drew the same bands under both names, while build-status
+  # could not tell which of the two a row described. Verified by
+  # md5sum on run 20261030T182519Z — trace-pytorch.json and
+  # trace-pytorch-wheel.json were byte-identical.
+  #
+  # Keeps the <repo>/<image>/<arch>/<run-id> shape history.py parses
+  # for its arch and run-id columns. Costs nothing to change:
+  # BUILDKIT_BUILD_NAME is a reserved frontend arg that no Dockerfile
+  # declares, so it reaches no cache key.
+  args = {
+    BUILDKIT_BUILD_NAME = "rocm-pytorch-build/vllm-wheel/${PYTORCH_ROCM_ARCH}/${RUN_ID}"
+  }
+
   inherits   = ["vllm"]
   target     = "wheel"
   dockerfile = "docker/Dockerfile.vllm"
@@ -1075,6 +1107,22 @@ target "lmcache" {
 
 # ─── LMCache wheel artifact ──────────────────────────────────────
 target "lmcache-wheel" {
+  # Its own build record name. Inheriting the parent's meant this
+  # target and lmcache shared one, so `docker buildx history` held a
+  # single record for both: perftrace.py fetched it twice and the
+  # report drew the same bands under both names, while build-status
+  # could not tell which of the two a row described. Verified by
+  # md5sum on run 20261030T182519Z — trace-pytorch.json and
+  # trace-pytorch-wheel.json were byte-identical.
+  #
+  # Keeps the <repo>/<image>/<arch>/<run-id> shape history.py parses
+  # for its arch and run-id columns. Costs nothing to change:
+  # BUILDKIT_BUILD_NAME is a reserved frontend arg that no Dockerfile
+  # declares, so it reaches no cache key.
+  args = {
+    BUILDKIT_BUILD_NAME = "rocm-pytorch-build/lmcache-wheel/${PYTORCH_ROCM_ARCH}/${RUN_ID}"
+  }
+
   inherits   = ["lmcache"]
   target     = "wheel"
   dockerfile = "docker/Dockerfile.lmcache"

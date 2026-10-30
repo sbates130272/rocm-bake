@@ -52,6 +52,15 @@ done
 # See the PUBLISHED_INPUTS comment in rocm-bake.hcl.
 export PUBLISHED_INPUTS=1
 
+# One RUN_ID for the whole run. balance.sh spawns a separate `make`
+# per target, and the Makefile derives RUN_ID from `date` when it is
+# unset — so without this each target would stamp its build record
+# with its own timestamp and the run would be unidentifiable, which is
+# the opposite of the point. Set once here, exported, inherited by all
+# of them. An outer caller that already has an identity for the run
+# (perfrun.sh passes its own stamp) wins.
+export RUN_ID="${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$(git rev-parse --short HEAD 2>/dev/null || echo nogit)}"
+
 NODES="${NODES:-snoc-think snoc-strix snoc-gaming}"
 MIN_MEM_GB="${MIN_MEM_GB:-8}"
 

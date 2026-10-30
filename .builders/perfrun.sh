@@ -69,6 +69,11 @@ DRY_PUSH_FLAG="--no-push"
 
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 RUN_DIR="${PERF_DIR:-/var/tmp/rocm-perf}/${STAMP}"
+# Label the build records with this run's own stamp, so a row in
+# `make build-status` can be traced to the directory under
+# /var/tmp/rocm-perf that describes it. Without this the two
+# identifiers are unrelated and correlating them is guesswork.
+export RUN_ID="${RUN_ID:-${STAMP}}"
 INTERVAL="${PERF_INTERVAL:-5}"
 SCCACHE_LOG="${SCCACHE_LOG_FILE:-/var/log/nginx/sccache.log}"
 
