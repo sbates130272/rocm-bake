@@ -154,60 +154,78 @@ purpose: a cold PyTorch build runs one `cc1plus` per core and each takes
 1–2 GB, so RAM is what actually bounds a big node. Nodes below
 `MIN_MEM_GB` (default 8) are skipped.
 
-Work runs in stages. Targets within a stage run concurrently on
-different nodes; stages run in order.
+Work is scheduled from the dependency graph, not from a list kept
+beside it. `.builders/depgraph.py` asks bake for each target's
+`contexts` — the same `target:` edges that define the build DAG — and
+`balance.sh` starts a target once every dependency *inside the run* has
+finished and been pushed.
 
-| Stage | Default | Why |
-| --- | --- | --- |
-| `STAGE_1` | `pytorch-base` | Everything depends on it |
-| `STAGE_2` | `triton-wheel` | The pytorch image installs this wheel, so it is on the critical path |
-| `STAGE_2B` | `pytorch` | |
-| `STAGE_3` | `aiter-wheel nixl-wheel pytorch-wheel` | The first stage wide enough to use the whole fleet |
-| `STAGE_3B` | `cupy-wheel` | Only `lmcache` consumes it; stage 3 is already the widest point |
-| `STAGE_4` | `lmcache lmcache-wheel` | The wheel must be published before vLLM starts |
-| `STAGE_5` | `vllm vllm-wheel` | |
+```bash
+.builders/depgraph.py --deps pytorch vllm-wheel
+# pytorch pytorch-base triton-wheel
+# vllm-wheel aiter-wheel lmcache-wheel nixl-wheel pytorch triton-wheel
+```
 
-Order **within** a stage is priority, not preference: targets are handed
-to nodes best-first, so the most expensive target must be listed first
-or it gets whatever is left. That was backwards for stage 3 once —
-`aiter-wheel` was last, so a 50-minute kernel compile landed on the
-weakest node at `MAX_JOBS=12` while two targets costing 67 s and 32 s
-took `snoc-think`'s 32 jobs.
+What to build is a set, and ordering takes care of itself:
 
-Stage width is the whole game for this scheduler. It parallelises
-*within* a stage, so a one-target stage always goes to the single best
-node however the others score. Stages 1, 2 and 2B are width-1 because
-the dependency chain genuinely is serial there.
+```bash
+TARGETS="pytorch-wheel triton-wheel" .builders/balance.sh
+```
 
-Every stage is overridable, so a run can skip a target without editing
-the file — `STAGE_3="pytorch-wheel"` builds a new arch without AITER,
-which costs more than everything else combined.
+It defaults to bake's `default` group. `make push-wheels` uses the
+`wheels` group plus `pytorch` and `pytorch-base`, because every wheel
+builds `FROM` one or both of those and neither is a wheel.
 
-### Queue mode drops the barrier
+This replaced a hand-written `STAGE_1`..`STAGE_5`. That list was a
+second copy of what `rocm-bake.hcl` already stated, and the two could
+drift without anything saying so: a `gfx1250` run scheduled
+`vllm-wheel` when no `gfx1250` pytorch image existed anywhere, and it
+died resolving that base image at step 1 of 7, 0 s in, taking the rest
+of its node's queue with it.
 
-`balance.sh --queue` is a second scheduling mode, and it is the default
-for [performance runs](../performance/perf-runs.md#queues-not-stage-barriers).
+Three orderings the old stages asserted by hand are now edges in
+`rocm-bake.hcl`, enforced by construction:
 
-Stages exist to order work that depends on earlier work. Under
-`PUBLISHED_INPUTS=1` nothing here does — every wheel resolves to a
-self-contained target that pulls its inputs from Zot — so the barrier
-buys nothing and costs a great deal: on one measured run stage 1 took
-44m16s of wall clock to do 77m09s of work, leaving 55m39s of idle
-builder time.
+- `triton-wheel` before `pytorch` — the pytorch image installs that wheel
+- `lmcache-wheel` before `vllm-wheel` — vLLM takes a `lmcache-wheel` context, and results cross nodes through Zot, so it must be *published* first
+- `pytorch-base` before everything
 
-In queue mode the stage variables only set the pool. Targets are packed
-onto nodes longest-first and each node drains its own list sequentially
-while the nodes run concurrently — sequential per node because several
-concurrent builds on one box each derive `MAX_JOBS` from
+### Preflight
+
+Before any build starts, every image the run resolves from the registry
+— minus the ones it publishes itself — is checked against Zot. A
+missing input is named up front, with the make target that creates it,
+instead of surfacing as a target dying at step 1 after the scheduler
+has already committed work to a node.
+
+```
+depgraph: these images are needed but not published, and nothing in
+this run builds them:
+  …/rocm-pytorch/pytorch:2.15.0-10.1.0-full-gfx1250
+      needed by: aiter-wheel, lmcache-wheel, nixl-wheel, vllm-wheel
+   build it with: make push-pytorch
+```
+
+Only a 404 counts as absent. The corporate proxy answers 403 for the
+tailnet unless `no_proxy` covers it, and blocking a build on that would
+be wrong.
+
+### Packing
+
+Among the targets eligible at any moment, the longest goes to the node
+that would finish it soonest, and each node runs one build at a time —
+several concurrent builds on one box each derive `MAX_JOBS` from
 `MemAvailable` as though they were alone, and oversubscribe it.
 
 The packing cost model is `.builders/target-costs`, and it ranks by
 which node would *finish* a target soonest rather than which is least
 loaded, because this fleet's upload speeds span a factor of 25.
 
-Barriers remain the right answer the moment a target gains a real
-dependency on another: `PERF_QUEUE=0`, or simply do not pass
-`--queue`.
+`--queue` is still accepted and ignored. It named the mode that
+dropped stage barriers entirely, which was safe only while nothing in a
+run depended on anything else in it; dependency ordering supersedes it,
+and callers still passing it get the better behaviour rather than an
+unknown-argument error mid-build.
 
 ### Why `build-all` refuses the pool
 

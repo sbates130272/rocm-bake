@@ -18,9 +18,10 @@ Checks:
   3. perfsample's DEFAULT_NODES and perfreport's SERIES name the same
      builders.
   4. perfsample writes every sample field perfreport reads.
-  5. perfrun's default stages cover exactly bake's `wheels` group.
-  6. Every target in those stages has a build-* Makefile rule, via the
-     same mk_name mapping bench.sh uses.
+  5. The schedulers name their work by bake group, through depgraph.py,
+     rather than keeping a hand-written copy of it.
+  6. Every target they can be asked for has a build-* Makefile rule,
+     via the same mk_name mapping bench.sh uses.
   7. target-costs covers every wheel and every default node, so no
      target is scheduled as though it were free.
   8. versioncheck.py's wheel_repo names are real artifacts, i.e. they
@@ -200,8 +201,20 @@ def check_costs():
                       f"would pile onto whichever is slowest")
 
 
-# ── 5 & 6. perfrun stages ↔ bake wheels group ↔ make rules ────────
+# ── 5 & 6. perf target set ↔ bake groups ↔ make rules ─────────────
 def check_stages():
+    """The schedulers must name their work by group, not by hand.
+
+    balance.sh used to carry the dependency order as STAGE_1..STAGE_5
+    and perfrun.sh its own three-stage copy of the wheels list. Both
+    were duplicates of rocm-bake.hcl, and both could drift from it
+    silently — which is how a gfx1250 run came to schedule vllm-wheel
+    with no pytorch image in the graph at all.
+
+    There is no longer a list to compare, so this asserts the
+    indirection itself: each scheduler asks depgraph.py for a bake
+    group rather than spelling one out.
+    """
     bake = read("rocm-bake.hcl")
     m = re.search(r'group\s+"wheels"\s*\{(.*?)\}', bake, re.S)
     if not m:
@@ -209,23 +222,36 @@ def check_stages():
     wheels = set(re.findall(r'"([a-z0-9-]+)"', m.group(1)))
 
     run = read(".builders/perfrun.sh")
-    staged = set()
-    for var in ("PERF_STAGE_A", "PERF_STAGE_B", "PERF_STAGE_C"):
-        hit = re.search(rf'\$\{{{var}:-([^}}]*)\}}', run)
-        if hit:
-            staged |= set(hit.group(1).split())
-    if staged != wheels:
+    if "depgraph.py\" --group wheels" not in run and \
+            "depgraph.py --group wheels" not in run:
         fail("stages",
-             f"perfrun stages {sorted(staged)} != bake wheels group "
-             f"{sorted(wheels)}; a perf run would skip or invent a target")
+             "perfrun.sh no longer derives its targets from bake's "
+             "`wheels` group; a hand-written list can drift from it")
+    # pytorch is not a wheel, so the group alone would omit the image
+    # every wheel builds FROM — and the most expensive target measured.
+    if not re.search(r'PERF_TARGETS=.*\bpytorch\b', run):
+        fail("stages",
+             "perfrun.sh dropped `pytorch` from PERF_TARGETS; perf runs "
+             "would measure only the wheels and could schedule them "
+             "against an image no run builds")
+
+    bal = read(".builders/balance.sh")
+    if "--group default" not in bal:
+        fail("stages",
+             "balance.sh no longer defaults TARGETS to bake's `default` "
+             "group")
+    if re.search(r'^STAGE_[0-9]', bal, re.M):
+        fail("stages",
+             "balance.sh has STAGE_* definitions again; ordering belongs "
+             "to the bake graph, read by depgraph.py")
 
     # bench.sh dispatches through `make build-<mk_name>`; every target
-    # it can be asked for needs that rule to exist.
+    # a scheduler can be asked for needs that rule to exist.
     bench = read(".builders/bench.sh")
     mapping = dict(re.findall(r"^\s*([a-z0-9-]+)\)\s*echo\s+([a-z0-9-]+)\s*;;",
                               bench, re.M))
     makefile = read("Makefile")
-    for target in sorted(wheels):
+    for target in sorted(wheels | {"pytorch", "pytorch-base"}):
         rule = mapping.get(target, target)
         if not re.search(rf"^build-{re.escape(rule)}:", makefile, re.M):
             fail("stages",

@@ -117,28 +117,51 @@ Those spans were discarded until a `triton-wheel` run showed 92 s of
 steps inside a 430 s record, with the missing 336 s invisible: a node
 that looked idle for most of its build was in fact uploading 6.4 GB.
 
-## Queues, not stage barriers
+## Dependency ordering, not stage barriers
 
-`balance.sh --queue` is the default for perf runs, and stage barriers
-are what it replaced.
+Perf runs schedule from the bake graph. A target starts when every
+dependency *inside the run* has finished and been pushed, and not
+before; everything else it needs is resolved from Zot and checked by
+[preflight](../architecture/build-graph.md#preflight) before any build
+begins.
 
-Barriers exist to order work that depends on earlier work, and under
-`PUBLISHED_INPUTS=1` nothing here does — every wheel resolves to a
-self-contained target that pulls its inputs from Zot. The barrier
-bought nothing and cost a great deal:
+This replaced two earlier modes, and it is worth knowing why both
+failed.
+
+Stage barriers ordered work correctly but idled whole nodes waiting on
+unrelated targets:
 
 > On one gfx1201 run stage 1 took 44m16s of wall clock to do 77m09s of
 > work, leaving **55m39s of idle builder time**, with the weakest node
 > idle for 82% of it.
 
-In queue mode the stage variables only set the pool. Targets are packed
-onto nodes longest-first, and each node then drains its own list
-sequentially while the nodes run concurrently.
+Flat per-node queues dropped the barrier and recovered that time, but
+could not express a dependency at all. That was safe only while every
+wheel was self-contained — and stopped being true the moment a run
+included a target that builds `FROM` another, which is how a gfx1250
+run scheduled `vllm-wheel` against a pytorch image nothing was
+building.
 
-Sequential per node matters: several concurrent builds on one box each
-derive `MAX_JOBS` from `MemAvailable` as though they were alone, and
-oversubscribe it. `PERF_QUEUE=0` goes back to barriers, which is worth
-doing if a target ever gains a real dependency on another.
+Within the ordering constraint the packing is unchanged: longest-first
+onto the node that would finish it soonest, one build per node at a
+time, because several concurrent builds on one box each derive
+`MAX_JOBS` from `MemAvailable` as though they were alone and
+oversubscribe it.
+
+### What a perf run measures
+
+`PERF_TARGETS` defaults to bake's `wheels` group **plus `pytorch`**.
+
+`pytorch` is not a wheel, so the group alone omitted it — and it is the
+most expensive target in the graph as well as the image every other
+wheel builds `FROM`. Leaving it out measured the cheap half of a build,
+and on an arch nobody had built before it scheduled wheels against an
+image that did not exist.
+
+Including it costs little on a normal run, where the layer cache serves
+it in seconds. On a cold run it genuinely rebuilds, which is what cold
+means.
+
 
 ## What a target costs depends on which node runs it
 

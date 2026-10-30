@@ -3,6 +3,16 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>__TITLE__</title>
 <!--
+  Inline data URI rather than a favicon.ico beside the page: a run
+  directory is copied around - perf-publish ships index.html and the
+  sidecar onto gh-pages, perfserve copies them into .current - and a
+  separate icon file would have to be copied by every one of those
+  paths or 404 on all of them. Three ascending bars, one per builder,
+  in slots 1-3 of the chart's own palette. No background, so it reads
+  on a light or a dark tab strip.
+-->
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2016%2016'%3E%3Crect%20x='2'%20y='9'%20width='3'%20height='5'%20rx='1'%20fill='%232a78d6'/%3E%3Crect%20x='6.5'%20y='5'%20width='3'%20height='9'%20rx='1'%20fill='%23eb6834'/%3E%3Crect%20x='11'%20y='2'%20width='3'%20height='12'%20rx='1'%20fill='%231baf7a'/%3E%3C/svg%3E">
+<!--
   Template for .builders/perfreport.py's interactive chart. It lives in
   its own file rather than as a string inside the script for two
   reasons: ruff lints every .py in this repo and embedded CSS/JS blows
@@ -22,6 +32,10 @@
     font:14px/1.5 ui-sans-serif,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif; }
   h1 { font-size:17px; margin:0 0 2px; }
   .sub { color:var(--ink2); font-size:12px; margin-bottom:16px; }
+  .runsel { font-size:12px; color:var(--ink2); margin:-8px 0 16px; }
+  .runsel select { font:inherit; color:var(--ink); background:transparent;
+    border:1px solid var(--grid); border-radius:4px; padding:3px 6px;
+    margin-left:6px; max-width:420px; }
   .wrap { display:flex; gap:18px; align-items:flex-start; }
   .plot { flex:1 1 auto; min-width:0; }
   /* Legend on the right, and it is also the filter: clicking a row
@@ -70,6 +84,7 @@
 </style></head><body>
 <h1>__TITLE__</h1>
 <div class="sub">__SUB__ &middot; <span id="live">live</span></div>
+<div class="runsel" id="runsel" hidden><label for="run">run</label><select id="run"></select></div>
 <div id="tip"></div>
 <div class="wrap">
   <div class="plot" id="plot"></div>
@@ -280,7 +295,91 @@ legend(); draw(); clear();
 // `hiddenT` and only the series data changes underneath.
 const REFRESH_MS = 20000;
 let stamp = null;
+
+// Run selector. Progressive enhancement: perfserve.sh publishes
+// runs.json and a runs/<stamp>.json beside the live data.json. Served
+// straight out of a run directory instead - perf-publish on gh-pages,
+// or opening the file - those fetches 404, the selector stays hidden
+// and the page behaves exactly as it did before.
+let RUNS = [];
+let viewing = null;     // stamp on screen; always RUNS[0] until chosen
+
+// Live only while the newest run is the one being shown. Polling an
+// archived run would overwrite it with the live one every 20s, which
+// is the whole bug this guard exists to prevent.
+function isLive(){ return !RUNS.length || viewing === RUNS[0].stamp; }
+
+function applyData(d){
+  DATA.series = d.series; DATA.targets = d.targets;
+  DATA.xmax = d.xmax; DATA.ymax = d.ymax;
+  legend(); draw(); clear();
+}
+
+function setStatus(){
+  const el = document.getElementById("live");
+  if (!el) return;
+  el.textContent = isLive()
+    ? "updated " + new Date().toLocaleTimeString()
+    : "archived run";
+}
+
+// The newest run is read from data.json, not runs/<stamp>.json: it is
+// the one perfserve rewrites in place, so the sidecar is fresher than
+// the per-run copy for however long the run has left.
+async function loadRun(sel){
+  try {
+    const live = !RUNS.length || sel === RUNS[0].stamp;
+    const url = live ? "data.json"
+                     : "runs/" + encodeURIComponent(sel) + ".json";
+    const r = await fetch(url, {cache: "no-store"});
+    if (!r.ok) return;
+    applyData(await r.json());
+    viewing = sel;
+    stamp = null;                      // force the next poll to redraw
+    setStatus();
+  } catch (e) { /* leave the current view alone */ }
+}
+
+function fillSelector(){
+  const box = document.getElementById("runsel");
+  const sel = document.getElementById("run");
+  if (!box || !sel || RUNS.length < 2) return;
+  sel.textContent = "";
+  for (const run of RUNS){
+    const o = document.createElement("option");
+    o.value = run.stamp;
+    o.textContent = run.label || run.stamp;
+    sel.appendChild(o);
+  }
+  sel.value = viewing;
+  box.hidden = false;
+}
+
+async function refreshRuns(){
+  try {
+    const r = await fetch("runs.json", {cache: "no-store"});
+    if (!r.ok) return false;
+    const next = await r.json();
+    if (!Array.isArray(next) || !next.length) return false;
+    const wasNewest = !RUNS.length || viewing === RUNS[0].stamp;
+    const changed = RUNS.length !== next.length
+      || next.some((r2, i) => !RUNS[i] || r2.stamp !== RUNS[i].stamp);
+    RUNS = next;
+    // A run that starts while the page is open becomes the newest, and
+    // someone watching the newest wants to follow it - that is what
+    // this page is for. Someone reading an archived run does not.
+    if (wasNewest) viewing = RUNS[0].stamp;
+    if (changed) fillSelector();
+    const sel = document.getElementById("run");
+    if (sel && sel.value !== viewing) sel.value = viewing;
+    return wasNewest && changed;
+  } catch (e) { return false; }
+}
+
 async function poll(){
+  const followed = await refreshRuns();
+  if (followed) { await loadRun(viewing); return; }
+  if (!isLive()) return;               // archived: nothing to poll
   try {
     const r = await fetch("data.json", {cache: "no-store"});
     if (!r.ok) return;
@@ -289,12 +388,19 @@ async function poll(){
                                 d.targets.map(t=>t.name)]);
     if (sig === stamp) return;          // nothing new; leave the DOM alone
     stamp = sig;
-    DATA.series = d.series; DATA.targets = d.targets;
-    DATA.xmax = d.xmax; DATA.ymax = d.ymax;
-    legend(); draw(); clear();
-    const el = document.getElementById("live");
-    if (el) el.textContent = "updated " + new Date().toLocaleTimeString();
+    applyData(d);
+    setStatus();
   } catch (e) { /* server restarting mid-regeneration; try again */ }
 }
+
+(async function initRuns(){
+  if (!(await refreshRuns())) {
+    // No runs.json, or no change: either way settle on the newest.
+    if (RUNS.length) { viewing = RUNS[0].stamp; fillSelector(); }
+  }
+  const sel = document.getElementById("run");
+  if (sel) sel.addEventListener("change", () => loadRun(sel.value));
+})();
+
 setInterval(poll, REFRESH_MS);
 </script></body></html>

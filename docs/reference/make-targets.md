@@ -185,9 +185,11 @@ is the build you actually run, where the cost is almost entirely export
 rather than compute. See
 [Instrumented fleet runs](../performance/perf-runs.md).
 
-`PERF_ARCH` selects the architecture, `PERF_QUEUE=0` reverts to stage
-barriers, and `PERF_BIND` narrows what `perf-serve` listens on — it
-binds every interface by default.
+`PERF_ARCH` selects the architecture, `PERF_TARGETS` overrides what is
+built (default: bake's `wheels` group plus `pytorch`; ordering comes
+from the bake graph, so a subset still schedules correctly), and
+`PERF_BIND` narrows what `perf-serve` listens on — it binds every
+interface by default.
 
 ## Versions
 

@@ -86,6 +86,68 @@ catch_traces() {
 SERVE_DIR="${PERF_DIR}/.current"
 mkdir -p "${SERVE_DIR}"
 
+# What the page's run selector reads: runs.json, newest first, and one
+# runs/<stamp>.json per run so an older run can be plotted without
+# restarting the server against it.
+#
+# Only data.json is republished per run, never index.html — the page is
+# the same for every run, and the one already being served is the one
+# doing the asking.
+publish_runs() {
+    python3 -I - "${PERF_DIR}" "${SERVE_DIR}" "$1" <<'PY'
+import json, shutil, sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+perf, serve, newest = (Path(a) for a in sys.argv[1:4])
+(serve / "runs").mkdir(parents=True, exist_ok=True)
+
+
+def label(name, meta):
+    """"30 Oct 05:12 · gfx1201 · cold" — enough to tell runs apart.
+
+    The stamp alone is not: a day of runs differs in four characters
+    buried mid-string, and the arch and mode are what someone is
+    actually choosing between.
+    """
+    try:
+        when = datetime.strptime(name, "%Y%m%dT%H%M%SZ")
+        shown = (when.replace(tzinfo=timezone.utc).astimezone()
+                 .strftime("%d %b %H:%M"))
+    except ValueError:
+        shown = name
+    extra = [b for b in (meta.get("arch"), meta.get("mode")) if b]
+    return " · ".join([shown] + extra)
+
+
+runs = []
+for d in sorted((p for p in perf.glob("2*/") if p.is_dir()),
+                key=lambda p: p.name, reverse=True):
+    data = d / "data.json"
+    if not data.is_file():
+        continue            # never rendered, or still starting up
+    try:
+        meta = json.loads((d / "run.json").read_text())
+    except Exception:
+        meta = {}
+    dest = serve / "runs" / (d.name + ".json")
+    # A finished run's data never changes, so copy it once. The newest
+    # is still being written, so it is refreshed every cycle.
+    if (d.name == newest.name or not dest.exists()
+            or dest.stat().st_mtime < data.stat().st_mtime):
+        tmp = dest.with_name(dest.name + ".tmp")
+        shutil.copyfile(data, tmp)
+        tmp.replace(dest)
+    runs.append({"stamp": d.name, "label": label(d.name, meta),
+                 "arch": meta.get("arch"), "mode": meta.get("mode")})
+
+out = serve / "runs.json"
+tmp = out.with_name("runs.json.tmp")
+tmp.write_text(json.dumps(runs))
+tmp.replace(out)
+PY
+}
+
 regen() {
     local d; d=$(newest)
     [ -n "${d}" ] || return 0
@@ -97,8 +159,21 @@ regen() {
         [ -f "${d}/${f}" ] && cp "${d}/${f}" "${SERVE_DIR}/${f}.tmp" \
             && mv "${SERVE_DIR}/${f}.tmp" "${SERVE_DIR}/${f}"
     done
+    publish_runs "${d}" >> "${LOG}" 2>&1 || true
     echo "${d}"
 }
+
+# Claim the port before starting the worker. The worker used to be
+# spawned first and the bind attempted after, so every invocation that
+# lost the port — the common case, because the usual reason to run this
+# is that a server is already up — left its regen loop behind with
+# nothing to stop it. Five had accumulated, each still rewriting
+# .current every ${EVERY}s.
+if ss -ltn "sport = :${PORT}" 2>/dev/null | grep -q LISTEN; then
+    echo "port ${PORT} is already in use — another perfserve is running." >&2
+    echo "  stop it first, or pick another with PERF_PORT=<n>." >&2
+    exit 1
+fi
 
 regen > /dev/null
 ( while sleep "${EVERY}"; do regen > /dev/null; done ) &
@@ -113,4 +188,12 @@ echo "  regenerating every ${EVERY}s · log ${LOG}"
 [ -n "${ts}" ]  && echo "  tailnet: http://${ts}:${PORT}/"
 echo "  stop with Ctrl-C"
 
-exec python3 -m http.server "${PORT}" --bind "${BIND}" --directory "${SERVE_DIR}"
+# Deliberately not exec. exec replaces this shell, and the trap above
+# goes with it — there is no longer a shell to run it — so Ctrl-C
+# killed the server and orphaned the regen loop every single time. The
+# `wait` keeps the shell alive to own the trap; the orphans that
+# behaviour produced are what prompted this.
+python3 -m http.server "${PORT}" --bind "${BIND}" --directory "${SERVE_DIR}" &
+SERVER=$!
+trap 'kill "${WORKER}" "${SERVER}" 2>/dev/null || true' EXIT INT TERM
+wait "${SERVER}"

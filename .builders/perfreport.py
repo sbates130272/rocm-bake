@@ -256,6 +256,32 @@ def fmt_dur(s):
     return f"{s // 3600}h{(s % 3600) // 60:02d}m"
 
 
+def fmt_start(meta, run):
+    """When the run began, as local time with its zone.
+
+    The stamp is UTC and deliberately stays that way everywhere it is
+    used as an identifier — it names the directory, it orders runs, and
+    previous_run() compares those names as strings. This is only for
+    reading: "20261030T111221Z" is a key, not a time of day, and the
+    question a viewer actually has in front of a chart is which of
+    this morning's runs they are looking at.
+
+    The zone is the renderer's, which is the build fleet's, and it is
+    printed rather than assumed — a report read on a laptop in another
+    zone would otherwise be off by hours with nothing to say so.
+
+    Falls back to the directory name when the stamp is missing or does
+    not parse, because an unreadable header beats a traceback.
+    """
+    stamp = (meta or {}).get("stamp") or getattr(run, "name", "")
+    try:
+        when = datetime.strptime(stamp, "%Y%m%dT%H%M%SZ")
+    except (TypeError, ValueError):
+        return stamp or "?"
+    local = when.replace(tzinfo=timezone.utc).astimezone()
+    return local.strftime("%a %d %b %Y %H:%M:%S %Z")
+
+
 def line_chart(path, title, series, y_label, y_max=None, fmt=lambda v: f"{v:.0f}"):
     """Multi-line over time. series: {name: [(seconds, value), ...]}.
 
@@ -1061,6 +1087,7 @@ def main():
     by_target += live_targets(run, placement, {t["name"] for t in by_target}, t0)
 
     if interactive_chart(run / "index.html", "CPU Load and Memory",
+                         f"started {fmt_start(meta, run)} · "
                          f"{meta.get('arch', '?')} · "
                          f"{len(by_target)} targets · "
                          f"{fmt_dur(result.get('seconds'))}",
@@ -1082,6 +1109,7 @@ def main():
 
     # ── markdown ─────────────────────────────────────────────────
     md = [f"# Cold parallel wheel build — {meta.get('stamp', run.name)}", ""]
+    md.append(f"- **started** {fmt_start(meta, run)}")
     md.append(f"- **arch** `{meta.get('arch', '?')}` "
               f"· **commit** `{meta.get('vcs_ref', '?')}`"
               f"{' (dirty)' if meta.get('vcs_dirty') else ''}")
