@@ -1,0 +1,105 @@
+# MkDocs configuration for the rocm-bake documentation site.
+#
+# Published to the gh-pages branch by .github/workflows/docs.yml and
+# served at https://sbates130272.github.io/rocm-bake/.
+#
+# The site is prose only. Benchmark results are *not* built in: they are
+# pushed onto gh-pages separately by `make bench-publish`, which runs on
+# a build node because that is the only place the numbers exist. The
+# performance pages fetch data/bench.json at runtime, so a site built
+# here without that file still renders — it just says there is no data
+# yet. See docs/performance/index.md.
+site_name: rocm-bake
+site_description: >-
+  Reproducible ROCm PyTorch builds on a small multi-node BuildKit fleet —
+  architecture, caching, and build-performance tracking.
+site_url: https://sbates130272.github.io/rocm-bake/
+repo_url: https://github.com/sbates130272/rocm-bake
+repo_name: sbates130272/rocm-bake
+edit_uri: edit/main/docs/
+copyright: MIT
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.indexes
+    - content.code.copy
+    - content.action.edit
+    - toc.follow
+  palette:
+    # Light and dark are both offered rather than one being forced: the
+    # architecture diagrams are Mermaid, which the theme recolours per
+    # scheme, so neither mode has to be the "wrong" one.
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: deep orange
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: deep orange
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  # Mermaid goes through superfences' custom fence rather than a plugin,
+  # so ```mermaid blocks render on the site and degrade to a code block
+  # on GitHub instead of failing the build.
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+
+extra_javascript:
+  - https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js
+  - javascripts/bench.js
+
+extra_css:
+  - stylesheets/extra.css
+
+plugins:
+  - search
+
+nav:
+  - Home: index.md
+  - Quick start: quickstart.md
+  - Architecture:
+      - architecture/index.md
+      - Build graph: architecture/build-graph.md
+      - Caching: architecture/caching.md
+      - Reproducibility: architecture/reproducibility.md
+      - Multiple GFX targets: architecture/multi-arch.md
+      - Serving stack: architecture/serving.md
+  - Performance:
+      - performance/index.md
+      - Methodology: performance/methodology.md
+      - Instrumented fleet runs: performance/perf-runs.md
+      - Telemetry: performance/telemetry.md
+  - Reference:
+      - reference/make-targets.md
+      - Bake variables: reference/bake-variables.md
+      - Build targets: reference/build-targets.md
+  - Operations:
+      - operations/index.md
+      - Troubleshooting: operations/troubleshooting.md

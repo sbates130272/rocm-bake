@@ -1,0 +1,9 @@
+# Documentation build dependencies.
+#
+# Compatible-release pins rather than exact ones: the site is prose and
+# a patch release of the theme has never broken it, but a major would.
+# `make docs-build` runs mkdocs with --strict, so a theme change that
+# does break something fails the build rather than publishing a 404.
+mkdocs~=1.6
+mkdocs-material~=9.5
+pymdown-extensions~=10.14

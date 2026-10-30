@@ -1,0 +1,129 @@
+name: Docs — build and publish to gh-pages
+
+# Builds the MkDocs site and force-pushes it to the gh-pages branch,
+# which GitHub Pages then serves at
+# https://sbates130272.github.io/rocm-bake/.
+#
+# A branch deploy rather than the actions/deploy-pages artifact flow.
+# The benchmark results on the performance pages are published from a
+# build node — `make bench-publish` — because that is the only place the
+# numbers exist; a GitHub-hosted runner can neither run these builds nor
+# read their logs. Two writers need a branch they can both commit to,
+# and the artifact flow has no such thing.
+#
+# The consequence is the restore step below: the site build knows
+# nothing about data/, so without putting it back first, every docs
+# deploy would delete the benchmark history.
+on:
+  push:
+    branches: [main]
+    paths:
+      - docs/**
+      - mkdocs.yml
+      - .github/workflows/docs.yml
+  # Manual runs matter here: the first one is what creates the branch
+  # that `make bench-publish` needs to exist before it can push to it.
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+# The only workflow in this repo with a concurrency group. Two deploys
+# racing on one branch is not a slow build, it is a lost one: the second
+# force-push silently discards whatever the first wrote. Queued rather
+# than cancelled, so a deploy already past the restore step finishes
+# instead of leaving the branch half-written.
+concurrency:
+  group: gh-pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build the site and deploy it
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the documentation toolchain
+        run: pip install -r docs/requirements.txt
+
+      - name: The site builds with no broken internal links
+        # --strict turns a link to a page that does not exist into a
+        # failure. Without it a renamed page leaves a 404 that nobody
+        # notices until someone follows the link.
+        run: mkdocs build --strict --site-dir site
+
+      - name: Keep the benchmark data already published on gh-pages
+        # The site directory is about to replace the whole branch, so
+        # anything on the branch that the build did not produce has to
+        # be carried across explicitly. data/ is written by
+        # `make bench-publish` from a build node; see docs/performance.
+        #
+        # A missing branch is the expected state on the first run and is
+        # not an error — there is simply nothing to carry across yet.
+        run: |
+          # An explicit destination refspec. actions/checkout clones
+          # shallow and narrows remote.origin.fetch to the checked-out
+          # branch, so a bare `git fetch origin gh-pages` writes
+          # FETCH_HEAD and never creates refs/remotes/origin/gh-pages —
+          # which is what the next command would then fail to resolve.
+          if git fetch --depth 1 origin \
+               '+gh-pages:refs/remotes/origin/gh-pages' 2>/dev/null; then
+            old="${RUNNER_TEMP}/gh-pages"
+            git worktree add "$old" origin/gh-pages --detach
+            if [ -d "$old/data" ]; then
+              cp -r "$old/data" site/data
+              # find, not ls: shellcheck SC2012, and it counts files
+              # rather than directory entries — bench-publish writes
+              # bench.json and bench.jsonl side by side today, but the
+              # count should stay right if that grows a subdirectory.
+              n=$(find "$old/data" -type f | wc -l)
+              echo "::notice::carried $n data file(s) across"
+            else
+              echo "::notice::gh-pages has no data/ yet"
+            fi
+          else
+            echo "::notice::gh-pages does not exist yet; creating it"
+          fi
+
+      - name: Publish
+        # .nojekyll because the theme emits directories beginning with
+        # an underscore, which GitHub's Jekyll pipeline would skip —
+        # the site renders unstyled without it.
+        #
+        # An orphan commit each time rather than a growing history: the
+        # branch holds generated output, the source of every page is in
+        # main, and a history of build artifacts is noise that only
+        # grows the clone.
+        env:
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          touch site/.nojekyll
+          cd site
+          git init -q
+          git add -A
+          git commit -q -m "docs: build site from ${GITHUB_SHA}"
+          git push -q --force \
+            "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" \
+            HEAD:gh-pages
+          echo "::notice::deployed to gh-pages from ${GITHUB_SHA}"
+
+      - name: Remind us to turn Pages on
+        # The branch existing is not the same as Pages serving it. This
+        # is a one-time manual step in the repository settings, and
+        # without the reminder the first deploy looks like it did
+        # nothing at all.
+        run: |
+          if ! gh api "repos/${GITHUB_REPOSITORY}/pages" >/dev/null 2>&1; then
+            echo "::warning::GitHub Pages is not enabled for this repository."
+            echo "::warning::Settings -> Pages -> Source: deploy from branch gh-pages, folder /."
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}

@@ -29,6 +29,11 @@ Four checks, all cheap enough to gate every pull request:
      whoever changed one to change the other. That is the kind of
      instruction a check should enforce rather than a human remember.
 
+versioncheck.py carries a third copy of that same artifact list. It is
+checked in check-contracts.py rather than here, because this file
+guards the Makefile/bake boundary specifically and that one guards
+every other pair of files that have to agree.
+
 Exceptions live in ALLOWED below, each with the reason it is not drift.
 Adding to that list is a deliberate act visible in review, which is the
 point of keeping it here rather than making the check cleverer.
