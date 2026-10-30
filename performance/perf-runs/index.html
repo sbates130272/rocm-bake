@@ -1,0 +1,1651 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Reproducible ROCm PyTorch builds on a small multi-node BuildKit fleet — architecture, caching, and build-performance tracking.">
+      
+      
+      
+        <link rel="canonical" href="https://sbates130272.github.io/rocm-bake/performance/perf-runs/">
+      
+      
+        <link rel="prev" href="../methodology/">
+      
+      
+        <link rel="next" href="../telemetry/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Instrumented fleet runs - rocm-bake</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="deep-orange">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#instrumented-fleet-runs" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="rocm-bake" class="md-header__button md-logo" aria-label="rocm-bake" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            rocm-bake
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Instrumented fleet runs
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="deep-orange"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="teal" data-md-color-accent="deep-orange"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/sbates130272/rocm-bake" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    sbates130272/rocm-bake
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="rocm-bake" class="md-nav__button md-logo" aria-label="rocm-bake" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    rocm-bake
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/sbates130272/rocm-bake" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    sbates130272/rocm-bake
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../architecture/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3" id="__nav_3_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/build-graph/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Build graph
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/caching/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Caching
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/reproducibility/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reproducibility
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/multi-arch/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multiple GFX targets
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/serving/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Serving stack
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Performance
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4" id="__nav_4_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Performance
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../methodology/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Methodology
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Instrumented fleet runs
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Instrumented fleet runs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#three-harnesses-three-questions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Three harnesses, three questions
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#running-one" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Running one
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-a-run-collects" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What a run collects
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#build-and-total-are-different-numbers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        build and total are different numbers
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="build and total are different numbers">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#cache-export-is-not-build-time-in-cold-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cache export is not build time — in cold mode
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#in-normal-mode-the-export-is-the-point" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        In normal mode the export is the point
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dependency-ordering-not-stage-barriers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dependency ordering, not stage barriers
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Dependency ordering, not stage barriers">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#what-a-perf-run-measures" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What a perf run measures
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-a-target-costs-depends-on-which-node-runs-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What a target costs depends on which node runs it
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="What a target costs depends on which node runs it">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#warm-runs-can-invert-which-node-is-critical" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Warm runs can invert which node is critical
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#contracts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Contracts
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../telemetry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Telemetry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/make-targets/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Make targets
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/bake-variables/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bake variables
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/build-targets/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Build targets
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../operations/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operations
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_6" id="__nav_6_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operations
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/troubleshooting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#three-harnesses-three-questions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Three harnesses, three questions
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#running-one" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Running one
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-a-run-collects" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What a run collects
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#build-and-total-are-different-numbers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        build and total are different numbers
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="build and total are different numbers">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#cache-export-is-not-build-time-in-cold-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cache export is not build time — in cold mode
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#in-normal-mode-the-export-is-the-point" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        In normal mode the export is the point
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dependency-ordering-not-stage-barriers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dependency ordering, not stage barriers
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Dependency ordering, not stage barriers">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#what-a-perf-run-measures" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What a perf run measures
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-a-target-costs-depends-on-which-node-runs-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What a target costs depends on which node runs it
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="What a target costs depends on which node runs it">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#warm-runs-can-invert-which-node-is-critical" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Warm runs can invert which node is critical
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#contracts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Contracts
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/sbates130272/rocm-bake/edit/main/docs/performance/perf-runs.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="instrumented-fleet-runs">Instrumented fleet runs<a class="headerlink" href="#instrumented-fleet-runs" title="Permanent link">&para;</a></h1>
+<p>Every wheel built across the whole fleet at once, with CPU, memory,
+compiler-cache and registry traffic sampled throughout, and a report
+that explains where the time went.</p>
+<h2 id="three-harnesses-three-questions">Three harnesses, three questions<a class="headerlink" href="#three-harnesses-three-questions" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><code>bench.sh</code></th>
+<th><code>make perf-run</code></th>
+<th><code>make perf-build</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>runs targets</td>
+<td>one at a time</td>
+<td>across the fleet at once</td>
+<td>across the fleet at once</td>
+</tr>
+<tr>
+<td>caches</td>
+<td>isolated</td>
+<td>cold: none</td>
+<td>both, as normal</td>
+</tr>
+<tr>
+<td>answers</td>
+<td>what does <em>this</em> target cost</td>
+<td>what does a full cold build look like</td>
+<td>what does a build I would actually run look like</td>
+</tr>
+<tr>
+<td>numbers are</td>
+<td>isolated per-target</td>
+<td>throughput under contention</td>
+<td>throughput under contention</td>
+</tr>
+</tbody>
+</table>
+<div class="admonition danger">
+<p class="admonition-title">Do not quote a number from one as if it came from another</p>
+<p><a href="../"><code>bench.sh</code></a> serialises on purpose and isolates its
+compiler cache, so its per-target times are comparable run to run.
+The two <code>perf-*</code> harnesses run the fleet flat out, so three builds
+share the sccache store and the registry — both of which live on
+Strix, which is also a build node.</p>
+</div>
+<p><code>perf-build</code> is the same instrumentation on an ordinary build: layer
+cache and sccache both live, results pushed, the fleet's real sccache
+prefix. It is the one to use when the question is about the build you
+actually run rather than about a build from nothing — and the two
+differ more than you would expect, because a warm build's cost is
+almost entirely export rather than compute.</p>
+<h2 id="running-one">Running one<a class="headerlink" href="#running-one" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>make<span class="w"> </span>perf-plan<span class="w">                      </span><span class="c1"># placement only, builds nothing</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>make<span class="w"> </span>perf-run<span class="w"> </span><span class="nv">PERF_ARCH</span><span class="o">=</span>gfx1201<span class="w">     </span><span class="c1"># cold: no caches, hours</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>make<span class="w"> </span>perf-build<span class="w"> </span><span class="nv">PERF_ARCH</span><span class="o">=</span>gfx1201<span class="w">   </span><span class="c1"># normal: caches on, pushes</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>make<span class="w"> </span>perf-report<span class="w">                    </span><span class="c1"># markdown + SVG from the newest run</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>make<span class="w"> </span>perf-serve<span class="w">                     </span><span class="c1"># live chart on :8090</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>make<span class="w"> </span>perf-runs<span class="w">                      </span><span class="c1"># list collected runs</span>
+</code></pre></div>
+<p>Cold here means <code>--no-cache</code> <strong>and</strong> an sccache prefix of its own — the
+same isolation <code>bench.sh</code> uses. A cold run must not evict the fleet's
+working cache, and it must not be allowed to hit it either.</p>
+<div class="admonition warning">
+<p class="admonition-title"><code>perf-serve</code> binds every interface</p>
+<p>Not just the tailnet, because the usual viewer is a laptop on the
+LAN that is not on tailscale. What that exposes is build telemetry
+— hostnames, CPU and memory figures, build step names — with no
+credentials and no registry access. Narrow it with
+<code>PERF_BIND=&lt;ip&gt;</code>, and stop it when you are done.</p>
+<p>It regenerates every 30 s and re-resolves which run is newest each
+cycle, so it picks up a run that starts after the server did.</p>
+</div>
+<h2 id="what-a-run-collects">What a run collects<a class="headerlink" href="#what-a-run-collects" title="Permanent link">&para;</a></h2>
+<p>Into <code>/var/tmp/rocm-perf/&lt;stamp&gt;/</code>, each from the cheapest source that
+actually answers its question rather than from one general-purpose
+collector:</p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>From</th>
+<th>Answers</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>samples.jsonl</code></td>
+<td>node_exporter on all three nodes, polled</td>
+<td>CPU, memory, disk and network over time</td>
+</tr>
+<tr>
+<td><code>trace-&lt;target&gt;.json</code></td>
+<td>the builder's own build record</td>
+<td>what ran, when, for how long</td>
+</tr>
+<tr>
+<td><code>sccache.log</code></td>
+<td>the WebDAV vhost's nginx log, sliced to this run</td>
+<td>what was written to the compiler cache, with sizes</td>
+</tr>
+<tr>
+<td><code>zot.jsonl</code></td>
+<td>Zot's structured log, sliced to this run</td>
+<td>layer-cache and image writes, with sizes</td>
+</tr>
+<tr>
+<td><code>artifacts.txt</code></td>
+<td><code>wheelhouse.py</code></td>
+<td>what ended up published</td>
+</tr>
+<tr>
+<td><code>index.html</code> + <code>data.json</code></td>
+<td><code>perfreport.py</code></td>
+<td>the interactive chart, and the sidecar it polls</td>
+</tr>
+</tbody>
+</table>
+<p><code>make perf-report</code> writes <code>report.md</code> with SVG charts beside it, plus
+<code>index.html</code> for interrogating a run: overlaid CPU and memory lines, a
+clickable legend that filters by builder <em>and</em> by target, and per-band
+hover showing the actual <code>RUN</code> commands a phase covers.</p>
+<p>CPU and memory share one axis because both are percentages. A second
+y-scale would make it a dual-axis chart, which is the chart form that
+misleads most reliably; memory is distinguished by dash instead, so
+colour keeps following the builder.</p>
+<p><code>perf-serve</code> polls <code>data.json</code> rather than reloading, because the
+legend <em>is</em> the filter: a reload would discard whichever builders and
+targets the viewer had narrowed to, which is exactly the state someone
+mid-question is in.</p>
+<h2 id="build-and-total-are-different-numbers"><code>build</code> and <code>total</code> are different numbers<a class="headerlink" href="#build-and-total-are-different-numbers" title="Permanent link">&para;</a></h2>
+<p>The per-target table carries both. <code>build</code> is the span of the target's
+own steps; <code>total</code> is what the builder reported for the whole record.
+The gap is setup plus export, and it is usually the larger of the two.</p>
+<p>Transfers never widen the <code>build</code> column — that column exists to
+exclude them. If the two disagree by minutes, the difference is the
+export, and on a warm build it is nearly all of it.</p>
+<h3 id="cache-export-is-not-build-time-in-cold-mode">Cache export is not build time — in cold mode<a class="headerlink" href="#cache-export-is-not-build-time-in-cold-mode" title="Permanent link">&para;</a></h3>
+<p><code>--no-push</code> suppresses the image push but <strong>not</strong> the cache export,
+which is a separate registry write. In <strong>cold</strong> mode <code>perfrun.sh</code>
+clears it with <code>--set *.cache-to=</code>, as <code>bench.sh</code> does, because the
+cost is not small:</p>
+<blockquote>
+<p>On one gfx1201 run <code>triton-wheel</code> reported 38m52s, of which the trace
+accounted for 15m48s. The other <strong>23m04s — 59% of its headline
+duration — was uploading <code>mode=max</code> cache.</strong></p>
+</blockquote>
+<p>A harness measuring a build from nothing must not also time its own
+uploads.</p>
+<h3 id="in-normal-mode-the-export-is-the-point">In normal mode the export is the point<a class="headerlink" href="#in-normal-mode-the-export-is-the-point" title="Permanent link">&para;</a></h3>
+<p><code>make perf-build</code> reports the upload rather than suppressing it.
+<code>perftrace.py</code> keeps BuildKit's <code>HTTP PUT</code>/<code>POST</code> spans alongside the
+step spans, so the chart bands them as <code>upload</code> and the hover names the
+blob and its size.</p>
+<p>Those spans were discarded until a <code>triton-wheel</code> run showed 92 s of
+steps inside a 430 s record, with the missing 336 s invisible: a node
+that looked idle for most of its build was in fact uploading 6.4 GB.</p>
+<h2 id="dependency-ordering-not-stage-barriers">Dependency ordering, not stage barriers<a class="headerlink" href="#dependency-ordering-not-stage-barriers" title="Permanent link">&para;</a></h2>
+<p>Perf runs schedule from the bake graph. A target starts when every
+dependency <em>inside the run</em> has finished and been pushed, and not
+before; everything else it needs is resolved from Zot and checked by
+<a href="../../architecture/build-graph/#preflight">preflight</a> before any build
+begins.</p>
+<p>This replaced two earlier modes, and it is worth knowing why both
+failed.</p>
+<p>Stage barriers ordered work correctly but idled whole nodes waiting on
+unrelated targets:</p>
+<blockquote>
+<p>On one gfx1201 run stage 1 took 44m16s of wall clock to do 77m09s of
+work, leaving <strong>55m39s of idle builder time</strong>, with the weakest node
+idle for 82% of it.</p>
+</blockquote>
+<p>Flat per-node queues dropped the barrier and recovered that time, but
+could not express a dependency at all. That was safe only while every
+wheel was self-contained — and stopped being true the moment a run
+included a target that builds <code>FROM</code> another, which is how a gfx1250
+run scheduled <code>vllm-wheel</code> against a pytorch image nothing was
+building.</p>
+<p>Within the ordering constraint the packing is unchanged: longest-first
+onto the node that would finish it soonest, one build per node at a
+time, because several concurrent builds on one box each derive
+<code>MAX_JOBS</code> from <code>MemAvailable</code> as though they were alone and
+oversubscribe it.</p>
+<h3 id="what-a-perf-run-measures">What a perf run measures<a class="headerlink" href="#what-a-perf-run-measures" title="Permanent link">&para;</a></h3>
+<p><code>PERF_TARGETS</code> defaults to bake's <code>wheels</code> group <strong>plus <code>pytorch</code></strong>.</p>
+<p><code>pytorch</code> is not a wheel, so the group alone omitted it — and it is the
+most expensive target in the graph as well as the image every other
+wheel builds <code>FROM</code>. Leaving it out measured the cheap half of a build,
+and on an arch nobody had built before it scheduled wheels against an
+image that did not exist.</p>
+<p>Including it costs little on a normal run, where the layer cache serves
+it in seconds. On a cold run it genuinely rebuilds, which is what cold
+means.</p>
+<h2 id="what-a-target-costs-depends-on-which-node-runs-it">What a target costs depends on which node runs it<a class="headerlink" href="#what-a-target-costs-depends-on-which-node-runs-it" title="Permanent link">&para;</a></h2>
+<p><code>.builders/target-costs</code> is the input to that packing, and it has two
+terms because a target's cost is not one number:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>build &lt;target&gt; &lt;seconds&gt;   compile cost, roughly node-independent
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>cache &lt;target&gt; &lt;bytes&gt;     what the target transfers when it exports
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>netmb &lt;node&gt;   &lt;MB/s&gt;      that node's upload throughput to the store
+</code></pre></div>
+<p>The cost of running a target on a node is <code>build + cache/netmb</code>, and
+the packer picks the node that finishes it <strong>soonest</strong> rather than the
+one that is least loaded.</p>
+<p>The second term is not a refinement. The fleet's upload speeds span a
+factor of 25 — 3000 MB/s on the store host itself, 90 wired, 3.7 over
+WiFi — so the same 6.4 GB export is about a minute on one node and
+about 28 on another.</p>
+<blockquote>
+<p>Ranking on build time alone sent <code>triton-wheel</code>, the largest export
+of any target, to the only node behind WiFi. Moving it to a wired
+node took it from 25m25s to 7m09s.</p>
+</blockquote>
+<p>Re-measure after anything that moves the build materially, and
+re-measure <code>netmb</code> if the fleet is rewired, since that is the term that
+now dominates.</p>
+<div class="admonition warning">
+<p class="admonition-title">Take the byte figures from a normal run</p>
+<p>A cold run passes <code>--no-push</code>, so its export counts the cache but
+not the image — which under-counted <code>aiter-wheel</code> by 4.3×.</p>
+</div>
+<p>A stale table degrades the schedule, never the build, and
+<code>check-contracts.py</code> fails if a wheel or a node is missing from it —
+because the fallback for a missing entry is to cost it at one second.</p>
+<h3 id="warm-runs-can-invert-which-node-is-critical">Warm runs can invert which node is critical<a class="headerlink" href="#warm-runs-can-invert-which-node-is-critical" title="Permanent link">&para;</a></h3>
+<p>These are cold-build costs. On a warm build every <code>build</code> term
+collapses towards zero while the <code>cache</code> terms stay:</p>
+<blockquote>
+<p>In one <code>perf-build</code> run <code>pytorch-wheel</code> was a cache hit and freed its
+node after 55 s, leaving the WiFi node's four small targets — 2.8 GB
+between them — as the critical path of a 26-minute run.</p>
+</blockquote>
+<p>Queues are fixed at plan time, so nothing migrates once packed.</p>
+<h2 id="contracts">Contracts<a class="headerlink" href="#contracts" title="Permanent link">&para;</a></h2>
+<p>Several of those streams are produced by one file and parsed by
+another, with nothing but a comment connecting them — an nginx
+<code>log_format</code> and a regex, the balancer's placement line and the
+report's parser, the sampler's fields and the report's readers,
+<code>target-costs</code> and the packer.</p>
+<p>Every one has the same failure mode: the producer changes, the consumer
+silently matches nothing, and the report renders perfectly while saying
+<code>0</code> where it should say something.</p>
+<p><code>.builders/check-contracts.py</code> asserts each pair still agrees. It reads
+files only — no registry, no GPU, no builders, no sudo — so it runs on
+a bare CI runner in under a second, and <code>ci.yml</code> runs it alongside a
+synthetic render of a perf report.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      MIT
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "navigation.indexes", "content.code.copy", "content.action.edit", "toc.follow"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+        <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+      
+        <script src="../../javascripts/bench.js"></script>
+      
+    
+  </body>
+</html>

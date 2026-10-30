@@ -1,0 +1,1552 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Reproducible ROCm PyTorch builds on a small multi-node BuildKit fleet — architecture, caching, and build-performance tracking.">
+      
+      
+      
+        <link rel="canonical" href="https://sbates130272.github.io/rocm-bake/architecture/caching/">
+      
+      
+        <link rel="prev" href="../build-graph/">
+      
+      
+        <link rel="next" href="../reproducibility/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Caching - rocm-bake</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="deep-orange">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#caching" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="rocm-bake" class="md-header__button md-logo" aria-label="rocm-bake" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            rocm-bake
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Caching
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="deep-orange"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="teal" data-md-color-accent="deep-orange"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/sbates130272/rocm-bake" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    sbates130272/rocm-bake
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="rocm-bake" class="md-nav__button md-logo" aria-label="rocm-bake" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    rocm-bake
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/sbates130272/rocm-bake" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    sbates130272/rocm-bake
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3" id="__nav_3_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../build-graph/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Build graph
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Caching
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Caching
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-the-nodes-content-store" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. The node's content store
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-the-layer-cache-in-zot" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. The layer cache, in Zot
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. The layer cache, in Zot">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#two-tiers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Two tiers
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#scoped-by-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scoped by architecture
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-the-compiler-cache" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. The compiler cache
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. The compiler cache">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#refusing-to-build-uncached" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Refusing to build uncached
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#inspecting-the-store" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Inspecting the store
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#isolating-a-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Isolating a run
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-pull-through" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Pull-through
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-each-one-is-worth" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What each one is worth
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reproducibility/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reproducibility
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../multi-arch/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multiple GFX targets
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../serving/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Serving stack
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../performance/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Performance
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4" id="__nav_4_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Performance
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../performance/methodology/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Methodology
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../performance/perf-runs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Instrumented fleet runs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../performance/telemetry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Telemetry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/make-targets/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Make targets
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/bake-variables/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bake variables
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/build-targets/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Build targets
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../operations/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operations
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_6" id="__nav_6_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operations
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/troubleshooting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-the-nodes-content-store" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. The node's content store
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-the-layer-cache-in-zot" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. The layer cache, in Zot
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. The layer cache, in Zot">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#two-tiers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Two tiers
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#scoped-by-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scoped by architecture
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-the-compiler-cache" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. The compiler cache
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. The compiler cache">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#refusing-to-build-uncached" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Refusing to build uncached
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#inspecting-the-store" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Inspecting the store
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#isolating-a-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Isolating a run
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-pull-through" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Pull-through
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-each-one-is-worth" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What each one is worth
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/sbates130272/rocm-bake/edit/main/docs/architecture/caching.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="caching">Caching<a class="headerlink" href="#caching" title="Permanent link">&para;</a></h1>
+<p>Four caches sit between a <code>make build-pytorch</code> and a from-scratch
+compile. They are independent: a Dockerfile edit can drop layer reuse to
+5% while sccache still serves every compile, and a changed compiler flag
+can do the opposite.</p>
+<pre class="mermaid"><code>flowchart LR
+    build["a build step"]
+    local["&lt;b&gt;1. BuildKit content store&lt;/b&gt;&lt;br/&gt;per node, local disk&lt;br/&gt;gckeepstorage 100GB"]
+    layer["&lt;b&gt;2. Layer cache&lt;/b&gt;&lt;br/&gt;OCI artifacts in Zot&lt;br/&gt;two-tier: rolling + -ref"]
+    sccache["&lt;b&gt;3. sccache&lt;/b&gt;&lt;br/&gt;nginx WebDAV on Strix :8081&lt;br/&gt;object files, fleet-wide"]
+    pull["&lt;b&gt;4. Pull-through&lt;/b&gt;&lt;br/&gt;Zot mirrors Docker Hub,&lt;br/&gt;GHCR and Quay"]
+
+    build --&gt; local --&gt; layer
+    build --&gt; sccache
+    build --&gt; pull</code></pre>
+<p>Each one is removed by a different lever, which is exactly what the
+<a href="../../performance/">benchmark scenarios</a> are built on.</p>
+<h2 id="1-the-nodes-content-store">1. The node's content store<a class="headerlink" href="#1-the-nodes-content-store" title="Permanent link">&para;</a></h2>
+<p>BuildKit keeps every blob it has pulled or produced on the node's own
+disk, bounded by <code>gckeepstorage = "100GB"</code> in
+<code>.builders/buildkitd-strix.toml</code>. Nothing in this repository manages it;
+<code>docker buildx prune</code> is the only lever, and it is shared with any other
+project building on that node.</p>
+<h2 id="2-the-layer-cache-in-zot">2. The layer cache, in Zot<a class="headerlink" href="#2-the-layer-cache-in-zot" title="Permanent link">&para;</a></h2>
+<p>Each target exports its layers as OCI artifacts to a <code>*-cache</code>
+repository in Zot, so a layer built on one node is reusable from any of
+them.</p>
+<table>
+<thead>
+<tr>
+<th>Target</th>
+<th>Cache repository</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>pytorch-base</code></td>
+<td><code>base-cache</code></td>
+</tr>
+<tr>
+<td><code>pytorch</code>, <code>pytorch-wheel</code></td>
+<td><code>pytorch-cache</code></td>
+</tr>
+<tr>
+<td><code>triton-wheel</code></td>
+<td><code>triton-wheel-cache</code></td>
+</tr>
+<tr>
+<td><code>aiter-wheel</code></td>
+<td><code>aiter-wheel-cache</code></td>
+</tr>
+<tr>
+<td><code>pytorch-run</code></td>
+<td><code>runtime-cache</code></td>
+</tr>
+<tr>
+<td><code>cupy-wheel</code></td>
+<td><code>cupy-wheel-cache</code></td>
+</tr>
+<tr>
+<td><code>nixl-wheel</code></td>
+<td><code>nixl-wheel-cache</code></td>
+</tr>
+<tr>
+<td><code>vllm</code>, <code>vllm-wheel</code></td>
+<td><code>vllm-cache</code></td>
+</tr>
+<tr>
+<td><code>lmcache</code>, <code>lmcache-wheel</code></td>
+<td><code>lmcache-cache</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="two-tiers">Two tiers<a class="headerlink" href="#two-tiers" title="Permanent link">&para;</a></h3>
+<p>Reads always consult two refs: the rolling tag, and a frozen <code>-ref</code>
+baseline. Writes go to the rolling tag unless <code>CACHE_TAG_SUFFIX=-ref</code>,
+which is how the baseline is deliberately refreshed.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># Refresh the known-good baseline from a build you trust</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nv">CACHE_TAG_SUFFIX</span><span class="o">=</span>-ref<span class="w"> </span>make<span class="w"> </span>push-pytorch
+</code></pre></div>
+<p>Without the second tier, one bad build overwrites the only cache
+everyone reads.</p>
+<h3 id="scoped-by-architecture">Scoped by architecture<a class="headerlink" href="#scoped-by-architecture" title="Permanent link">&para;</a></h3>
+<p>Image tags have carried the architecture since <code>ARCH_TAG</code> landed, but
+the cache refs did not: every arch-sensitive target wrote
+<code>&lt;repo&gt;-cache:latest</code>. A <code>gfx1201</code> build overwrote the <code>gfx950</code> cache
+with layers <code>gfx950</code> can never hit, and the next <code>gfx950</code> build rebuilt
+cold and did the same back — so alternating architectures cost two cold
+builds, every time. <code>CACHE_ARCH</code> scopes those refs now, and
+<code>arches-*</code> is safe to repeat.</p>
+<p><code>pytorch-base</code> and <code>triton-wheel</code> stay on the shared, unscoped ref
+deliberately. Neither takes <code>PYTORCH_ROCM_ARCH</code>, Triton is a compiler
+that publishes one noarch wheel, and both are built once for the whole
+fleet.</p>
+<p>Arch-sensitive targets currently read a third ref as well: the old
+unscoped <code>latest</code>, kept transitionally so the pre-<code>CACHE_ARCH</code> cache is
+not wasted. It is marked for deletion once each architecture in <code>ARCHES</code>
+has been built at least once.</p>
+<div class="admonition warning">
+<p class="admonition-title">Cache exports fail silently</p>
+<p>Every <code>cache-to</code> carries <code>ignore-error=true</code>. A registry that is
+down, full, or refusing the push does not fail the build — it just
+means the next build has nothing to read. <code>make builder-logs</code> is
+where that shows up; the build itself only looks slow next time.</p>
+</div>
+<p>Inspect reuse with:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>make<span class="w"> </span>layer-summary<span class="w">    </span><span class="c1"># per image, most recent build, with the node it ran on</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>make<span class="w"> </span>build-inspect<span class="w">    </span><span class="c1"># one build: duration, steps, cached steps</span>
+</code></pre></div>
+<h2 id="3-the-compiler-cache">3. The compiler cache<a class="headerlink" href="#3-the-compiler-cache" title="Permanent link">&para;</a></h2>
+<p>Every build container runs its own sccache server, and all of them share
+one object store: nginx with the WebDAV modules serving a plain
+directory tree at <code>/var/cache/sccache-webdav</code> on Strix, port 8081. An
+object compiled on any node is a hit on the others.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>SCCACHE_WEBDAV_ENDPOINT     http://&lt;resolved-ip&gt;:8081
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>SCCACHE_WEBDAV_KEY_PREFIX   rocm-pytorch
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>SCCACHE_SERVER_UDS          /tmp/sccache.sock
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>CMAKE_C_COMPILER_LAUNCHER   sccache
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>CMAKE_CXX_COMPILER_LAUNCHER sccache
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>CMAKE_HIP_COMPILER_LAUNCHER sccache
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>HIP_CLANG_LAUNCHER          /usr/local/bin/sccache
+</code></pre></div>
+<p>sccache intercepts compiler invocations, caches object files by a hash
+of source plus flags, and returns the cached object when both match.</p>
+<p>Three constraints make this work, and each one fails quietly if broken.</p>
+<p><strong>A shared <em>server</em> is impossible.</strong> sccache's client sends a <em>path</em>,
+and the server reads and hashes the file itself. A server on the host
+cannot see a build container's sources — every compile dies with
+<code>No such file or directory</code>. Only the storage layer can be shared.</p>
+<p><strong>The server is addressed over a unix socket, not a TCP port.</strong> The
+builders run with <code>network=host</code>, so a fixed <code>SCCACHE_SERVER_PORT</code> would
+be shared fleet-wide: a Triton build's client once connected to a
+concurrent PyTorch build's sccache server, which then could not see the
+files it was asked to hash. <code>SCCACHE_SERVER_UDS=/tmp/sccache.sock</code>
+removes the possibility. There is deliberately no <code>SCCACHE_SERVER_PORT</code>
+variable in <code>rocm-bake.hcl</code>.</p>
+<p><strong>The store is addressed by IP, not by name.</strong> See
+<a href="../#why-a-tailnet">the tailnet DNS problem</a>. The Makefile resolves
+<code>SCCACHE_WEBDAV_HOST</code> once on the host and exports the resolved form as
+<code>SCCACHE_WEBDAV_ENDPOINT</code>. A consequence worth knowing: setting
+<code>SCCACHE_WEBDAV_ENDPOINT</code> yourself only takes effect for a bare bake,
+because the Makefile exports its own value unconditionally.</p>
+<h3 id="refusing-to-build-uncached">Refusing to build uncached<a class="headerlink" href="#refusing-to-build-uncached" title="Permanent link">&para;</a></h3>
+<p><code>docker/Dockerfile.pytorch</code> probes the store at image build time and
+refuses to start a compile when it is unreachable, rather than spending
+an hour rebuilding everything from scratch:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>docker<span class="w"> </span>buildx<span class="w"> </span>bake<span class="w"> </span>-f<span class="w"> </span>rocm-bake.hcl<span class="w"> </span>--set<span class="w"> </span><span class="s1">'*.args.REQUIRE_SCCACHE=0'</span><span class="w"> </span>pytorch
+</code></pre></div>
+<p>The build prints <code>sccache --show-stats</code> as its last action, which is
+where <a href="../../performance/telemetry/">the telemetry wrapper</a> reads the
+counters from. They cannot be queried afterwards: the sccache server
+lives and dies with the build container.</p>
+<h3 id="inspecting-the-store">Inspecting the store<a class="headerlink" href="#inspecting-the-store" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>make<span class="w"> </span>cache-summary<span class="w">    </span><span class="c1"># endpoint, size, disk, deltas, hit rates</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>make<span class="w"> </span>cache-check<span class="w">      </span><span class="c1"># can every build node reach it?</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>make<span class="w"> </span>cache-logs<span class="w">       </span><span class="c1"># the WebDAV access log</span>
+</code></pre></div>
+<p><code>cache-summary</code> prints a delta and a rate as well as the totals,
+because totals alone say nothing about the build in front of you —
+objects arriving is the number that moves while a build runs, and
+"+412 objects" means something very different over eight seconds than
+over an hour.</p>
+<p>The hit rate does not come from the store. WebDAV has no stats verb, so
+the store can report its size and object count and nothing else; sccache
+prints <code>--show-stats</code> at the end of each build step, <code>telemetry/build.sh</code>
+parses that into <code>rocm_build_sccache_hit_ratio</code>, and <code>cache-summary</code>
+reads it back per target from the textfile collector.</p>
+<h3 id="isolating-a-run">Isolating a run<a class="headerlink" href="#isolating-a-run" title="Permanent link">&para;</a></h3>
+<p><code>SCCACHE_WEBDAV_KEY_PREFIX</code> is a directory in the store, so a benchmark
+or an experiment can run against an isolated namespace and delete it
+afterwards without touching the fleet's objects. The
+<a href="../../performance/methodology/">benchmark harness</a> does exactly this for
+its frozen and cold runs.</p>
+<h2 id="4-pull-through">4. Pull-through<a class="headerlink" href="#4-pull-through" title="Permanent link">&para;</a></h2>
+<p><code>.builders/buildkitd-strix.toml</code> points <code>docker.io</code>, <code>ghcr.io</code> and
+<code>quay.io</code> at Zot, which syncs them on demand. The ROCm base image is
+8.67 GB in a single layer, so this is the difference between a build
+that starts in seconds and one that starts after a WAN transfer —
+which is precisely what the
+<a href="../../performance/#frozen">frozen scenario</a> measures.</p>
+<h2 id="what-each-one-is-worth">What each one is worth<a class="headerlink" href="#what-each-one-is-worth" title="Permanent link">&para;</a></h2>
+<p>That question has a measured answer rather than an estimated one. See
+<a href="../../performance/">Performance</a>.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      MIT
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "navigation.indexes", "content.code.copy", "content.action.edit", "toc.follow"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+        <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+      
+        <script src="../../javascripts/bench.js"></script>
+      
+    
+  </body>
+</html>

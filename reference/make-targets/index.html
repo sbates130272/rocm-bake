@@ -1,0 +1,2010 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Reproducible ROCm PyTorch builds on a small multi-node BuildKit fleet — architecture, caching, and build-performance tracking.">
+      
+      
+      
+        <link rel="canonical" href="https://sbates130272.github.io/rocm-bake/reference/make-targets/">
+      
+      
+        <link rel="prev" href="../../performance/telemetry/">
+      
+      
+        <link rel="next" href="../bake-variables/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Make targets - rocm-bake</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="deep-orange">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#make-targets" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="rocm-bake" class="md-header__button md-logo" aria-label="rocm-bake" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            rocm-bake
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Make targets
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="deep-orange"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="teal" data-md-color-accent="deep-orange"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/sbates130272/rocm-bake" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    sbates130272/rocm-bake
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="rocm-bake" class="md-nav__button md-logo" aria-label="rocm-bake" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    rocm-bake
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/sbates130272/rocm-bake" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    sbates130272/rocm-bake
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../architecture/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3" id="__nav_3_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/build-graph/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Build graph
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/caching/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Caching
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/reproducibility/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reproducibility
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/multi-arch/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multiple GFX targets
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/serving/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Serving stack
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../performance/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Performance
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4" id="__nav_4_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Performance
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../performance/methodology/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Methodology
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../performance/perf-runs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Instrumented fleet runs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../performance/telemetry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Telemetry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Make targets
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Make targets
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#registry-zot" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Registry (Zot)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#compiler-cache" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Compiler cache
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#builders" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Builders
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#watching-a-build" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Watching a build
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#build-and-push" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build and push
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#multiple-architectures" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Multiple architectures
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#test-and-serve" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Test and serve
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#benchmarks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Benchmarks
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#performance-runs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Performance runs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#versions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Versions
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#documentation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Documentation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#utilities" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Utilities
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#variables-worth-knowing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Variables worth knowing
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../bake-variables/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bake variables
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../build-targets/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Build targets
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../operations/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operations
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_6" id="__nav_6_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operations
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/troubleshooting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#registry-zot" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Registry (Zot)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#compiler-cache" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Compiler cache
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#builders" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Builders
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#watching-a-build" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Watching a build
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#build-and-push" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build and push
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#multiple-architectures" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Multiple architectures
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#test-and-serve" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Test and serve
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#benchmarks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Benchmarks
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#performance-runs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Performance runs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#versions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Versions
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#documentation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Documentation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#utilities" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Utilities
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#variables-worth-knowing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Variables worth knowing
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/sbates130272/rocm-bake/edit/main/docs/reference/make-targets.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="make-targets">Make targets<a class="headerlink" href="#make-targets" title="Permanent link">&para;</a></h1>
+<p><code>make help</code> is authoritative and prints the live list with the values
+currently in effect. This page is a map of the groups and the ones worth
+knowing about; a target missing here is not a target that does not
+exist.</p>
+<p>Targets marked <code>*</code> in <code>make help</code> build <strong>and push</strong> to the registry,
+which needs the <code>ci</code> login.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>make<span class="w"> </span><span class="nb">help</span><span class="w">          </span><span class="c1"># every target, grouped</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>make<span class="w"> </span>list-vars<span class="w">     </span><span class="c1"># every variable these targets read, with its value</span>
+</code></pre></div>
+<h2 id="registry-zot">Registry (Zot)<a class="headerlink" href="#registry-zot" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Target</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>zot-check</code></td>
+<td>Is the registry active and answering?</td>
+</tr>
+<tr>
+<td><code>zot-catalog</code></td>
+<td>List repositories</td>
+</tr>
+<tr>
+<td><code>zot-tags</code></td>
+<td>List tags for one repo — <code>REPO=rocm-pytorch/base</code></td>
+</tr>
+<tr>
+<td><code>zot-wheels</code></td>
+<td>Published wheel artifacts, newest first — <code>ZOT_TAGS=0</code> for all</td>
+</tr>
+<tr>
+<td><code>zot-wheelhouse</code></td>
+<td>The same with sizes, plus anything extracted into <code>./dist/wheels</code></td>
+</tr>
+<tr>
+<td><code>zot-logs</code></td>
+<td>Follow the registry's journal</td>
+</tr>
+</tbody>
+</table>
+<p>Nothing here starts, stops or configures Zot. It is a bare-metal
+systemd service owned outside this repository.</p>
+<h2 id="compiler-cache">Compiler cache<a class="headerlink" href="#compiler-cache" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Target</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cache-summary</code></td>
+<td>Endpoint, size, disk, deltas and per-target hit rates</td>
+</tr>
+<tr>
+<td><code>cache-check</code></td>
+<td>Can every build node reach the store?</td>
+</tr>
+<tr>
+<td><code>cache-logs</code></td>
+<td>Follow the WebDAV access log</td>
+</tr>
+<tr>
+<td><code>layer-summary</code></td>
+<td>Layer reuse per image on its most recent build</td>
+</tr>
+</tbody>
+</table>
+<h2 id="builders">Builders<a class="headerlink" href="#builders" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Target</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>builder-setup</code></td>
+<td>All three builders</td>
+</tr>
+<tr>
+<td><code>builder-snoc-strix</code></td>
+<td>Local <code>docker-container</code> driver</td>
+</tr>
+<tr>
+<td><code>builder-snoc-think</code></td>
+<td><code>snoc-thinkstation</code>, over SSH</td>
+</tr>
+<tr>
+<td><code>builder-snoc-gaming</code></td>
+<td><code>snoc-gaming</code>, over SSH</td>
+</tr>
+<tr>
+<td><code>builder-snoc-pool</code></td>
+<td>All three as one buildx builder (little used — see below)</td>
+</tr>
+<tr>
+<td><code>builder-status</code></td>
+<td>Every builder and its nodes</td>
+</tr>
+<tr>
+<td><code>builder-health</code></td>
+<td>Which builders can take work</td>
+</tr>
+<tr>
+<td><code>builder-load</code></td>
+<td>CPU, cores and load per node of <code>$(BUILDER)</code></td>
+</tr>
+<tr>
+<td><code>builder-logs</code></td>
+<td>buildkitd's <strong>own</strong> log: registry auth, GC, connection failures</td>
+</tr>
+<tr>
+<td><code>builder-restart</code></td>
+<td>Restart buildkitd on <code>$(BUILDER)</code>, clearing a wedged build</td>
+</tr>
+</tbody>
+</table>
+<p><code>builder-ensure</code> gates every build target on <code>builder-health</code>, which is
+why a build fails fast against a dead node rather than hanging.</p>
+<p><code>builder-restart</code> drops that node's in-memory build state. The registry
+layer cache and the shared compiler cache are untouched, so the next
+build still picks up where it can.</p>
+<h2 id="watching-a-build">Watching a build<a class="headerlink" href="#watching-a-build" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Target</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>watch</code></td>
+<td>Live: history across all <code>snoc-*</code> builders, a tail of each running build, layer reuse and cache deltas</td>
+</tr>
+<tr>
+<td><code>build-status</code></td>
+<td>Build records on <code>$(BUILDER)</code>, with the node each ran on</td>
+</tr>
+<tr>
+<td><code>build-logs</code></td>
+<td>What a build's steps printed — <code>BUILD=&lt;id&gt;</code>, default most recent</td>
+</tr>
+<tr>
+<td><code>build-inspect</code></td>
+<td>Duration, step count, cached steps, VCS revision</td>
+</tr>
+<tr>
+<td><code>build-stop</code></td>
+<td>Cancel builds started from this repository</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>make<span class="w"> </span>watch
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>make<span class="w"> </span>watch<span class="w"> </span><span class="nv">WATCH_BUILDERS</span><span class="o">=</span>snoc-think
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>make<span class="w"> </span>watch<span class="w"> </span><span class="nv">WATCH_LINES</span><span class="o">=</span><span class="m">40</span><span class="w"> </span><span class="nv">WATCH_INTERVAL</span><span class="o">=</span><span class="m">2</span>
+</code></pre></div>
+<div class="admonition tip">
+<p class="admonition-title">Two logs, easy to confuse</p>
+<p><code>build-logs</code> is the output of the build's steps — what a <code>RUN</code>
+printed. <code>builder-logs</code> is the daemon underneath, and it is where a
+registry failure, a DNS failure or a cache problem shows up, often
+while the build itself just looks slow.</p>
+</div>
+<p><code>build-stop</code> works off a PID file (<code>/tmp/.rocm-build.pids</code>) that every
+bake invocation and the balancer write to. Matching command lines with
+<code>pgrep -f</code> was unreliable: it killed the invoking shell, and it killed
+the sibling project's builds.</p>
+<h2 id="build-and-push">Build and push<a class="headerlink" href="#build-and-push" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Build (no push)</th>
+<th>Push</th>
+<th>Target</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>build-base</code></td>
+<td><code>push-base</code></td>
+<td><code>pytorch-base</code></td>
+</tr>
+<tr>
+<td><code>build-pytorch</code></td>
+<td><code>push-pytorch</code></td>
+<td><code>pytorch</code></td>
+</tr>
+<tr>
+<td><code>build-runtime</code></td>
+<td><code>push-runtime</code></td>
+<td><code>pytorch-run</code></td>
+</tr>
+<tr>
+<td><code>build-torch-wheel</code></td>
+<td><code>push-torch-wheel</code></td>
+<td><code>pytorch-wheel</code></td>
+</tr>
+<tr>
+<td><code>build-triton-wheel</code></td>
+<td><code>push-triton-wheel</code></td>
+<td><code>triton-wheel</code></td>
+</tr>
+<tr>
+<td><code>build-aiter-wheel</code></td>
+<td><code>push-aiter-wheel</code></td>
+<td><code>aiter-wheel</code></td>
+</tr>
+<tr>
+<td><code>build-cupy-wheel</code></td>
+<td><code>push-cupy-wheel</code></td>
+<td><code>cupy-wheel</code></td>
+</tr>
+<tr>
+<td><code>build-nixl-wheel</code></td>
+<td><code>push-nixl-wheel</code></td>
+<td><code>nixl-wheel</code></td>
+</tr>
+<tr>
+<td><code>build-vllm</code></td>
+<td><code>push-vllm</code></td>
+<td><code>vllm</code></td>
+</tr>
+<tr>
+<td><code>build-vllm-wheel</code></td>
+<td><code>push-vllm-wheel</code></td>
+<td><code>vllm-wheel</code></td>
+</tr>
+<tr>
+<td><code>build-lmcache</code></td>
+<td><code>push-lmcache</code></td>
+<td><code>lmcache</code></td>
+</tr>
+<tr>
+<td><code>build-lmcache-wheel</code></td>
+<td><code>push-lmcache-wheel</code></td>
+<td><code>lmcache-wheel</code></td>
+</tr>
+<tr>
+<td><code>build-serving</code></td>
+<td><code>push-serving</code></td>
+<td>the <code>serving</code> group</td>
+</tr>
+<tr>
+<td><code>build-all</code></td>
+<td><code>push-all</code></td>
+<td>the <code>default</code> group</td>
+</tr>
+<tr>
+<td>—</td>
+<td><code>push-wheels</code></td>
+<td>the <code>wheels</code> group</td>
+</tr>
+</tbody>
+</table>
+<p>Every wheel has a <code>build-</code> form as well as a <code>push-</code> form. The build-only
+targets exist because the benchmark harness needs them: it dispatches
+through <code>make build-&lt;name&gt;</code>, and a <code>push-</code> target writes to the registry,
+which the credential helper cannot do unattended. Without them a cold
+measurement stopped at the first wheel that had no build-only target.</p>
+<p><code>fetch-torch-wheel</code>, <code>fetch-triton-wheel</code>, <code>fetch-aiter-wheel</code>,
+<code>fetch-cupy-wheel</code>, <code>fetch-nixl-wheel</code>, <code>fetch-vllm-wheel</code> and
+<code>fetch-lmcache-wheel</code> pull a published wheel artifact into <code>./dist</code>.</p>
+<p><code>cold-build</code> builds <code>COLD_TARGET</code> (default <code>pytorch</code>) with neither
+layer cache nor compiler-cache hits.</p>
+<div class="admonition note">
+<p class="admonition-title"><code>build-all</code> refuses <code>BUILDER=snoc-pool</code></p>
+<p>Scheduling makes every target its own bake invocation, so they
+cannot hand results to each other through <code>target:</code> contexts. Use
+<code>push-all BUILDER=snoc-pool</code> (scheduled, publishes) or
+<code>build-all BUILDER=snoc-think</code> (single builder, no push). See
+<a href="../../architecture/build-graph/#the-balancer">the balancer</a>.</p>
+</div>
+<h2 id="multiple-architectures">Multiple architectures<a class="headerlink" href="#multiple-architectures" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Target</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>arches-&lt;anything&gt;</code></td>
+<td>Run any target once per architecture in <code>ARCHES</code></td>
+</tr>
+<tr>
+<td><code>arches-list</code></td>
+<td>What <code>ARCHES</code> resolves to, with the tag each would produce</td>
+</tr>
+<tr>
+<td><code>wheel-index</code></td>
+<td>Fetch each architecture's wheels and build a PEP 503 index</td>
+</tr>
+<tr>
+<td><code>wheel-index-check</code></td>
+<td>Install each generated index into a throwaway venv</td>
+</tr>
+</tbody>
+</table>
+<p><code>arches-%</code> is a pattern rule and takes any target name, not only the
+documented examples.</p>
+<h2 id="test-and-serve">Test and serve<a class="headerlink" href="#test-and-serve" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Target</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>test</code></td>
+<td>The in-graph <code>pytorch-test</code> stage, which needs a GPU</td>
+</tr>
+<tr>
+<td><code>gpu-test</code></td>
+<td>Run a published image on a real GPU — <code>GPU_HOST=</code>, <code>PYTORCH_ROCM_ARCH=</code></td>
+</tr>
+<tr>
+<td><code>serve-vllm</code></td>
+<td>vLLM alone on <code>GPU_HOST</code>, no KV offload</td>
+</tr>
+<tr>
+<td><code>serve-stack</code></td>
+<td>vLLM plus the LMCache MP server</td>
+</tr>
+<tr>
+<td><code>serve-wait</code></td>
+<td>Block until <code>/health</code> answers</td>
+</tr>
+<tr>
+<td><code>serve-test</code></td>
+<td>Prove the KV cache is actually working</td>
+</tr>
+<tr>
+<td><code>serve-test-baseline</code></td>
+<td>The same for a <code>serve-vllm</code> stack</td>
+</tr>
+<tr>
+<td><code>serve-test-l2</code></td>
+<td>Prove the disk tier serves blocks — needs <code>KV_TIER=file</code></td>
+</tr>
+<tr>
+<td><code>serve-logs</code></td>
+<td>Both containers, merged, live</td>
+</tr>
+<tr>
+<td><code>serve-logs-cache</code></td>
+<td>The same, filtered to hit/miss/store lines</td>
+</tr>
+<tr>
+<td><code>serve-logs-sorted</code></td>
+<td>A snapshot merged in timestamp order</td>
+</tr>
+<tr>
+<td><code>serve-status</code></td>
+<td>What is running on <code>GPU_HOST</code></td>
+</tr>
+<tr>
+<td><code>serve-down</code></td>
+<td>Stop and remove</td>
+</tr>
+</tbody>
+</table>
+<p>See <a href="../../architecture/serving/">Serving stack</a>.</p>
+<h2 id="benchmarks">Benchmarks<a class="headerlink" href="#benchmarks" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Target</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>bench</code></td>
+<td>Run the harness — <code>BENCH_SCENARIO=frozen\|cold\|warm\|hot\|all\|everything</code></td>
+</tr>
+<tr>
+<td><code>bench-report</code></td>
+<td>Render accumulated results as markdown</td>
+</tr>
+<tr>
+<td><code>bench-data</code></td>
+<td>Aggregate into <code>dist/bench/bench.json</code> for the docs site</td>
+</tr>
+<tr>
+<td><code>bench-publish</code></td>
+<td>Commit that onto <code>gh-pages</code>; <code>PUSH=1</code> to push</td>
+</tr>
+</tbody>
+</table>
+<p>See <a href="../../performance/">Performance</a>.</p>
+<h2 id="performance-runs">Performance runs<a class="headerlink" href="#performance-runs" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Target</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>perf-plan</code></td>
+<td>Which builder each wheel would land on; builds nothing</td>
+</tr>
+<tr>
+<td><code>perf-run</code></td>
+<td>Cold parallel build of every wheel, fully instrumented</td>
+</tr>
+<tr>
+<td><code>perf-build</code></td>
+<td>The same instrumentation on a <em>normal</em> build — caches on, pushes</td>
+</tr>
+<tr>
+<td><code>perf-report</code></td>
+<td>Render the newest run as markdown plus SVG charts</td>
+</tr>
+<tr>
+<td><code>perf-serve</code></td>
+<td>Serve the newest run's interactive chart on <code>:8090</code></td>
+</tr>
+<tr>
+<td><code>perf-runs</code></td>
+<td>List collected runs, newest last</td>
+</tr>
+</tbody>
+</table>
+<p>A different question from <code>bench</code>: the fleet flat out rather than one
+target in isolation. <code>perf-run</code> is a build from nothing; <code>perf-build</code>
+is the build you actually run, where the cost is almost entirely export
+rather than compute. See
+<a href="../../performance/perf-runs/">Instrumented fleet runs</a>.</p>
+<p><code>PERF_ARCH</code> selects the architecture, <code>PERF_TARGETS</code> overrides what is
+built (default: bake's <code>wheels</code> group plus <code>pytorch</code>; ordering comes
+from the bake graph, so a subset still schedules correctly), and
+<code>PERF_BIND</code> narrows what <code>perf-serve</code> listens on — it binds every
+interface by default.</p>
+<h2 id="versions">Versions<a class="headerlink" href="#versions" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Target</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>version-check</code></td>
+<td>Upstream releases vs published wheels vs our pins</td>
+</tr>
+<tr>
+<td><code>version-scrub</code></td>
+<td>Regenerate the version tables from <code>rocm-bake.hcl</code></td>
+</tr>
+<tr>
+<td><code>version-scrub-check</code></td>
+<td>Fail if those generated tables are stale</td>
+</tr>
+</tbody>
+</table>
+<p><code>version-check</code> needs the network: <code>gh</code> for api.github.com and the
+tailnet for the registry. <code>version-scrub</code> reads <code>rocm-bake.hcl</code> and
+nothing else, which is what lets <code>version-scrub-check</code> gate every pull
+request in <code>lint.yml</code>.</p>
+<p>The tables it generates live between <code>&lt;!-- BEGIN VERSIONS --&gt;</code> markers
+in <code>README.md</code> and in <a href="../bake-variables/">Bake variables</a>. Bump a
+version in <code>rocm-bake.hcl</code>, run <code>make version-scrub</code>, commit both.</p>
+<h2 id="documentation">Documentation<a class="headerlink" href="#documentation" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Target</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>docs-deps</code></td>
+<td>Create the docs venv from <code>docs/requirements.txt</code></td>
+</tr>
+<tr>
+<td><code>docs-build</code></td>
+<td>Build into <code>dist/site</code>; fails on a broken internal link</td>
+</tr>
+<tr>
+<td><code>docs-serve</code></td>
+<td>Serve locally with live reload on <code>:8000</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="utilities">Utilities<a class="headerlink" href="#utilities" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Target</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>validate</code></td>
+<td>Is the bake file parseable?</td>
+</tr>
+<tr>
+<td><code>bake-plan</code></td>
+<td>Print the resolved build plan as JSON</td>
+</tr>
+<tr>
+<td><code>list-vars</code></td>
+<td>Every variable these targets read, with its value and source</td>
+</tr>
+<tr>
+<td><code>clean</code></td>
+<td>Remove built images locally, for every architecture in <code>ARCHES</code></td>
+</tr>
+<tr>
+<td><code>clean-cache</code></td>
+<td>Remove cache images locally — the registry must be pruned separately</td>
+</tr>
+<tr>
+<td><code>setup</code></td>
+<td><code>zot-check</code> then <code>builder-setup</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="variables-worth-knowing">Variables worth knowing<a class="headerlink" href="#variables-worth-knowing" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Default</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>BUILDER</code></td>
+<td><code>snoc-strix</code></td>
+<td>Which builder, or <code>snoc-pool</code> for the balancer</td>
+</tr>
+<tr>
+<td><code>ARCHES</code></td>
+<td><code>gfx950 gfx1201 gfx1250</code></td>
+<td>What <code>arches-*</code> fans out over</td>
+</tr>
+<tr>
+<td><code>PYTORCH_ROCM_ARCH</code></td>
+<td><code>gfx950</code></td>
+<td>The architecture for <strong>one</strong> build</td>
+</tr>
+<tr>
+<td><code>TELEMETRY</code></td>
+<td><code>1</code></td>
+<td><code>0</code> skips the metrics wrapper</td>
+</tr>
+<tr>
+<td><code>BAKE_EXTRA</code></td>
+<td>—</td>
+<td>Arbitrary extra flags passed to bake</td>
+</tr>
+<tr>
+<td><code>GPU_HOST</code></td>
+<td><code>snoc-thinkstation</code></td>
+<td>The machine with <code>/dev/kfd</code></td>
+</tr>
+<tr>
+<td><code>REPO</code></td>
+<td><code>rocm-pytorch/base</code></td>
+<td>What <code>zot-tags</code> lists</td>
+</tr>
+<tr>
+<td><code>ZOT_TAGS</code></td>
+<td><code>5</code></td>
+<td>Tags per repo in <code>zot-wheels</code>; <code>0</code> for all</td>
+</tr>
+<tr>
+<td><code>BENCH_SCENARIO</code></td>
+<td><code>all</code></td>
+<td>Which benchmark scenario <code>make bench</code> runs</td>
+</tr>
+</tbody>
+</table>
+<div class="admonition warning">
+<p class="admonition-title">Some variables only work from the environment</p>
+<p><code>make &lt;target&gt; VAR=value</code> works for anything the Makefile reads.
+But <code>SCCACHE_LOG</code>, <code>PUBLISHED_INPUTS</code>, <code>RUN_ID</code>, <code>CACHE_TAG_SUFFIX</code>
+and the <code>SDE_*</code> overrides are read by <strong>bake</strong>, from the
+environment — so they need <code>VAR=value make &lt;target&gt;</code> instead.</p>
+</div>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      MIT
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "navigation.indexes", "content.code.copy", "content.action.edit", "toc.follow"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+        <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+      
+        <script src="../../javascripts/bench.js"></script>
+      
+    
+  </body>
+</html>
