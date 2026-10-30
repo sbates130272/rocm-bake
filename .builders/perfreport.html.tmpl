@@ -234,10 +234,20 @@ function draw(){
 function clear(){
   const c=document.getElementById("cx");
   if(c) c.style.display="none";
-  for(const s of DATA.series)
-    document.getElementById("v-"+s.id).textContent=
-      s.peak.toFixed(1)+DATA.unit;
-  document.getElementById("at").textContent="peak";
+  // Guarded like the two other lookups of this id, and for the same
+  // reason: legend() only creates a v-<id> span for the FIRST metric,
+  // so every series of the second one resolves to null here. Without
+  // the guard this threw on the first memory series, and being
+  // uncaught at top level it halted the script — taking the run
+  // selector's init and setInterval(poll) with it. Live refresh had
+  // been dead since the day memory became a second metric, silently,
+  // because the chart itself draws before this runs.
+  for(const s of DATA.series){
+    const el=document.getElementById("v-"+s.id);
+    if(el) el.textContent=s.peak.toFixed(1)+DATA.unit;
+  }
+  const at=document.getElementById("at");
+  if(at) at.textContent="peak";
 }
 
 const esc=t=>String(t).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
