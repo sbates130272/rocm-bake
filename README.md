@@ -1,982 +1,167 @@
-# ROCm PyTorch Build for Strix Halo (gfx950)
+# rocm-bake
 
-Automated build pipeline for PyTorch with ROCm support optimized for AMD Strix Halo (gfx950) GPU.
+Reproducible builds of PyTorch, Triton, AITER, CuPy, NIXL, vLLM and
+LMCache against ROCm, on a three-node BuildKit fleet, with every
+artifact published to a local OCI registry.
 
-## Architecture
+**📖 Full documentation: <https://sbates130272.github.io/rocm-bake/>**
 
-### High-Level Design
+## Versions
 
-```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                         SNOC Build Network                                │
-│                                                                          │
-│  ┌──────────────────────┐   ┌──────────────────┐  ┌─────────────────┐    │
-│  │   SNOC Strix         │   │ snoc-thinkstation│  │  snoc-gaming    │    │
-│  │   (Primary Build)    │   │  (Build node)    │  │  (Build node)   │    │
-│  │                      │   │                  │  │                 │    │
-│  │  AMD gfx950 GPU      │   │  gfx1201 (RDNA4) │  │ gfx1201 (RDNA4) │    │
-│  │  ~64GB RAM           │   │  Docker 29+      │  │ Docker 29+      │    │
-│  │  buildx node (local) │   │  buildx via SSH  │  │ buildx via SSH  │    │
-│  │  sccache server      │   │  cross-compile   │  │ cross-compile   │    │
-│  │  zot.service         │   │  only, no test   │  │ only, no test   │    │
-│  │                      │   │                  │  │                 │    │
-│  │  snoc-strix          │   │ snoc-thinkstation│  │  snoc-gaming    │    │
-│  └──────────┬───────────┘   └────────┬─────────┘  └────────┬────────┘    │
-│             │                        │                     │              │
-│             │          Tailscale Mesh (100.x.y.z)          │              │
-│             │────────────────────────┴─────────────────────┘              │
-│             │                                                             │
-│             ▼                                                             │
-│  ┌──────────────────────────────────────────────────────────────┐         │
-│  │         Zot Registry (bare metal on Strix, zot.service)       │         │
-│  │         snoc-strix.fold-leaffish.ts.net:8080                  │         │
-│  │                                                              │         │
-│  │  • Pull-through sync → Docker Hub, GHCR, Quay                │         │
-│  │  • BuildKit layer cache as OCI artifacts                      │         │
-│  │  • PyTorch/ROCm image storage                                 │         │
-│  │  • sccache cache directory shared via bind mount              │         │
-│  └──────────────────────────────────────────────────────────────┘         │
-│             │                                                              │
-│             │  Prometheus text collector                                   │
-│             ▼                                                              │
-│  ┌──────────────────────────────────────────────────────────────┐         │
-│  │         Telemetry (per-build + periodic)                       │         │
-│  │                                                              │         │
-│  │  • sccache hit/miss counters                                 │         │
-│  │  • Build timing per target (base, pytorch, runtime)           │         │
-│  │  • Cache layer hit rates                                    │         │
-│  │  • GPU memory usage during build                            │         │
-│  └──────────────────────────────────────────────────────────────┘         │
-└──────────────────────────────────────────────────────────────────────────┘
-```
+<!-- BEGIN VERSIONS -->
 
-### Component Data Flow
+| Component | Upstream | Bake variable | Pinned |
+| --- | --- | --- | --- |
+| PyTorch | [pytorch/pytorch](https://github.com/pytorch/pytorch) | `PYTORCH_VERSION` | `2.14.1` |
+| ROCm | [rocm/dev-ubuntu-26.04](https://hub.docker.com/r/rocm/dev-ubuntu-26.04) | `ROCM_VERSION` | `10.1.0-full` |
+| Python | &mdash; | `PYTHON_VERSION` | `3.14` |
+| Triton | [triton-lang/triton](https://github.com/triton-lang/triton) | `TRITON_VERSION` | `3.8.0` |
+| AITER | [ROCm/aiter](https://github.com/ROCm/aiter) | `AITER_REF` | `v0.1.27` |
+| NIXL | [ai-dynamo/nixl](https://github.com/ai-dynamo/nixl) | `NIXL_REF` | `v1.5.1` |
+| UCX | [openucx/ucx](https://github.com/openucx/ucx) | `UCX_REF` | `v1.22.0` |
+| vLLM | [vllm-project/vllm](https://github.com/vllm-project/vllm) | `VLLM_REF` | `v0.32.0` |
+| CuPy | [cupy/cupy](https://github.com/cupy/cupy) | `CUPY_REF` | `v14.2.0` |
+| LMCache | [LMCache/LMCache](https://github.com/LMCache/LMCache) | `LMCACHE_REF` | `v0.5.6` |
 
-```
-    Build Trigger (Make / rocm-bake.hcl)
-           │
-           ▼
-    ┌─────────────────┐
-    │  buildx bake     │  ← Declarative target graph
-    │  (rocm-bake.hcl)      │
-    └────────┬────────┘
-             │
-     ┌───────┼────────┐
-     ▼       ▼        ▼
-  base    pytorch   runtime
-   │         │        │
-   │    ┌────┘        │
-   │    │             │
-   ▼    ▼             ▼
-  ROCm   PyTorch     Minimal
-  Base    Build      Runtime
-  Image    From      Image
-           Source
-           │
-           ▼
-     sccache ↔ sccache
-     compiler   server
-     cache      (port 4226)
-           │
-           ▼
-     Push to Zot
-     snoc-strix.fold-leaffish.ts.net:8080
-```
+<!-- END VERSIONS -->
 
-### Build Machine Roles
+That table is generated from `rocm-bake.hcl` by `make version-scrub`, and
+CI fails if it drifts. Triton is pinned to a commit (`TRITON_REF`) as well
+as a version; `RUST_VERSION` and `SCCACHE_VERSION` are toolchain pins and
+live in [the bake variables reference][vars]. Built for `gfx950` (default),
+`gfx1201` and `gfx1250`.
 
-**SNOC Strix (Primary)**
-- gfx950 GPU with full ROCm stack
-- 64GB shared memory (16GB reserved for host)
-- Hosts the Zot registry (bare-metal `zot.service`, managed outside this
-  repo) and the sccache server
-- Primary build target — builds run here by default
-- The only node that can run the GPU test stage
+`rocm-bake.hcl` is the single source for every value a build reads.
+`make list-vars` prints what is actually in effect, and `make version-check`
+compares it against what upstream has released and what we have published.
 
-**snoc-thinkstation / snoc-gaming (Build nodes)**
+[vars]: https://sbates130272.github.io/rocm-bake/reference/bake-variables/
 
-- Joined to buildx over SSH to their Docker daemons: buildx creates and
-  owns a buildkit container on each, so neither needs buildkitd, TLS
-  certs, or the buildx plugin installed
-- Both gfx1201 (RDNA4) — they cross-compile for gfx950 fine, but cannot
-  run `make test`
-- Reach Zot over the tailnet at `snoc-strix.fold-leaffish.ts.net:8080`
-- `make builder-snoc-pool` groups all three into one builder named `pool`,
-  which fans build *targets* out across nodes (it does not split a single
-  image across them)
-
-### Docker Image Lifecycle
-
-Every Dockerfile lives in `docker/`; the build context stays the repo
-root, so `rocm-bake.hcl` names them as `docker/Dockerfile.<image>`.
-
-```
-Dockerfile.base          Dockerfile.pytorch        Dockerfile.runtime
-        │                          │                        │
-        ▼                          ▼                        ▼
-  rocm/dev-ubu:7.14      ← pytorch 2.14.1 ← base image      ← pytorch wheel
-  + Python 3.14          + HIP/CUDA src   + sccache client  + runtime deps
-  + dev tools            + ROCm tools      + env setup
-  + NCCL/MKLDNN          + cmake + build   - build tools
-  - ROCm headers         + sccache          only
-```
-
-## Components
-
-- **Zot Registry** - Lightweight OCI registry with on-demand sync from Docker Hub, GHCR, and Quay. Runs bare-metal on Strix as `zot.service`; this repo consumes it and never starts, stops, or configures it
-- **Buildx Bake** - Declarative multi-stage build definitions with cache management
-- **Dockerfiles** - Three stages: base → build → runtime
-- **sccache** - Compiler cache server on port 4226 (200GB cache per node)
-- **BuildKitd** - BuildKit daemon with ROCm GPU passthrough
-- **Telemetry** - Prometheus text collector for build metrics
-
-## Prerequisites
-
-### SNOC Strix (Primary Build Machine)
+## Quick start
 
 ```bash
-# ROCm 7.14+
-# Docker 27+ with containerd worker
-# Buildx with container driver
-# GPU: AMD gfx950 (Strix Halo)
-# RAM: 30GB shared with the GPU (reserve headroom for host + display)
-# Disk: 200GB+ for build cache
+make help                          # every target, grouped
+make zot-check                     # is the registry up?
+make builder-setup                 # create all three buildx builders
+sudo ./.builders/deploy-webdav.sh  # the shared compiler-cache store
+make push-all BUILDER=snoc-pool    # build and publish everything
+make watch                         # follow it from a second terminal
 ```
 
-### snoc-thinkstation / snoc-gaming (Build nodes)
+The step-by-step version is in the
+[quick start guide](https://sbates130272.github.io/rocm-bake/quickstart/).
 
-```bash
-# Docker 27+ (no buildkitd, no TLS certs, no buildx plugin needed)
-# Reachable as `ssh snoc-thinkstation` / `ssh snoc-gaming` from Strix
-# Able to reach http://snoc-strix.fold-leaffish.ts.net:8080 over the tailnet
-# Disk: 200GB+ for build cache
-```
+## The fleet
 
-## Quick Start
-
-The step-by-step runbook lives in [QUICKSTART.md](QUICKSTART.md): check
-Zot, create the builders, deploy the shared compiler cache, build, and
-verify. This file is the reference — architecture, how the caches fit
-together, every tunable, and troubleshooting.
-
-
-## Build Pipeline Details
-
-### Target Dependency Graph
-
-```
-pytorch-base (no deps)
-    │
-    ├──────────────► triton-wheel (base + cmake<4; parallel with pytorch)
-    │                     │
-    ▼                     │
-pytorch (depends on pytorch-base)
-    │                     │
-    ├─ pytorch-test (same as pytorch, runs verification)
-    ├─ pytorch-run  (depends on pytorch output)
-    ├─ pytorch-wheel
-    │                     │
-    ├─────────────────────┴──► aiter-wheel  (pytorch + triton-wheel)
-    │
-    ├──► nixl-wheel (pytorch; builds UCX from source)
-    │         │
-    │         ├──► vllm    (pytorch + triton + aiter + nixl)
-    │         └──► lmcache (pytorch + triton + nixl + cupy)
-    │                   ▲
-pytorch-base ──► cupy-wheel (base only; no torch dependency)
-```
-
-`cupy-wheel` hangs off the base rather than off `pytorch` because CuPy
-does not depend on torch. It is not optional: LMCache's MP server
-imports cupy at module scope to build a `cupy.cuda.ExternalStream`, and
-no published wheel fits this stack — PyPI's `cupy-rocm-7-0` is built for
-a different ROCm major and plain `cupy` ships only an sdist. Without it
-the server dies on the first request and vLLM waits five minutes before
-reporting a generic engine failure. See `docker/Dockerfile.cupy`.
-
-Everything below `pytorch` is reached through bake `target:` contexts,
-so a single invocation can build the whole chain without anything having
-been pushed first. That also means these targets cannot be scheduled
-across nodes — see the note on `build-all` in the Makefile.
-
-### Cache Strategy
-
-1. **BuildKit Layer Cache** → Stored in Zot as OCI artifacts, so a layer
-   built on one node is reusable from any of them
-2. **sccache Compiler Cache** → One shared store on Strix (nginx
-   WebDAV over a directory tree, so it survives a reboot). An object
-   compiled on any node is a hit on the others
-3. **Pull-Through Cache** → Zot syncs Docker Hub/GHCR/Quay on demand
-4. **Multi-Builder** → Targets fan out across Strix, Thinkstation and Gaming
-
-### Build Configuration
-
-All targets use these shared attributes:
-```
-cache-from = registry cache (mode=max, full layers)
-cache-to   = registry cache (mode=max, image manifest)
-output     = compressed with zstd
-platform   = linux/amd64
-```
-
-### sccache Integration
-
-Each build container runs its own sccache server, and all of them share
-one store: an nginx WebDAV endpoint on Strix, reached over the tailnet.
-The objects are files on disk, so a power cycle does not cost the fleet
-its compiler cache.
-
-```
-SCCACHE_WEBDAV_ENDPOINT=http://snoc-strix.fold-leaffish.ts.net:8081
-SCCACHE_WEBDAV_KEY_PREFIX=rocm-pytorch
-CMAKE_C_COMPILER_LAUNCHER=sccache
-CMAKE_CXX_COMPILER_LAUNCHER=sccache
-CMAKE_HIP_COMPILER_LAUNCHER=sccache
-```
-
-sccache intercepts compiler invocations (gcc, g++, hipcc), caches object
-files by a hash of source plus flags, and returns the cached object when
-both match. Deploy the store with `.builders/deploy-webdav.sh`, and
-inspect it with `make cache-summary`.
-
-The key prefix is a directory inside the store, which is what lets a
-benchmark run against an isolated copy: `bench.sh` sets it to a
-throwaway `bench-cold-<stamp>` so a cold run never evicts the fleet's
-working cache.
-
-Three constraints make this work, and each one fails quietly if broken:
-
-- **A shared server is impossible.** sccache's client sends a *path*,
-  and the server reads and hashes the file itself. A server on the host
-  cannot see a build container's sources — every compile dies with
-  `No such file or directory`. Only the storage layer can be shared.
-- **Port 4250, not the default 4226.** Builders run with
-  `network=host`, so a client on the default port attaches to the node's
-  own `sccache.service` and hits the problem above (exit code 254).
-- **The store's hostname needs `[dns]` in the buildkitd config.** RUN
-  steps get a resolv.conf pointing at a public resolver, not the node's,
-  so a tailnet name is unresolvable from inside a build. The symptom is
-  `cache storage failed to read ... I/O error`, which reads like a dead
-  store rather than a DNS fault.
-
-`docker/Dockerfile.pytorch` refuses to start a compile when the store is
-unreachable, rather than spending an hour rebuilding uncached. Override
-with `--set '*.args.REQUIRE_SCCACHE=0'`. The build prints
-`sccache --show-stats` as its last action, which is where the telemetry
-wrapper reads the counters from.
-
-## Watching a build
-
-Everything here is a make target; nothing needs raw docker commands.
-
-```bash
-make watch                            # live, all snoc-* builders at once
-make watch WATCH_BUILDERS=snoc-think  # narrow to one
-make watch WATCH_LINES=40 WATCH_INTERVAL=2
-```
-
-`make watch` shows the build record table for every builder, and under
-each running build a live tail of its steps. It is the usual way to
-follow a build from a second terminal while the first runs `make`.
-
-For a single look rather than a live view:
-
-| Target | Shows |
-| --- | --- |
-| `make build-status` | Build records on `$(BUILDER)`: running, completed, errored, with durations |
-| `make build-logs` | The step output of a build — `BUILD=<id>`, default most recent |
-| `make build-inspect` | Duration, step count, cached steps, VCS revision |
-| `make builder-logs` | buildkitd's *own* log for each node: registry auth, cache GC, connection failures |
-| `make builder-status` | All builders and their nodes |
-| `make builder-restart` | Restart buildkitd on `$(BUILDER)`, clearing a wedged build |
-| `make cold-build` | Build with no layer cache and no compiler-cache hits |
-
-Two different logs are easy to confuse. `build-logs` is the output of
-the build's steps — what a `RUN` printed. `builder-logs` is the daemon
-underneath: it is where a registry failure, a DNS failure or a cache
-problem shows up, often while the build itself just looks slow.
-
-`make builder-restart` drops that node's in-memory build state. The
-registry layer cache and the shared compiler cache are untouched, so the
-next build still picks up where it can.
-
-## Telemetry & Metrics
-
-Every build records its own telemetry. `telemetry/build.sh` wraps a bake
-invocation, runs it, then writes Prometheus metrics for each target it
-produced — and exits with the bake's own status, so it is a drop-in
-replacement for a bare `bake` call. The `make build-*` targets already
-route through it; set `TELEMETRY=0` for a bare bake.
-
-```bash
-./telemetry/build.sh --builder snoc-pool pytorch
-make build-pytorch                  # same thing, via the Makefile
-```
-
-Both data sources already exist, so nothing has to be instrumented and
-no collector daemon runs:
-
-- **BuildKit's history API** (`docker buildx history inspect`) records
-  every build's duration and how many steps came from the layer cache.
-- **sccache's own stats**, printed at the end of the build step and
-  scraped back out of the build log. They cannot be queried afterwards:
-  the sccache server lives and dies with the build container.
-
-### Metrics
-
-| Metric | Meaning |
-| --- | --- |
-| `rocm_build_duration_seconds` | BuildKit-reported duration, per target |
-| `rocm_build_steps_total` / `_cached` | Build steps, and how many were cached |
-| `rocm_build_layer_cache_hit_ratio` | Cached steps over total steps |
-| `rocm_build_target_success` | 1 if the target completed |
-| `rocm_build_sccache_hits` / `_misses` | Compiler-cache counters for that build |
-| `rocm_build_sccache_hit_ratio` | Hits over hits+misses |
-| `rocm_build_invocation_duration_seconds` | Wall-clock for the whole bake |
-| `rocm_build_invocation_success` | 1 if the bake exited 0 |
-| `rocm_build_last_run_timestamp_seconds` | When the invocation finished |
-
-All carry a `builder` label; per-target metrics also carry `target`.
-
-### Prometheus integration
-
-Metrics are written to node_exporter's textfile collector when it is
-writable, otherwise to `telemetry/out/` (gitignored):
-
-```
-/var/lib/node_exporter/textfile_collector/rocm_pytorch_build.prom
-```
-
-node_exporter is already running on `:9100` here, so a scrape of that
-target picks them up with no extra job. The file is written to a temp
-path and renamed, so the collector never reads a partial file. Writing
-to the collector directory needs permission on it — otherwise the
-wrapper falls back and says so.
-
-To inspect the shared compiler cache itself:
-
-```bash
-make cache-summary
-```
-
-Size, object count, disk headroom, the delta and rate since the last
-call, and the hit rate of the last build of each target — the last of
-those read back out of the telemetry the wrapper writes, since the
-WebDAV store has no stats verb of its own.
-
-## Configuration
-
-### Environment Variables
-
-`rocm-bake.hcl` is the single source for every build default. The Makefile
-does not keep its own copy of any of them — it reads them out of
-`rocm-bake.hcl` at parse time (`bake_default`), so `make build-pytorch` and a
-bare `docker buildx bake pytorch` always agree. `.builders/check-defaults.py`
-fails CI if a default is re-declared in the Makefile, or if the Makefile
-reads a variable `rocm-bake.hcl` does not define.
-
-Change a default by editing its `variable` block in `rocm-bake.hcl`.
-`make list-vars` prints everything the targets read, with the values
-actually in effect.
-
-Override at build time without editing anything:
-
-```bash
-# Custom PyTorch version
-docker buildx bake -f rocm-bake.hcl \
-  --set "*.args.PYTORCH_VERSION=2.8.0" pytorch
-
-# Custom ROCm version
-docker buildx bake -f rocm-bake.hcl \
-  --set "*.args.ROCM_VERSION=7.2" pytorch
-
-# Custom registry
-docker buildx bake -f rocm-bake.hcl \
-  --set "*.args.REGISTRY=myregistry.com:5000" \
-  --set "*.args.REGISTRY_NAME=rocm-pytorch" pytorch
-
-# Build from specific git ref
-docker buildx bake -f rocm-bake.hcl \
-  --set "*.args.GIT_REF=refs/heads/develop" pytorch
-
-# Point at a different compiler-cache store. The endpoint is a bake
-# variable, so the environment is the way in — not --set, which would
-# add the arg to every target and change their cache keys.
-SCCACHE_WEBDAV_ENDPOINT=http://other-host:8081 \
-  docker buildx bake -f rocm-bake.hcl pytorch
-
-# Build even though the compiler cache is unreachable
-docker buildx bake -f rocm-bake.hcl \
-  --set "*.args.REQUIRE_SCCACHE=0" pytorch
-```
-
-Defaults below are the ones in `rocm-bake.hcl`; `make list-vars` is
-authoritative if this table has aged.
-
-| Variable | Default | Purpose |
+| Node | GPU | Role |
 | --- | --- | --- |
-| `REGISTRY` | `snoc-strix.fold-leaffish.ts.net:8080` | Zot registry |
-| `SCCACHE_WEBDAV_HOST` | `snoc-strix.fold-leaffish.ts.net` | Shared compiler-cache store (nginx WebDAV) |
-| `SCCACHE_WEBDAV_PORT` | `8081` | Port for the above |
-| `SCCACHE_WEBDAV_ENDPOINT` | composed from host:port | Set to override; the Makefile supplies the resolved address |
-| `REQUIRE_SCCACHE` | `1` | Fail the build if the store is unreachable |
-| `PYTORCH_ROCM_ARCH` | `gfx950` | Semicolon-separated GPU arch list |
-| `SDE_EPOCH` | `1700000000` | `SOURCE_DATE_EPOCH` pinned into every image config |
+| `snoc-strix` | gfx950 | Default builder; hosts Zot (`:8080`) and the sccache store (`:8081`); the only node that can run GPU tests |
+| `snoc-think` | gfx1201 | Build capacity, joined over SSH to `snoc-thinkstation` |
+| `snoc-gaming` | gfx1201 | Build capacity, joined over SSH |
 
-There is no `SCCACHE_SERVER_PORT`: the build containers reach their
-sccache server over a unix socket, because the builders run with
-`network=host` and a fixed port would be shared fleet-wide.
+`BUILDER=snoc-pool` is a sentinel, not a builder: it routes through
+`.builders/balance.sh`, which schedules one bake per target across the
+fleet by current load and hands results between stages through the
+registry.
 
-`TELEMETRY=0 make build-pytorch` skips the telemetry wrapper.
+> **`gfx950` is not Strix Halo.** Earlier revisions of this repository
+> said it was. `gfx950` is a CDNA-class (MI350-series) architecture;
+> Strix Halo is `gfx1151`. `snoc-strix` is a hostname. The distinction
+> is load-bearing — AITER's kernel prebuild is enabled on CDNA and
+> disabled on RDNA.
 
-### Cache Configuration
+## Build targets
 
-Cache is stored in Zot at:
-
-- `snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/base-cache` - Base image cache
-- `snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/pytorch-cache` - PyTorch build cache
-- `snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/runtime-cache` - Runtime cache
-
-To use cache from another build:
-```bash
-docker buildx bake -f rocm-bake.hcl \
-  --set "*.args.CACHE_FROM=other-registry:5000/rocm-pytorch/cache:main" pytorch
+```text
+pytorch-base ──┬──► triton-wheel ──┬──► pytorch ──┬──► pytorch-wheel
+               │                   │              ├──► pytorch-run
+               ├──► cupy-wheel     │              ├──► pytorch-test
+               │        │          └──────────────┼──► aiter-wheel
+               │        │                         └──► nixl-wheel
+               │        │                                   │
+               │        └───────────────┬───────────────────┤
+               │                        ▼                   │
+               │                     lmcache ──► lmcache-wheel
+               │                                       │
+               └───────────────────────────────────────┴──► vllm ──► vllm-wheel
 ```
 
-## Build Targets
+Thirteen targets, three groups (`default`, `wheels`, `serving`). Bake
+derives the DAG from each target's `contexts`, so asking for `vllm`
+alone builds everything it needs. Full table with tags:
+[Build targets](https://sbates130272.github.io/rocm-bake/reference/build-targets/).
 
-| Target | Description | Tags |
-|--------|-------------|------|
-| `pytorch-base` | ROCm dev base with Python/toolchain | `rocm-pytorch/base:10.1.0-full-3.14` |
-| `pytorch` | Full PyTorch build with deps | `rocm-pytorch/pytorch:2.14.1-10.1.0-full-gfx950` |
-| `pytorch-run` | Minimal runtime image | `rocm-pytorch/runtime:2.14.1-10.1.0-full` |
-| `pytorch-test` | Build + verify test | `rocm-pytorch/pytorch:…-gfx950-test` |
-| `pytorch-wheel` | torch wheel artifact | `rocm-pytorch/pytorch-wheel:2.14.1-10.1.0-full-gfx950` |
-| `triton-wheel` | Triton 3.8.0 built for ROCm 10.1 | `rocm-pytorch/triton-wheel:10.1.0-full-gfx950` |
-| `aiter-wheel` | AITER wheel | `rocm-pytorch/aiter-wheel:2.14.1-10.1.0-full-gfx950` |
-| `nixl-wheel` | NIXL + ROCm UCX wheel | `rocm-pytorch/nixl-wheel:v1.5.1-10.1.0-full-gfx950` |
-| `cupy-wheel` | CuPy built for ROCm, required by LMCache | `rocm-pytorch/cupy-wheel:v14.2.0-10.1.0-full-gfx950` |
-| `vllm` | vLLM serving image | `rocm-pytorch/vllm:v0.32.0-10.1.0-full-gfx950` |
-| `vllm-wheel` | vLLM wheel artifact | `rocm-pytorch/vllm-wheel:v0.32.0-10.1.0-full-gfx950` |
-| `lmcache` | LMCache multi-process runtime | `rocm-pytorch/lmcache:v0.5.6-10.1.0-full-gfx950` |
-| `lmcache-wheel` | LMCache wheel artifact | `rocm-pytorch/lmcache-wheel:v0.5.6-10.1.0-full-gfx950` |
-| `wheels` | All wheel artifacts | - |
-| `serving` | `nixl-wheel` + vLLM + LMCache | - |
-| `default` / `all` | Base, pytorch, runtime and the wheels | - |
+## Four caches
 
-## Serving Stack (vLLM / LMCache / NIXL)
-
-vLLM and LMCache are built from source against this repo's torch rather
-than installed from a published wheel. Their native extensions link
-against torch's C++ ABI, so a wheel built for AMD's ROCm 7.x torch and
-ours cannot share a process — the same constraint that forces AITER to
-be built here.
-
-NIXL is built once (`docker/Dockerfile.nixl`) and consumed by both. The wheel is
-self-contained: UCX is compiled from source with `--with-rocm` (Ubuntu's
-libucx has no ROCm memory-type support, so without it every device-memory
-transfer bounces through host staging) and auditwheel bundles it, so
-installing the wheel is all a consumer needs.
+| | What it holds | Where |
+| --- | --- | --- |
+| Content store | Blobs BuildKit has pulled or produced | Per node, 100 GB cap |
+| Layer cache | Build layers as OCI artifacts, two-tier and arch-scoped | Zot `*-cache` repos |
+| Compiler cache | Object files, fleet-wide | nginx WebDAV on Strix `:8081` |
+| Pull-through | Upstream images | Zot mirrors Docker Hub, GHCR, Quay |
 
 ```bash
-make push-serving              # nixl + vllm + lmcache, built and pushed
-make build-vllm                # just vLLM, single builder, no push
-make fetch-nixl-wheel          # pull a wheel artifact into ./dist
+make layer-summary    # layer reuse per image
+make cache-summary    # compiler-cache size and delta
+make cache-check      # can every node reach the store?
 ```
 
-Refs are overridable per invocation and default to the latest release of
-each: `make push-serving VLLM_REF=v0.31.0 NIXL_REF=v1.5.0`.
+Details: [Caching](https://sbates130272.github.io/rocm-bake/architecture/caching/).
 
-### Running the stack
+## Build performance
 
-`serving/docker-compose.yml` runs vLLM and the LMCache MP server as a
-pair, over `DOCKER_HOST=ssh://$GPU_HOST`, so the file stays here under
-version control while the engine runs on the machine with the GPU.
+Build time is tracked under four cache conditions, which nest — each is
+the one below it with a further cache removed:
 
-```bash
-make serve-stack               # vLLM + LMCache MP (KV_TIER=cpu|file)
-make serve-vllm                # vLLM alone — the no-offload baseline
-make serve-test                # prove the cache is actually working
-make serve-logs                # both containers, merged, live
-make serve-logs-cache          # same, filtered to hit/miss/store lines
-make serve-down                # stop and remove
-```
-
-The image tags come from the GPU host, not from the build defaults:
-`SERVE_ARCH` asks it which GPU it has. The build default is gfx950
-(Strix Halo) while the serving host here is a gfx1201 RX 9070 XT, and
-deriving the tag from the build arch asked Zot for an image nobody had
-built.
-
-`make serve-test` exists because `/health` is not evidence. LMCache on
-ROCm has a failure mode where the endpoint serves every request
-correctly and caches nothing — [LMCache#4419][lmcache-4419], where a
-reporter ran eight days at a zero hit rate with no error anywhere. The
-test sends the same long prefix twice, requires the second prefill to
-be measurably cheaper, and then reads LMCache's own log for the store
-and the retrieve, because vLLM's own prefix caching can make the timing
-alone look fine.
-
-[lmcache-4419]: https://github.com/LMCache/LMCache/issues/4419
-
-Running the images directly, without compose:
-
-```bash
-# vLLM. AITER is installed but off by default; VLLM_ROCM_USE_AITER=1 turns
-# on its attention and MoE kernels.
-docker run --rm --device /dev/kfd --device /dev/dri -p 8000:8000 \
-    -e VLLM_ROCM_USE_AITER=1 \
-    snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/vllm:latest \
-    serve Qwen/Qwen3-8B
-
-# LMCache in its multi-process deployment: a controller holding the
-# cluster-wide index, and one or more cache servers holding the blocks.
-# The image has no default role — name the CLI you want.
-#
-# Note the asymmetry: lmcache_controller takes flags, lmcache_server
-# takes three positional arguments (host, port, storage). Giving the
-# server flags makes it print a usage line and exit 1.
-docker run --rm -p 9000:9000 \
-    snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/lmcache:latest \
-    lmcache_controller --host 0.0.0.0 --port 9000
-docker run --rm --device /dev/kfd --device /dev/dri -p 8100:8100 \
-    snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/lmcache:latest \
-    lmcache_server 0.0.0.0 8100 cpu
-```
-
-Three upstream constraints are worth knowing about:
-
-- **LMCache declares `requires-python >=3.10,<3.14`.** This lane is
-  cp314, because Ubuntu 26.04 — the only base AMD publishes ROCm 10.1
-  for — ships no other Python. The wheel is installed with
-  `--ignore-requires-python`; the extension is compiled here against this
-  interpreter, so the ABI matches by construction. Revisit when upstream
-  raises the bound.
-- **Both projects' requirement files carry CUDA-only or x86-wheel-only
-  pins** (`cufile-python`, `nvtx`, `tilelang`, `amd-quark`,
-  `mooncake-transfer-engine-rocm`, …). These are stripped before the
-  build, which also keeps them out of the wheel's `install_requires`.
-  The lists are build args — `VLLM_DROP_REQS` and `LMCACHE_DROP_REQS` —
-  so a dependency can be let back in once it has a usable wheel.
-- **`torchvision` is a CUDA wheel in these images, and that is not fixed
-  here.** `/etc/pip-constraints.txt` pins torch and triton to the ROCm
-  builds, but there is no ROCm torchvision in this pipeline — it is
-  resolved from PyPI by `docker/Dockerfile.pytorch`'s optional-extras step, and
-  vLLM's `requirements/rocm.txt` keeps it reachable through `timm`. Its
-  `_C_stable.so` links `libtorch_cuda` / `libc10_cuda`, so `import
-  torchvision` fails at load time. Nothing in the text-model serving path
-  touches it, which is why the build and the import checks stay green —
-  but vision and video models will fail at serve time until a ROCm
-  torchvision is built the way torch and triton are.
-
-## Multiple GFX architectures
-
-`PYTORCH_ROCM_ARCH` picks the arch for one build and still defaults to
-`gfx950`, so every command in this README behaves as it always has.
-`ARCHES` is the list the `arches-*` wrappers fan out over:
-
-```bash
-make arches-push-all                      # every target, every arch
-make arches-push-wheels                   # just the wheel artifacts
-make arches-build-pytorch ARCHES=gfx1201  # narrow it while iterating
-make arches-list                          # what ARCHES resolves to
-```
-
-`ARCHES` defaults to `gfx950 gfx1201 gfx1250`. Each arch is a full pass
-over every target, so treat the list as a multiplier on build time.
-
-Two things that are easy to confuse:
-
-| | what it produces |
-|---|---|
-| `PYTORCH_ROCM_ARCH='gfx950;gfx1201'` | one fat build, both code objects in one binary, one set of tags |
-| `ARCHES='gfx950 gfx1201'` | two builds, two separately tagged sets of artifacts |
-
-`gfx1250` (MI450) is in the default list without being in the fleet —
-the builders cross-compile, so the only thing missing is that `make
-test` and `make gpu-test` cannot cover it. Note it is **not** RDNA
-despite the `gfx12` number; see `ARCH_RDNA_TEST` in `rocm-bake.hcl` for what
-that would otherwise have silently broken in AITER's kernel prebuild.
-
-### The layer cache is scoped by arch
-
-Image tags have carried the arch since `ARCH_TAG` landed, but the
-registry cache refs did not — every arch-sensitive target wrote
-`<repo>-cache:latest`. A gfx1201 build overwrote the gfx950 cache with
-layers gfx950 can never hit, and the next gfx950 build rebuilt cold and
-did the same back, so alternating archs cost two cold builds every
-time. `CACHE_ARCH` in `rocm-bake.hcl` now scopes those refs.
-
-`pytorch-base` and `triton-wheel` stay on the shared ref deliberately:
-neither takes `PYTORCH_ROCM_ARCH`, Triton is a compiler that publishes
-one noarch wheel, and both are therefore built once for the whole
-fleet.
-
-### Per-arch pip index (`device-<arch>` extras)
-
-Every wheel here has an arch-independent filename. `torch` is
-`torch-2.14.1a0+git5c48869-cp314-cp314-linux_x86_64.whl` whether it was
-built for gfx950 or gfx1201, and `amd_aiter-0.1.27` is 131 MB for one
-arch and 481 MB for the other. In one directory they overwrite each
-other and `--find-links` serves whichever landed last. So the arch
-lives in the path:
-
-```bash
-make wheel-index                  # fetch per arch, generate the indexes
-make wheel-index-check            # install each one into a throwaway venv
-python3 -m http.server 8081 --directory dist
-```
-
-```bash
-pip install \
-  --index-url http://<host>:8081/index/gfx950/ \
-  --extra-index-url https://pypi.org/simple \
-  "rocm-torch[device-gfx950]"
-```
-
-`rocm-torch` is generated per index by `.builders/wheelindex.py`; its
-`device-<arch>` extra pins every wheel in that index at once. Each
-index declares only its own arch's extra, so asking gfx950's index for
-`[device-gfx1201]` fails rather than installing mismatched binaries.
-`make zot-wheels` prints the extra beside each published tag.
-
-`--extra-index-url` is not optional: `--index-url` replaces PyPI
-outright, and the first ordinary dependency (numpy, via
-`triton-kernels`) then fails to resolve. `download.pytorch.org` has the
-same property and the same workaround.
-
-This is the shape TheRock ships ROCm in — `pip install
-"rocm[device-gfx1153]"` — rather than the WheelNext variant mechanism.
-Variants (PEP 817/825) are the better long-term answer and AMD ships an
-`amd-variant-provider` plugin, but both PEPs are Draft, installer
-support is prototype-only forks of pip and uv, and the published
-provider matches PyTorch 2.9 on ROCm 6.3/6.4 against a gfx list that
-does not include gfx950. None of that resolves this stack today. The
-extra is spelled `device-<arch>` so that when variants do land, the
-arch is already a first-class coordinate and only the selection
-mechanism has to change.
-
-## Measuring build performance
-
-Two harnesses, answering different questions. Do not quote a number
-from one as if it came from the other.
-
-| | `bench.sh` | `make perf-run` | `make perf-build` |
-|---|---|---|---|
-| runs targets | one at a time | across the fleet at once | across the fleet at once |
-| caches | isolated | cold: none | both, as normal |
-| answers | what does *this* target cost | what does a full cold build look like | what does a build I would actually run look like |
-| numbers are | isolated per-target | throughput under contention | throughput under contention |
-
-`bench.sh cold` serialises on purpose and isolates its compiler cache,
-so its per-target times are comparable run to run. `perf-run` runs the
-fleet flat out, so three builds share the sccache store and the
-registry — both on Strix, which is also a build node. Its timings are
-throughput, and its report says so at the top.
-
-`perf-build` is the same instrumentation on an ordinary build: layer
-cache and sccache both live, results pushed, the fleet's real sccache
-prefix. It is the one to use when the question is about the build you
-actually run rather than about a build from nothing — and the two
-differ more than you would expect, because a warm build's cost is
-almost entirely export rather than compute.
-
-### An instrumented parallel build
-
-```bash
-make perf-plan                      # placement only, builds nothing
-make perf-run PERF_ARCH=gfx1201     # cold: no caches, hours
-make perf-build PERF_ARCH=gfx1201   # normal: caches on, pushes
-make perf-report                    # markdown + SVG from the newest run
-make perf-serve                     # live chart on :8090, follows the newest run
-make perf-runs                      # list collected runs
-```
-
-`make perf-serve` regenerates every 30s and re-resolves which run is
-newest each cycle, so it picks up a run that starts after the server
-did. It binds **every interface**, not just the tailnet, because the
-usual viewer is a laptop on the LAN that is not on tailscale. What
-that exposes is build telemetry — hostnames, CPU and memory figures,
-build step names — with no credentials and no registry access. Narrow
-it with `PERF_BIND=<ip>`, and stop it when you are done.
-
-A run collects these into `/var/tmp/rocm-perf/<stamp>/`:
-
-| file | from | answers |
-|---|---|---|
-| `samples.jsonl` | node_exporter, polled | CPU, memory, disk, network over time |
-| `trace-<target>.json` | the builder's own build record | what ran, when, for how long |
-| `sccache.log` | the WebDAV vhost's nginx log | what was written to the compiler cache |
-| `zot.jsonl` | Zot's structured log | layer-cache and image writes |
-| `artifacts.txt` | `wheelhouse.py` | what ended up published |
-| `index.html` + `data.json` | `perfreport.py` | the interactive chart, and the sidecar it polls |
-
-`make perf-report` writes `report.md` with SVG charts beside it, and
-`index.html` for interrogating a run: overlaid CPU and memory lines, a
-legend that filters by builder *and* by target, and per-band hover
-showing the actual `RUN` commands a phase covers. CPU and memory share
-one axis because both are percentages — a second y-scale would make it
-a dual-axis chart, which is the chart form that misleads most
-reliably. Memory is distinguished by dash, so colour keeps following
-the builder.
-
-`make perf-serve` serves that page. It polls `data.json` rather than
-reloading, because the legend *is* the filter: a reload would discard
-whichever builders and targets the viewer had narrowed to, which is
-exactly the state someone mid-question is in.
-
-The per-target table carries `build` and `total` side by side. `build`
-is the span of the target's own steps; `total` is what the builder
-reported for the whole record. The gap between them is setup plus
-export, and it is usually the larger number — see below.
-
-### Why the timeline comes from the build record
-
-It used to come from `bake --progress=rawjson`, captured by
-redirecting a live build's output. On a real run all three target logs
-truncated back to the 8-byte `{"v":1}` stream header partway through
-and never grew again, losing every step for builds that were otherwise
-healthy. BuildKit keeps the same information itself — an OpenTelemetry
-trace, one span per step — and it survives on the builder whether or
-not anything was listening. `.builders/perftrace.py` reads it back
-after the fact, which is why a timeline can be recovered from a run
-that was not being watched.
-
-### Cache export is not build time
-
-`--no-push` suppresses the image push but **not** the cache export,
-which is a separate registry write. In **cold** mode `perfrun.sh`
-clears it with `--set *.cache-to=`, as `bench.sh` does, because the
-cost is not small: on one gfx1201 run `triton-wheel` reported 38m52s
-of which the trace accounted for 15m48s — the other **23m04s, 59% of
-its headline duration, was uploading `mode=max` cache**. A harness
-measuring a build from nothing must not also time its own uploads.
-
-In **normal** mode (`make perf-build`) none of that applies: the
-export is the point. There the upload is reported rather than
-suppressed — `perftrace.py` keeps BuildKit's `HTTP PUT`/`POST` spans
-alongside the step spans, so the chart bands them as `upload` and the
-hover names the blob and its size. They were discarded until a
-`triton-wheel` run showed 92s of steps inside a 430s record, with the
-missing 336s invisible: a node that looked idle for most of its build
-was in fact uploading 6.4GB.
-
-Transfers never widen the `build` column — that column exists to
-exclude them. If `build` and `total` disagree by minutes, the
-difference is the export, and on a warm build it is nearly all of it.
-
-### Queues, not stage barriers
-
-`balance.sh --queue` is the default for perf runs, and stage barriers
-are what it replaced. Barriers exist to order work that depends on
-earlier work, and under `PUBLISHED_INPUTS=1` nothing here does: every
-wheel resolves to a self-contained target that pulls its inputs from
-Zot. The barrier bought nothing and cost a great deal — on one gfx1201
-run stage 1 took 44m16s of wall clock to do 77m09s of work, leaving
-**55m39s of idle builder time**, with the weakest node idle for 82% of
-it.
-
-In queue mode the stage variables only set the pool. Targets are
-packed onto nodes longest-first, and each node then drains its own
-list sequentially while the nodes run concurrently. Sequential per
-node matters: several concurrent builds on one box each derive
-`MAX_JOBS` from `MemAvailable` as though they were alone, and
-oversubscribe it. Set `PERF_QUEUE=0` to go back to barriers, which is
-worth doing if a target ever gains a real dependency on another.
-
-### What a target costs depends on which node runs it
-
-`.builders/target-costs` is the input to that packing, and it has two
-terms because a target's cost is not one number:
-
-```
-build <target> <seconds>   compile cost, roughly node-independent
-cache <target> <bytes>     what the target transfers when it exports
-netmb <node>   <MB/s>      that node's upload throughput to the store
-```
-
-The cost of running a target on a node is `build + cache/netmb`, and
-the packer picks the node that finishes it **soonest** rather than the
-one that is least loaded. The second term is not a refinement. The
-fleet's upload speeds span a factor of 25 — 3000MB/s on the store host
-itself, 90 wired, 3.7 over WiFi — so the same 6.4GB export is about a
-minute on one node and about 28 on another. Ranking on build time
-alone sent `triton-wheel`, the largest export of any target, to the
-only node behind WiFi; moving it to a wired node took it from 25m25s
-to 7m09s.
-
-Re-measure after anything that moves the build materially, and
-re-measure `netmb` if the fleet is rewired, since that is the term
-that now dominates. Take the byte figures from a **normal** run: a
-cold run passes `--no-push`, so its export counts the cache but not
-the image, which under-counted `aiter-wheel` by 4.3x. A stale table
-degrades the schedule, never the build — and `check-contracts.py`
-fails if a wheel or a node is missing from it, because the fallback
-for a missing entry is to cost it at one second.
-
-These are cold-build costs. On a warm build every `build` term
-collapses towards zero while the `cache` terms stay, which can invert
-which node is critical: in one `perf-build` run `pytorch-wheel` was a
-cache hit and freed its node after 55s, leaving the WiFi node's four
-small targets — 2.8GB between them — as the critical path of a 26m
-run. Queues are fixed at plan time, so nothing migrates once packed.
-
-## Architecture Optimization
-
-### gfx950 Build Flags
-
-Strix Halo uses AMD's new hybrid architecture:
-- **Compute**: RDNA 3.5 (graphics) + CDNA 3 (compute)
-- **Memory**: 128-bit DDR5 bus, ~64GB shared
-- **CU Count**: ~12 CUs
-
-The build targets `gfx950` specifically with fallback compatibility:
-```
-HIP_ARCHITECTURES="gfx900;gfx940;gfx941;gfx942;gfx950;gfx1100;gfx1101;gfx1102"
-```
-
-### Build Optimization Strategy
-
-1. **Layer caching** - Base image built first, cached in Zot
-2. **Incremental builds** - Changes to PyTorch source only rebuild affected layers
-3. **Registry cache** - Cache stored in Zot, accessible from any builder
-4. **Multi-builder** - Fan targets out across Strix, Thinkstation and Gaming
-5. **Compression** - Output compressed with zstd for smaller image size
-6. **sccache** - Compiler-level caching skips redundant HIP/CUDA compilation
-7. **Telemetry** - Real-time metrics for monitoring build health and cache efficiency
-
-## Troubleshooting
-
-### Build fails with "HIP not found"
-
-```bash
-# Verify ROCm modules loaded
-rocm-smi --showversion
-
-# Check if GPU is visible
-ls -la /dev/kfd /dev/dri
-```
-
-### Zot connection refused
-
-```bash
-# Check the Zot service (bare metal, not a container)
-systemctl status zot
-
-# Check Zot logs
-sudo journalctl -u zot -n 50
-
-# Verify registry API
-curl -s http://snoc-strix.fold-leaffish.ts.net:8080/v2/_catalog
-```
-
-Two different failures look similar from a build log:
-
-- `no such host` — the builder cannot resolve the tailnet name. It was
-  created without `--driver-opt network=host`, so Docker gave it the
-  upstream resolver instead of the host's MagicDNS one.
-- `http: server gave HTTP response to HTTPS client` — DNS is fine but the
-  client will not speak plain HTTP. For the Docker daemon, check
-  `insecure-registries` in `/etc/docker/daemon.json`; for BuildKit,
-  confirm the builder was created with
-  `--config .builders/buildkitd-strix.toml`.
-
-### Push dies at exactly 60 seconds
-
-Zot's default HTTP read timeout is 60s, measured across the whole request
-body. The ROCm base image has a single 8.67GB layer, which cannot cross a
-1Gb/s link in under ~73s, so every push of it failed at the 60s mark:
-Zot discarded the partial upload and returned 500, and buildkit retried
-with backoff. The client-side error is a connection reset, which reads
-like a network fault rather than a timeout — the giveaway is Zot's own
-log:
-
-```
-PUT /v2/.../blobs/uploads/...  statusCode: 500  latency: "1m0s"
-error: "read tcp ...: i/o timeout"   Content-Length: 8672333352
-```
-
-`/etc/zot/config.json` needs:
-
-```json
-"http": {
-  "readTimeout": "30m",
-  "writeTimeout": "30m"
-}
-```
-
-then `sudo systemctl restart zot`. That layer then pushes in ~200s. Zot
-is deployed from outside this repo, so the setting belongs in whatever
-provisions it, or it reverts on the next deploy.
-
-Both settings are fixed at builder-create time, so the fix is always
-`docker buildx rm <name>` then `make builder-<builder>`; editing the toml
-does nothing to an existing builder. Inspect with
-`docker buildx inspect <name>`. If pushes get 401, `docker login
-snoc-strix.fold-leaffish.ts.net:8080 -u ci`.
-
-### Buildx builder not available
-
-```bash
-# List builders
-docker buildx ls
-
-# Create builder if missing (--config and network=host are both required)
-make builder-snoc-strix
-```
-
-### Insufficient disk space
-
-```bash
-# Check Docker disk usage
-docker system df
-
-# Clean up unused resources
-docker system prune -a
-```
-
-### sccache not caching
-
-The build refuses to start when the store is unreachable, so a silent
-no-cache build should not happen. If it does:
-
-```bash
-# State, deltas and the last recorded hit rate, in one place
-make cache-summary
-
-# Is the store reachable from every build node, not just this one?
-make cache-check
-
-# Raw: is the endpoint answering?
-curl -sI http://snoc-strix.fold-leaffish.ts.net:8081/ | head -1
-systemctl status nginx            # on Strix
-```
-
-Three failure modes have distinct signatures:
-
-| Symptom in the build log | Cause |
+| Scenario | Condition |
 | --- | --- |
-| `No such file or directory` on a source path | The client reached a server outside the container — `SCCACHE_SERVER_PORT` collided with the node's own 4226 daemon |
-| `cache storage failed to read ... I/O error` | The store's hostname did not resolve; check `[dns]` in `.builders/buildkitd-strix.toml` |
-| `Cache write errors` climbing | The store is full — extstore exhausted, and evictions are disabled by design |
-
-Builder settings are fixed at create time, so after changing the
-buildkitd config: `docker buildx rm snoc-strix && make builder-snoc-strix`.
-
-### Telemetry not collecting
+| **frozen** | Nothing anywhere; the base image egresses from Docker Hub |
+| **cold** | No layer cache, no compiler cache; base image local |
+| **warm** | Caches populated, but a new commit moved `SOURCE_DATE_EPOCH` |
+| **hot** | Same commit, everything cached |
 
 ```bash
-# Run a build through the wrapper directly and watch what it records
-./telemetry/build.sh --builder snoc-strix pytorch
-
-# Is there any build history to read?
-docker buildx history ls --builder snoc-strix
+make bench BENCH_SCENARIO=cold BUILDER=snoc-think
+make bench-report
 ```
 
-Metrics land in `telemetry/out/` instead of the node_exporter directory
-when that directory is not writable — the wrapper says so when it falls
-back. sccache counters are absent when a target was fully layer-cached:
-the build step never ran, so it printed no stats.
+A second harness answers a different question — `make perf-run` builds
+every wheel across the whole fleet at once, with CPU, compiler-cache and
+registry traffic sampled throughout, and `make perf-report` renders it
+as markdown plus SVG and interactive charts. `bench.sh` gives isolated
+per-target cost; `perf-run` gives throughput under contention. Do not
+quote one as if it were the other.
+
+Measured results, why `warm` is an assertion rather than a number, and
+what a fleet run found:
+[Performance](https://sbates130272.github.io/rocm-bake/performance/).
+
+## Repository layout
+
+| | |
+| --- | --- |
+| `rocm-bake.hcl` | The build graph: 13 targets, 3 groups, 45 variables |
+| `Makefile` | Wrapper; reads every default out of `rocm-bake.hcl` |
+| `docker/` | Nine Dockerfiles; build context is always the repo root |
+| `telemetry/build.sh` | Wraps a bake, emits Prometheus metrics |
+| `serving/` | Compose file for the vLLM + LMCache pair |
+| `.builders/` | Node setup, the balancer, the benchmark harness, registry readers |
+| `docs/` | This documentation, published to `gh-pages` |
+
+## Documentation
+
+Built with MkDocs Material and published to the `gh-pages` branch by
+`.github/workflows/docs.yml` on every push to `main`.
+
+```bash
+make docs-serve    # live reload on :8000
+make docs-build    # into dist/site; fails on a broken internal link
+```
+
+Benchmark results are **not** committed to this branch. They are pushed
+onto `gh-pages` separately by `make bench-publish`, run from a build
+node, because that is the only place the numbers exist. The docs
+workflow preserves `data/` when it deploys.
 
 ## License
 

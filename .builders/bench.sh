@@ -1,32 +1,41 @@
 #!/bin/bash
-# bench.sh - measure build time under cold, warm and hot cache conditions.
+# bench.sh - measure build time under frozen, cold, warm and hot cache
+# conditions.
 #
-# The three scenarios exist because they fail differently, and only one
-# of them is the common case:
+# The four scenarios exist because they fail differently, and only one
+# of them is the common case. They nest: each is the one below it plus
+# one more cache taken away.
 #
-#   cold  No layer cache, no compiler cache. What a new machine or a
-#         changed base image costs. Upper bound.
-#   warm  Layer and compiler caches are populated, but SOURCE_DATE_EPOCH
-#         moved — which is what every new commit does, including commits
-#         that touch nothing this image depends on. This is the case
-#         that matters day to day, and the one currently broken: a new
-#         commit gives the base a new digest, so every downstream FROM
-#         misses even though no input changed.
-#   hot   Same commit, everything cached. Lower bound; mostly a check
-#         that the caches are being read at all.
+#   frozen  Cold, and Zot holds no pull-through copy of the upstream
+#           base image either, so the layers egress from Docker Hub.
+#           What a brand-new site costs, before any of this fleet's
+#           infrastructure has warmed up. The ROCm base is a single
+#           8.67GB layer, so the difference between frozen and cold is
+#           essentially WAN bandwidth — and it is the number to quote
+#           when someone asks what the local registry is worth.
+#   cold    No layer cache, no compiler cache, but the base image is
+#           resident in Zot. What a new build node or a changed base
+#           image costs. Upper bound on compile cost.
+#   warm    Layer and compiler caches are populated, but
+#           SOURCE_DATE_EPOCH moved — which is what every new commit
+#           does, including commits that touch nothing this image
+#           depends on. This is the case that matters day to day.
+#   hot     Same commit, everything cached. Lower bound; mostly a check
+#           that the caches are being read at all.
 #
-# Cold runs are isolated by SCCACHE_WEBDAV_KEY_PREFIX so they never
-# pollute or evict the fleet's shared compiler cache. The prefix is a
-# directory in the WebDAV store and is deleted afterwards. Verified:
-# writes land under /var/cache/sccache-webdav/<prefix>/.
+# frozen and cold runs are isolated by SCCACHE_WEBDAV_KEY_PREFIX so they
+# never pollute or evict the fleet's shared compiler cache. The prefix
+# is a directory in the WebDAV store and is deleted afterwards.
+# Verified: writes land under /var/cache/sccache-webdav/<prefix>/.
 #
 # Results append as JSON lines, one per build, so a partial run is still
 # usable and successive nights accumulate rather than overwrite.
 #
 # Usage:
 #   ./bench.sh <scenario> [target ...]     run one scenario
-#   ./bench.sh all                         cold, then warm, then hot
+#   ./bench.sh all                         frozen, cold, warm, then hot
 #   ./bench.sh report                      render results as markdown
+#   ./bench.sh json [out.json]             aggregate for the docs site
 
 set -uo pipefail
 
@@ -111,6 +120,77 @@ node_mem_avail_gb() {
     fi
 }
 
+# ── frozen: evict the pull-through copy of the base image ────────
+# Read a default out of rocm-bake.hcl rather than keeping a copy here.
+# Same awk as the Makefile's BAKE_DEFAULTS block and for the same
+# reason: that file is the single source for every value a build reads,
+# and a second copy is drift waiting to happen. POSIX awk only.
+bake_default() {
+    awk -v want="$1" '
+        /^variable[ \t]*"/ {
+            n = $0; sub(/^variable[ \t]*"/, "", n); sub(/".*/, "", n) }
+        n == want && /default[ \t]*=[ \t]*"/ {
+            v = $0; sub(/^.*default[ \t]*=[ \t]*"/, "", v); sub(/".*/, "", v)
+            print v; exit }' rocm-bake.hcl
+}
+
+# The upstream images the graph pulls through Zot. Only the ROCm base is
+# worth evicting: it is 8.67GB in a single layer, against a few hundred
+# megabytes for everything else the build fetches from a registry.
+FROZEN_REPO="${FROZEN_REPO:-rocm/dev-ubuntu-26.04}"
+
+# Delete Zot's cached manifest for an upstream tag, so the next pull
+# re-syncs it from Docker Hub.
+#
+# Through the registry API, not by deleting files under zot's rootDir:
+# the harness runs on whichever node BUILDER names, and only one of
+# those is the machine zot lives on. The API works from all of them.
+#
+# Absent is the state we want, so a tag with no manifest is a success,
+# not a failure. A 405 is not: it means zot was built or configured
+# without delete support, and the run that follows would silently be a
+# cold run wearing a frozen label. That distinction is recorded in the
+# result line.
+zot_evict() {
+    local repo="$1" tag="$2" reg="$3" digest
+    digest=$(curl -sI --max-time 30 \
+        -H 'Accept: application/vnd.oci.image.index.v1+json' \
+        -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
+        -H 'Accept: application/vnd.oci.image.manifest.v1+json' \
+        -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
+        "http://${reg}/v2/${repo}/manifests/${tag}" 2>/dev/null \
+        | awk 'tolower($1) == "docker-content-digest:" { print $2 }' \
+        | tr -d '\r')
+    if [ -z "${digest}" ]; then
+        log "  ${repo}:${tag} is not resident in ${reg} — already frozen"
+        return 0
+    fi
+    if curl -sf --max-time 60 -X DELETE -o /dev/null \
+            "http://${reg}/v2/${repo}/manifests/${digest}"; then
+        log "  evicted ${repo}:${tag} (${digest:0:19}) from ${reg}"
+        return 0
+    fi
+    log "  WARNING: could not delete ${repo}:${tag} from ${reg}"
+    log "           zot needs deletes enabled; this run is cold, not frozen"
+    return 1
+}
+
+# Evicting from zot is necessary but not sufficient. buildkit keeps the
+# blobs it has already pulled in its own content store, so a build whose
+# base is still there never touches a registry at all and frozen would
+# measure exactly what cold measures.
+#
+# This empties that store for the whole node, including any other
+# project's layers — these builders are shared. It is the price of the
+# measurement, and it is why frozen is not in the nightly rotation by
+# default. BENCH_FROZEN_PRUNE=0 skips it, which gives a frozen run that
+# only re-pulls what buildkit happens to have dropped.
+buildkit_prune() {
+    [ "${BENCH_FROZEN_PRUNE:-1}" = 0 ] && { log "  skipping buildkit prune"; return 0; }
+    log "  pruning buildkit's content store on ${BUILDER} (shared with other projects)"
+    timeout 600 docker buildx prune -af --builder "${BUILDER}" >/dev/null 2>&1
+}
+
 # ── one build ────────────────────────────────────────────────────
 # Emits a JSON line. Never aborts the harness: a failing build is a
 # result, and recording it is the point.
@@ -119,9 +199,20 @@ bench_run() {
     local stamp; stamp=$(date -u +%Y%m%dT%H%M%SZ)
     local log="${LOGS}/${scenario}-${target}-${stamp}.log"
     local epoch; epoch=$(git log -1 --format=%ct 2>/dev/null)
-    local prefix=""
+    local prefix="" frozen=""
 
     case "${scenario}" in
+        frozen)
+            # Cold, plus the registry. Everything the cold arm does, and
+            # then the two stores that would otherwise hand the base
+            # image over for free.
+            prefix="bench-frozen-${stamp}"
+            extra="${extra} --no-cache"
+            frozen=ok
+            zot_evict "${FROZEN_REPO}" "$(bake_default ROCM_VERSION)" \
+                "$(bake_default REGISTRY)" || frozen=partial
+            buildkit_prune
+            ;;
         cold)
             prefix="bench-cold-${stamp}"
             extra="${extra} --no-cache"
@@ -288,7 +379,8 @@ bench_run() {
     # finished. Contention arriving after the start was invisible, and
     # it is the best candidate for the spread these numbers carry.
     local load_end; load_end=$(node_load)
-    record "${scenario}" "${target}" "$((end - start))" "${rc}" "${log}" "${load:-0}" "${load_end:-0}"
+    record "${scenario}" "${target}" "$((end - start))" "${rc}" "${log}" \
+        "${load:-0}" "${load_end:-0}" "${frozen}"
 }
 
 # bake target -> make target suffix, matching balance.sh's mapping.
@@ -308,6 +400,11 @@ mk_name() {
 # result line stands on its own without re-reading it.
 record() {
     local scenario="$1" target="$2" secs="$3" rc="$4" log="$5" load="$6" load_end="${7:-0}"
+    # "ok" when the registry copy was really evicted, "partial" when the
+    # delete was refused, empty for every other scenario. Without it a
+    # frozen row that silently ran cold is indistinguishable from one
+    # that did not, and it would drag the published average down.
+    local frozen="${8:-}"
     local cached total hits misses reqs maxjobs fail=""
 
     # Anchor to this repo's Dockerfile. The builders are shared, and
@@ -416,7 +513,7 @@ record() {
     B_SECS="${secs}" B_RC="${rc}" B_CACHED="${cached:-0}" B_TOTAL="${total:-0}" \
     B_REQS="${reqs:-0}" B_HITS="${hits:-0}" B_MISSES="${misses:-0}" \
     B_JOBS="${maxjobs:-0}" B_FAIL="${fail}" B_LOG="${log}" B_LOAD="${load:-0}" \
-    B_LOAD_END="${load_end:-0}" \
+    B_LOAD_END="${load_end:-0}" B_FROZEN="${frozen}" \
     python3 -I - <<'PY' >> "${RESULTS}"
 import json, os, datetime
 def num(k):
@@ -438,6 +535,7 @@ print(json.dumps({
     "max_jobs": num("B_JOBS"),
     "node_load_at_start": float(os.environ.get("B_LOAD") or 0),
     "node_load_at_end": float(os.environ.get("B_LOAD_END") or 0),
+    "registry_evicted": os.environ.get("B_FROZEN") or None,
     "failure": os.environ.get("B_FAIL") or None,
     "log": os.environ["B_LOG"],
 }))
@@ -461,7 +559,8 @@ except FileNotFoundError:
 if not rows:
     print("No results yet."); raise SystemExit
 
-print("| scenario | target | arch | time | steps cached | sccache hit | jobs | result |")
+print("| scenario | target | arch | time | steps cached | sccache hit "
+      "| jobs | result |")
 print("|---|---|---|---|---|---|---|---|")
 for r in rows:
     secs = r["seconds"]
@@ -470,7 +569,12 @@ for r in rows:
     req = r["sccache_requests"]
     hit = f'{100*r["sccache_hits"]//req}%' if req else "-"
     res = "ok" if r["rc"] == 0 else "FAIL"
-    print(f'| {r["scenario"]} | {r["target"]} | {r.get("arch", "gfx950")} '
+    # A frozen row the registry refused to evict for is really a cold
+    # row. Say so in the table rather than letting it read as frozen.
+    scen = r["scenario"]
+    if scen == "frozen" and r.get("registry_evicted") != "ok":
+        scen = "frozen*"
+    print(f'| {scen} | {r["target"]} | {r.get("arch", "gfx950")} '
           f'| {t} | {steps} | {hit} | {r["max_jobs"] or "-"} | {res} |')
 
 print()
@@ -506,8 +610,16 @@ print()
 # the same cold pytorch is 6892s at 5 jobs and 2342s at 32. So it
 # belongs in the key, and cold at one width divided by hot at another
 # is not a ratio at all.
+#
+# frozen is a third pool against the same key. It answers a question
+# neither cache does: what the local registry is worth. frozen divided
+# by cold is the pull-through saving — almost entirely the 8.67GB base
+# layer, so it tracks the link rather than the build. A frozen row whose
+# registry eviction was refused is dropped here rather than averaged in:
+# it is a cold run with the wrong label, and counting it would quietly
+# drive the ratio towards 1.0 and make the registry look worthless.
 import statistics
-cold, compiled, skipped = {}, {}, {}
+frozen, cold, compiled, skipped = {}, {}, {}, {}
 for r in rows:
     if r["rc"] != 0:
         continue
@@ -521,7 +633,11 @@ for r in rows:
     # oldest result here.
     key = (r["target"], r["builder"], r.get("arch", "gfx950"),
            r["max_jobs"] or 0)
-    if r["scenario"] == "cold":
+    if r["scenario"] == "frozen":
+        if r.get("registry_evicted") != "ok":
+            continue
+        d = frozen
+    elif r["scenario"] == "cold":
         d = cold
     elif r["scenario"] == "hot":
         # Whether the compile step ran, judged on steps cached rather
@@ -565,9 +681,15 @@ shown = False
 for key in sorted(set(cold) & set(compiled)):
     tgt, node, arch, jobs = key
     c, h = mid(cold, key), mid(compiled, key)
-    line = (f'{tgt} [{arch}] on {node} at {jobs} jobs: compiler cache '
-            f'{c/max(h,1):.1f}x ({c}s{spread(cold, key)} -> '
-            f'{h}s{spread(compiled, key)})')
+    line = f'{tgt} [{arch}] on {node} at {jobs} jobs: '
+    # The registry saving comes first because it is the outermost
+    # layer: it is what the fleet buys before any build cache exists.
+    fz = mid(frozen, key)
+    if fz and fz > c:
+        line += (f'registry {fz/max(c,1):.1f}x ({fz}s{spread(frozen, key)} -> '
+                 f'{c}s{spread(cold, key)}); ')
+    line += (f'compiler cache {c/max(h,1):.1f}x ({c}s{spread(cold, key)} -> '
+             f'{h}s{spread(compiled, key)})')
     lay = mid(skipped, key)
     # Only a saving if it is actually faster; otherwise the pools are
     # not what they claim and a ratio would mislead.
@@ -578,11 +700,13 @@ for key in sorted(set(cold) & set(compiled)):
 
 # Anything measured at only one of the two widths is still worth
 # showing, just not as a ratio.
-singles = (set(cold) | set(compiled) | set(skipped)) - (set(cold) & set(compiled))
+singles = ((set(frozen) | set(cold) | set(compiled) | set(skipped))
+           - (set(cold) & set(compiled)))
 for key in sorted(singles):
     tgt, node, arch, jobs = key
     bits = [f'{lbl} {mid(d, key)}s{spread(d, key)}'
-            for lbl, d in (("cold", cold), ("hot", compiled),
+            for lbl, d in (("frozen", frozen), ("cold", cold),
+                           ("hot", compiled),
                            ("hot/layer-only", skipped)) if key in d]
     print(f'{tgt} [{arch}] on {node} at {jobs} jobs: ' + ", ".join(bits)
           + '  (no same-width pair, so no ratio)')
@@ -593,12 +717,97 @@ if not shown:
 PY
 }
 
+# ── json ─────────────────────────────────────────────────────────
+# What the documentation site plots. The raw JSONL carries local log
+# paths and a row per build going back as far as the file does; this
+# emits a single document with the rows the site needs, plus the
+# per-key summary it would otherwise have to recompute in the browser.
+#
+# Local paths are dropped rather than published. They are useless off
+# this machine and they name directories under /var/tmp that nobody
+# outside the fleet should be invited to reason about.
+render_json() {
+    python3 -I - "${RESULTS}" "${1:-}" <<'PY'
+import json, sys, datetime
+
+rows = []
+try:
+    with open(sys.argv[1]) as fh:
+        for line in fh:
+            line = line.strip()
+            if line:
+                rows.append(json.loads(line))
+except FileNotFoundError:
+    pass
+
+PUBLIC = ("ts", "scenario", "target", "builder", "arch", "seconds", "rc",
+          "steps_cached", "steps_total", "sccache_requests", "sccache_hits",
+          "sccache_misses", "max_jobs", "node_load_at_start",
+          "node_load_at_end", "registry_evicted")
+
+# Rows predating the arch field are gfx950, for the reason the report
+# gives: bench never set PYTORCH_ROCM_ARCH, so they used the bake
+# default. Defaulted here rather than left null so the site never has
+# to decide what a missing arch means.
+runs = [{**{k: r.get(k) for k in PUBLIC},
+         "arch": r.get("arch") or "gfx950"} for r in rows]
+
+# The site plots scenario medians per (target, builder, max_jobs). A
+# median rather than the most recent run, which is what the markdown
+# report quotes: the report answers "what does the cache buy right
+# now", where the newest sample is the right estimator. A chart is
+# showing a distribution over time, and there the newest point is just
+# the newest point — it goes in the series, not in the summary.
+import statistics
+buckets = {}
+for r in runs:
+    if r["rc"] != 0:
+        continue
+    if r["scenario"] == "frozen" and r.get("registry_evicted") != "ok":
+        continue
+    key = (r["target"], r["builder"], r["arch"], r["max_jobs"] or 0,
+           r["scenario"])
+    buckets.setdefault(key, []).append(r["seconds"])
+
+summary = [
+    {"target": t, "builder": b, "arch": a, "max_jobs": j, "scenario": s,
+     "n": len(v), "median_seconds": int(statistics.median(v)),
+     "min_seconds": min(v), "max_seconds": max(v)}
+    for (t, b, a, j, s), v in sorted(buckets.items())
+]
+
+out = json.dumps({
+    "generated": datetime.datetime.now(datetime.timezone.utc)
+                 .isoformat(timespec="seconds"),
+    "scenarios": ["frozen", "cold", "warm", "hot"],
+    "runs": runs,
+    "summary": summary,
+}, indent=2)
+
+dest = sys.argv[2] if len(sys.argv) > 2 else ""
+if dest:
+    with open(dest, "w") as fh:
+        fh.write(out + "\n")
+    print(f"{len(runs)} runs, {len(summary)} summary rows -> {dest}")
+else:
+    print(out)
+PY
+}
+
 # ── entry ────────────────────────────────────────────────────────
 scenario="${1:-all}"; shift || true
 targets="${*:-${TARGETS_DEFAULT}}"
 
+# Both reporting modes short-circuit the busy check: rendering reads a
+# file and costs the builders nothing, so there is no reason to skip it
+# because a build happens to be running.
 if [ "${scenario}" = "report" ]; then
     render_report
+    exit 0
+fi
+
+if [ "${scenario}" = "json" ]; then
+    render_json "${1:-}"
     exit 0
 fi
 
@@ -608,16 +817,26 @@ if busy; then
 fi
 
 case "${scenario}" in
+    # frozen is deliberately absent from `all`. It prunes the node's
+    # buildkit store and re-pulls 8.67GB over the WAN, which is neither
+    # a nightly cost nor one to impose on the other projects sharing
+    # these builders. Run it on purpose, when the question is what the
+    # local registry is worth.
     all)
         for s in cold warm hot; do
             for t in ${targets}; do bench_run "${s}" "${t}"; done
         done
         ;;
-    cold|warm|hot)
+    everything)
+        for s in frozen cold warm hot; do
+            for t in ${targets}; do bench_run "${s}" "${t}"; done
+        done
+        ;;
+    frozen|cold|warm|hot)
         for t in ${targets}; do bench_run "${scenario}" "${t}"; done
         ;;
     *)
-        echo "usage: bench.sh {cold|warm|hot|all|report} [target ...]" >&2
+        echo "usage: bench.sh {frozen|cold|warm|hot|all|everything|report|json [out]} [target ...]" >&2
         exit 2
         ;;
 esac

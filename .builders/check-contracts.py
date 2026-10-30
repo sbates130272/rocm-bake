@@ -23,6 +23,8 @@ Checks:
      same mk_name mapping bench.sh uses.
   7. target-costs covers every wheel and every default node, so no
      target is scheduled as though it were free.
+  8. versioncheck.py's wheel_repo names are real artifacts, i.e. they
+     are in bake's `wheels` group.
 """
 import importlib.util
 import re
@@ -231,6 +233,39 @@ def check_stages():
                  f"bench.sh cold {target} would fail")
 
 
+# ── 7. versioncheck's wheel repos ↔ bake's `wheels` group ────────
+def check_version_wheel_repos():
+    """versioncheck.py names a wheel repository that does not exist.
+
+    A third copy of the artifact list, after the `wheels` group and
+    WHEEL_REPOS — one builds them, one reports what is published, one
+    reports which upstream version each came from. check-defaults.py
+    already ties the first two together; this is the third, and it has
+    the failure mode every check in this file guards against: a rename
+    on the bake side leaves versioncheck's published column silently
+    empty, and the table still renders perfectly.
+
+    A subset test, not equality. UCX is compiled inside the nixl wheel
+    and ships no artifact of its own, and several components are not
+    wheels at all, so `wheel_repo=None` is the common case by design.
+    """
+    bake = read("rocm-bake.hcl")
+    m = re.search(r'^group\s+"wheels"\s*\{(.*?)\n\}', bake, re.M | re.S)
+    if not m:
+        return fail("version-wheels", "no `wheels` group in rocm-bake.hcl")
+    wheels = set(re.findall(r'"([A-Za-z0-9_-]+)"', m.group(1)))
+    named = set(re.findall(r'wheel_repo="([a-z0-9-]+)"',
+                           read(".builders/versioncheck.py")))
+    stray = sorted(named - wheels)
+    if stray:
+        fail("version-wheels",
+             f"versioncheck.py names wheel repos that are not in the "
+             f"`wheels` group: {', '.join(stray)}.\n"
+             f"    Its published column would be silently empty for "
+             f"them.\n"
+             f"    The group has: {', '.join(sorted(wheels))}")
+
+
 def main():
     report = load("perfreport", ".builders/perfreport.py")
     sample = load("perfsample", ".builders/perfsample.py")
@@ -239,6 +274,7 @@ def main():
     check_sample_shape(report, sample)
     check_stages()
     check_costs()
+    check_version_wheel_repos()
 
     if FAIL:
         print("contract violations:", file=sys.stderr)
@@ -246,7 +282,8 @@ def main():
             print(f"  {f}", file=sys.stderr)
         return 1
     print("contracts ok: nginx log_format, balance placement, sample shape, "
-          "perf stages, build-* rules and target-costs all agree")
+          "perf stages, build-* rules, target-costs and versioncheck's "
+          "wheel repos all agree")
     return 0
 
 

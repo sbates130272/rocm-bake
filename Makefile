@@ -179,6 +179,9 @@ BAKE_PRINT = docker buildx bake -f rocm-bake.hcl
         build-base build-pytorch build-runtime build-all \
         push-base push-pytorch push-runtime push-all \
         clean clean-cache test \
+        bench bench-report bench-data bench-publish \
+        docs-deps docs-build docs-serve \
+        version-check version-scrub version-scrub-check \
         validate bake-plan setup
 
 # ─── Zot Registry ────────────────────────────────────────────────
@@ -1266,6 +1269,119 @@ serve-logs-sorted: ## Snapshot of both logs merged in timestamp order
 serve-status: ## Show what is running on GPU_HOST
 	@$(COMPOSE) ps
 
+# ─── Benchmarks ───────────────────────────────────────────────────
+# .builders/bench.sh measures the same target under four cache
+# conditions — frozen, cold, warm, hot — and appends one JSON line per
+# build. It was a standalone operator script for a long time; these
+# targets exist because the numbers are now published, and a number
+# nobody can reproduce from a documented command is not evidence.
+#
+# BENCH_DIR is the harness's own and is deliberately outside the repo:
+# a cold pytorch log is large, and results accumulate across months.
+##@ Benchmarks
+
+BENCH_DIR ?= /var/tmp/rocm-bench
+BENCH_SCENARIO ?= all
+BENCH_TARGETS ?=
+export BENCH_DIR
+
+bench: ## Run the benchmark harness (BENCH_SCENARIO=frozen|cold|warm|hot|all|everything)
+	@BUILDER=$(BUILDER) .builders/bench.sh $(BENCH_SCENARIO) $(BENCH_TARGETS)
+
+bench-report: ## Render accumulated benchmark results as markdown
+	@.builders/bench.sh report
+
+# What the documentation site plots. Written under dist/ because dist/
+# is gitignored and this is generated — the published copy lives on the
+# gh-pages branch, never on main.
+BENCH_JSON ?= dist/bench/bench.json
+
+bench-data: ## Aggregate benchmark results into dist/bench/bench.json
+	@mkdir -p $(dir $(BENCH_JSON))
+	@.builders/bench.sh json $(BENCH_JSON)
+
+# Publish the numbers onto gh-pages, beside the site the docs workflow
+# builds there.
+#
+# From here rather than from CI, because this is the only place the data
+# exists: the builds happen on this fleet and a GitHub-hosted runner has
+# no way to reproduce or even read them. The docs workflow deliberately
+# preserves data/ when it deploys, so the two writers do not clobber
+# each other — see .github/workflows/docs.yml.
+#
+# A detached worktree under dist/, not a clone and not a branch switch:
+# a switch would move the tree out from under whatever else is running
+# here, and this repo is frequently mid-build.
+#
+# Commits are signed and signed-off, and the push needs PUSH=1. The data
+# is public the moment it lands, so publishing is an explicit act rather
+# than a side effect of generating a file.
+GH_PAGES_BRANCH ?= gh-pages
+GH_PAGES_DIR ?= dist/gh-pages
+
+bench-publish: bench-data ## Publish the benchmark data onto gh-pages (PUSH=1 to push)
+	@test -s $(BENCH_JSON) || { echo "no benchmark data — run make bench first"; exit 1; }
+	@git fetch origin \
+		"+$(GH_PAGES_BRANCH):refs/remotes/origin/$(GH_PAGES_BRANCH)" 2>/dev/null || true
+	@if [ ! -d $(GH_PAGES_DIR) ]; then \
+		if git rev-parse --verify -q origin/$(GH_PAGES_BRANCH) >/dev/null; then \
+			git worktree add $(GH_PAGES_DIR) origin/$(GH_PAGES_BRANCH) --detach; \
+			git -C $(GH_PAGES_DIR) checkout -B $(GH_PAGES_BRANCH) origin/$(GH_PAGES_BRANCH); \
+		else \
+			echo "$(GH_PAGES_BRANCH) does not exist on origin yet."; \
+			echo "Run the Docs workflow once to create it, then re-run this."; \
+			exit 1; \
+		fi; \
+	fi
+	@git -C $(GH_PAGES_DIR) fetch origin \
+		"+$(GH_PAGES_BRANCH):refs/remotes/origin/$(GH_PAGES_BRANCH)"
+	@git -C $(GH_PAGES_DIR) reset --hard origin/$(GH_PAGES_BRANCH)
+	@mkdir -p $(GH_PAGES_DIR)/data
+	@cp $(BENCH_JSON) $(GH_PAGES_DIR)/data/bench.json
+	@cp $(BENCH_DIR)/results.jsonl $(GH_PAGES_DIR)/data/bench.jsonl 2>/dev/null || true
+	@git -C $(GH_PAGES_DIR) add data
+	@git -C $(GH_PAGES_DIR) diff --cached --quiet \
+		&& echo "no change to publish" \
+		|| git -C $(GH_PAGES_DIR) commit -s \
+			-m "data: refresh build benchmarks from $(BUILDER)"
+	@if [ "$(PUSH)" = 1 ]; then \
+		git -C $(GH_PAGES_DIR) push origin $(GH_PAGES_BRANCH); \
+	else \
+		echo; \
+		echo "Committed locally. To publish:"; \
+		echo "  git -C $(GH_PAGES_DIR) push origin $(GH_PAGES_BRANCH)"; \
+		echo "or re-run with PUSH=1."; \
+	fi
+
+# ─── Documentation ────────────────────────────────────────────────
+# The site is built by .github/workflows/docs.yml on every push to main.
+# These targets exist so a page can be checked before it is pushed —
+# --strict turns a broken internal link into a failure, which is the
+# only thing standing between a nav entry and a 404.
+#
+# A venv under dist/ rather than a system install: this box has mkdocs
+# from apt but not mkdocs-material, and mixing the two gets confusing
+# fast. dist/ is gitignored.
+##@ Documentation
+
+DOCS_VENV ?= dist/docs-venv
+DOCS_PY = $(DOCS_VENV)/bin/python
+
+$(DOCS_VENV)/bin/mkdocs: docs/requirements.txt
+	@python3 -m venv $(DOCS_VENV)
+	@$(DOCS_PY) -m pip install -q --upgrade pip
+	@$(DOCS_PY) -m pip install -q -r docs/requirements.txt
+	@touch $@
+
+docs-deps: $(DOCS_VENV)/bin/mkdocs ## Create the docs venv from docs/requirements.txt
+
+docs-build: docs-deps ## Build the site into dist/site (fails on a broken link)
+	@$(DOCS_VENV)/bin/mkdocs build --strict --site-dir dist/site
+	@echo "Built dist/site — open dist/site/index.html"
+
+docs-serve: docs-deps ## Serve the docs locally with live reload on :8000
+	@$(DOCS_VENV)/bin/mkdocs serve
+
 # ─── Utilities ────────────────────────────────────────────────────
 ##@ Utilities
 
@@ -1274,6 +1390,33 @@ validate: ## Validate bake file
 
 bake-plan: ## Print build plan
 	@docker buildx bake -f rocm-bake.hcl --print | jq .
+
+# Three jobs that look like one, kept apart on purpose.
+#
+# version-check asks the network: what has each upstream released, and
+# what have we published to Zot. It needs the proxy for api.github.com
+# and the tailnet for the registry, so it runs here and cannot run on a
+# GitHub runner.
+#
+# version-scrub asks rocm-bake.hcl and nothing else, and rewrites the
+# generated tables in README.md and docs/reference/bake-variables.md.
+# That is what lets version-scrub-check gate every pull request in
+# lint.yml — a check that needed `gh` and a tailnet name could not.
+# Entangling the two would cost us the gate.
+#
+# No new variables here. Every version a check wants is already a
+# `variable` block in rocm-bake.hcl, and check-defaults.py rejects a
+# Makefile that declares one of those itself; REGISTRY and
+# REGISTRY_NAME are already read through bake_default above.
+version-check: ## Upstream releases vs published wheels vs our pins
+	@python3 .builders/versioncheck.py \
+		--registry "$(REGISTRY)" --namespace "$(REGISTRY_NAME)"
+
+version-scrub: ## Regenerate the version tables from rocm-bake.hcl
+	@python3 .builders/versioncheck.py --scrub
+
+version-scrub-check: ## Fail if those generated tables are stale
+	@python3 .builders/versioncheck.py --scrub-check
 
 # Over ARCHES, not the single build arch: these tags are per-arch, and
 # the gfx950 here used to be hardcoded — so on a gfx1201 build `clean`

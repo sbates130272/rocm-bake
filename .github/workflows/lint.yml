@@ -113,3 +113,27 @@ jobs:
         run: |
           mapfile -t pyfiles < <(git ls-files '*.py')
           python -m py_compile "${pyfiles[@]}"
+
+  versions:
+    name: Version tables
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: The generated version tables match rocm-bake.hcl
+        # Here and not in ci.yml, which is path-filtered to the build
+        # files: README.md and docs/** are not in that list, so a pull
+        # request that hand-edits inside the markers — precisely what
+        # this catches — would run no ci.yml job at all.
+        #
+        # This workflow has no paths: filter, which is what makes the
+        # gate cover every pull request. If one is ever added here for
+        # speed, this job silently stops covering README-only changes.
+        #
+        # --scrub-check reads rocm-bake.hcl and the two markdown files
+        # and nothing else: no gh, no Docker, no registry. That is the
+        # whole reason the scrub is kept separate from version-check,
+        # which needs all three and cannot run on a bare runner.
+        run: make version-scrub-check

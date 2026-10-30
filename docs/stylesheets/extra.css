@@ -1,0 +1,43 @@
+/* Styling for the benchmark charts and the scenario table.
+ *
+ * Deliberately small: the Material theme already handles typography,
+ * tables and dark mode. Everything here is either a chart container,
+ * which the theme knows nothing about, or the empty-state message.
+ */
+
+.bench-chart {
+  margin: 1.2rem 0;
+  max-width: 100%;
+}
+
+.bench-chart canvas {
+  max-height: 22rem;
+}
+
+.bench-empty {
+  padding: 0.8rem 1rem;
+  border-left: 0.2rem solid var(--md-default-fg-color--lighter);
+  color: var(--md-default-fg-color--light);
+  font-style: italic;
+}
+
+/* The summary table is generated, so it does not get the theme's
+   markdown table wrapper and needs the scroll behaviour itself. */
+#bench-summary {
+  overflow-x: auto;
+}
+
+#bench-summary table {
+  width: 100%;
+  font-size: 0.75rem;
+}
+
+#bench-summary small {
+  color: var(--md-default-fg-color--light);
+}
+
+/* The scenario definitions read as a sequence — each one is the next
+   with a further cache removed — so number them visibly. */
+.scenario-ladder li {
+  margin-bottom: 0.6rem;
+}
