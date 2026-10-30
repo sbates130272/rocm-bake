@@ -9,7 +9,7 @@ that describes every image as a node in a graph.
 flowchart TB
     subgraph tailnet["Tailscale mesh — fold-leaffish.ts.net"]
         direction LR
-        strix["<b>snoc-strix</b><br/>gfx950 · default BUILDER<br/>local docker-container driver<br/>the only node that can run GPU tests"]
+        strix["<b>snoc-strix</b><br/>gfx1151 · default BUILDER<br/>local docker-container driver<br/>hosts Zot and the compiler cache"]
         think["<b>snoc-think</b><br/>runs on snoc-thinkstation<br/>gfx1201 (RDNA4)<br/>joined over SSH"]
         gaming["<b>snoc-gaming</b><br/>gfx1201 (RDNA4)<br/>joined over SSH"]
     end
@@ -27,9 +27,11 @@ flowchart TB
 ### Node roles
 
 **`snoc-strix`** is the default `BUILDER` and hosts both shared
-services. It is the only node with a `gfx950` GPU, so it is the only one
-that can run `make test` — the in-graph test stage — although
-`make gpu-test` can drive any host that has a GPU and `/dev/kfd`.
+services. Its GPU is `gfx1151`; no node in the fleet has a `gfx950`
+card, which is the default build target, so `make test` — the in-graph
+test stage — only proves anything when `PYTORCH_ROCM_ARCH` matches the
+hardware it runs on. `make gpu-test` can drive any host with a GPU and
+`/dev/kfd`, which on this fleet means matching the arch to the host.
 
 **`snoc-think`** and **`snoc-gaming`** are build capacity. They are
 joined to buildx over SSH to their Docker daemons, so buildx creates and

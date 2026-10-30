@@ -120,7 +120,7 @@ can never be mistaken for the commit it came from. It also drives an
 extra immutable tag on every target:
 
 ```
-…/pytorch:2.14.1-10.1.0-full-gfx950-g<sha>
+…/pytorch:2.15.0-10.1.0-full-gfx950-g<sha>
 ```
 
 `BUILD_DATE` is the commit's own timestamp, not "now", for the same

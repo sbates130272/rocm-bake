@@ -26,13 +26,13 @@ With the current defaults that resolves to:
 
 ```
 base:10.1.0-full-3.14
-pytorch:2.14.1-10.1.0-full-gfx950
-pytorch-wheel:2.14.1-10.1.0-full-gfx950
-runtime:2.14.1-10.1.0-full-gfx950
-triton-wheel:3.8.0-10.1.0-full
-aiter-wheel:2.14.1-10.1.0-full-gfx950
+pytorch:2.15.0-10.1.0-full-gfx950
+pytorch-wheel:2.15.0-10.1.0-full-gfx950
+runtime:2.15.0-10.1.0-full-gfx950
+triton-wheel:3.9.0-10.1.0-full
+aiter-wheel:2.15.0-10.1.0-full-gfx950
 cupy-wheel:v14.2.0-10.1.0-full-gfx950
-nixl-wheel:v1.5.1-10.1.0-full-gfx950
+nixl-wheel:v1.5.2-10.1.0-full-gfx950
 vllm:v0.32.0-10.1.0-full-gfx950
 vllm-wheel:v0.32.0-10.1.0-full-gfx950
 lmcache:v0.5.6-10.1.0-full-gfx950
@@ -46,7 +46,7 @@ published.
 
 **`triton-wheel` carries no architecture and is version-prefixed.**
 Triton is a compiler and publishes one noarch wheel, so the tag is
-`3.8.0-10.1.0-full`, not `10.1.0-full-gfx950`. `wheelhouse.py` parses it
+`3.9.0-10.1.0-full`, not `10.1.0-full-gfx950`. `wheelhouse.py` parses it
 without a gfx component for the same reason.
 
 **`pytorch-run` publishes to `runtime`, with the architecture.** It

@@ -28,10 +28,10 @@ ARG PYTORCH_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/pytorch:late
 
 FROM ${PYTORCH_IMAGE} AS builder
 
-# Latest releases at time of writing: NIXL v1.5.1 (2026-10-26), UCX
+# Latest releases at time of writing: NIXL v1.5.2 (2026-10-29), UCX
 # v1.22.0 (2026-08-03). Both are tags, not branches — a moving ref would
 # be served stale from the layer cache indefinitely.
-ARG NIXL_REF=v1.5.1
+ARG NIXL_REF=v1.5.2
 ARG UCX_REF=v1.22.0
 ARG PYTORCH_ROCM_ARCH=gfx950
 ARG ROCM_VERSION=10.1.0-full
@@ -201,7 +201,7 @@ WORKDIR /opt/nixl
 
 # NIXL pins torch==2.11.* in [build-system].requires. `python -m build
 # --no-isolation` verifies that list against the environment before it
-# calls the backend, so the pin fails against our 2.14.1 even though
+# calls the backend, so the pin fails against our 2.15.0 even though
 # nothing in the meson build cares which torch minor it is — the
 # dependency exists so the torch-tensor binding has headers to compile
 # against. Relax it to a bare `torch` rather than installing a second,

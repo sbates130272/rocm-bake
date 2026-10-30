@@ -32,14 +32,17 @@ DRY_RUN=0
 BEST_ONLY=0
 PUSH=1
 STREAM="${BALANCE_STREAM:-0}"
-QUEUE="${BALANCE_QUEUE:-0}"
 for arg in "$@"; do
     case "$arg" in
         --dry-run)  DRY_RUN=1 ;;
         --best)     BEST_ONLY=1 ;;   # print the strongest node and exit
         --no-push)  PUSH=0 ;;
         --stream)   STREAM=1 ;;  # multiplex target logs to the terminal
-        --queue)    QUEUE=1 ;;   # per-node queues, no cross-node barrier
+        # Accepted and ignored. Scheduling is dependency-ordered now,
+        # which is what --queue approximated by dropping barriers
+        # entirely; callers still passing it get the better behaviour
+        # rather than an "unknown argument" in the middle of a build.
+        --queue)    ;;
     esac
 done
 
@@ -49,62 +52,58 @@ done
 # See the PUBLISHED_INPUTS comment in rocm-bake.hcl.
 export PUBLISHED_INPUTS=1
 
+# One RUN_ID for the whole run. balance.sh spawns a separate `make`
+# per target, and the Makefile derives RUN_ID from `date` when it is
+# unset — so without this each target would stamp its build record
+# with its own timestamp and the run would be unidentifiable, which is
+# the opposite of the point. Set once here, exported, inherited by all
+# of them. An outer caller that already has an identity for the run
+# (perfrun.sh passes its own stamp) wins.
+export RUN_ID="${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$(git rev-parse --short HEAD 2>/dev/null || echo nogit)}"
+
 NODES="${NODES:-snoc-think snoc-strix snoc-gaming}"
 MIN_MEM_GB="${MIN_MEM_GB:-8}"
 
-# Stages run in order; targets within a stage run concurrently on
-# different nodes. The dependencies are real: pytorch needs base, and
-# aiter needs both pytorch and the triton wheels.
-# Order within a stage is priority, not preference: targets are handed
-# to nodes best-first, so the most expensive target must be listed
-# first or it gets whatever is left. That was backwards for stage 3 —
-# aiter-wheel was last, so the 50-minute kernel compile landed on the
-# weakest node at MAX_JOBS=12 while two targets costing 67s and 32s
-# took snoc-think's 32 jobs.
-# Overridable so a run can skip a target without editing this file —
-# e.g. STAGE_3="pytorch-wheel" to build a new arch without AITER, which
-# costs more than everything else combined.
-STAGE_1="${STAGE_1:-pytorch-base}"
-# triton-wheel before pytorch, not beside it: the pytorch image now
-# installs our triton wheel, so it needs that target's result. They
-# used to run concurrently on two nodes; this costs triton's duration
-# on the critical path (~90s once its cache is warm, since the build is
-# architecture-independent and hits 100%).
-STAGE_2="${STAGE_2:-triton-wheel}"
-STAGE_2B="${STAGE_2B:-pytorch}"
-# pytorch-run omitted: no node has a working GPU, so the runtime image
-# cannot be exercised and is not worth a slot. Add it back here when
-# one does.
-# Three targets, which is the first stage wide enough to use the whole
-# fleet. nixl-wheel used to sit in a stage of its own; it only needs
-# pytorch, so it belongs here beside the other two. That removed a
-# serial stage and took stage width from 2 to 3.
+# What to build. The ORDER is deliberately not here.
 #
-# Width is the whole game for this scheduler: it parallelises *within* a
-# stage, so a one-target stage always goes to the single best node no
-# matter how the others score. Stages 1, 2 and 2B are width-1 because
-# the dependency chain genuinely is serial there.
-STAGE_3="${STAGE_3:-aiter-wheel nixl-wheel pytorch-wheel}"
-# cupy-wheel needs only pytorch-base, so in principle it could run in
-# stage 1. It is here because lmcache consumes it and nothing earlier
-# does, and because stage 3 is already the widest point — adding a
-# fourth target there would oversubscribe a three-node fleet.
-STAGE_3B="${STAGE_3B:-cupy-wheel}"
-# The serving stack. nixl-wheel is its own stage because both vllm and
-# lmcache consume it; vllm first in stage 5 because it is the expensive
-# one (AITER-dependent) and stage order is priority, not preference.
+# This file used to carry the dependency order by hand, as STAGE_1
+# through STAGE_5. That was a second copy of something rocm-bake.hcl
+# already states exactly — every target's `contexts` block — and the
+# two could drift without anything saying so. They also could not
+# express "wait for your own inputs" to a caller that overrode them: a
+# gfx1250 perf-build scheduled vllm-wheel when no gfx1250 pytorch image
+# existed, and it died resolving that base image at step 1 of 7, 0s in,
+# taking the rest of its node's queue with it.
 #
-# These are only reachable here because bake resolves their inputs from
-# the registry under PUBLISHED_INPUTS (exported below) rather than from
-# sibling targets. Without it each would rebuild pytorch, triton, aiter
-# and nixl on whichever node it landed on.
-# lmcache before vllm, not beside it. vllm's bake target now takes a
-# lmcache-wheel context (vLLM ships the MP connector but imports
-# lmcache.utils from it), and on this path the stages hand results over
-# through Zot — so the wheel has to be *published* before vllm starts,
-# not merely building on some other node.
-STAGE_4="${STAGE_4:-lmcache lmcache-wheel}"
-STAGE_5="${STAGE_5:-vllm vllm-wheel}"
+# depgraph.py reads the edges from bake instead, and run_dag below
+# schedules against them. The default set is bake's `default` group,
+# which is exactly what the five stages added up to.
+#
+# Override to build a subset; the order still takes care of itself:
+#   TARGETS="pytorch-wheel triton-wheel" .builders/balance.sh
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TARGETS="${TARGETS:-$(python3 -I "${HERE}/depgraph.py" --group default)}"
+if [ -z "${TARGETS// /}" ]; then
+    echo "balance: no targets to build" >&2
+    exit 1
+fi
+
+# Facts from the old stage list that run_dag still has to honour, kept
+# because they were learned the hard way:
+#
+#  - pytorch-run is deliberately absent from the `default` group: no
+#    node has a working GPU, so the runtime image cannot be exercised
+#    and is not worth a slot. Add it to the group when one does.
+#  - triton-wheel comes before pytorch, not beside it. The pytorch
+#    image installs our triton wheel, so it needs that target's result
+#    (~90s once warm, the build being architecture-independent).
+#  - lmcache-wheel comes before vllm-wheel, not beside it. vllm takes a
+#    lmcache-wheel context, and results are handed between nodes
+#    through Zot — so the wheel has to be *published* before vllm
+#    starts, not merely building somewhere.
+#
+# All three are now edges in rocm-bake.hcl rather than assertions here,
+# and run_dag enforces them by construction.
 
 # ── node capacity ────────────────────────────────────────────────
 # score = free GB of RAM + idle cores. Memory is weighted equally with
@@ -231,140 +230,244 @@ cost_of() {
         'BEGIN{printf "%d", b + c/(n*1048576)}'
 }
 
-run_queues() {
-    local targets="$1" ranked=() pids=() tailpids=() rc=0
+# ── dependency-ordered scheduling ────────────────────────────────
+# A target becomes eligible when every dependency *inside this run* has
+# finished and pushed. Dependencies outside the run resolve from the
+# registry, which preflight verified, so they impose no ordering.
+#
+# Within that constraint this is the LPT packing the per-node queues
+# used: among eligible targets the longest goes to the node that would
+# finish it soonest. One build per node at a time — concurrent builds
+# on one box each size MAX_JOBS from MemAvailable as though they were
+# alone, and oversubscribe it.
+#
+# This replaces both earlier modes. Stage barriers idled whole nodes
+# waiting for an unrelated target to finish (measured on
+# 20261029T184335Z: 44m16s of wall clock for 77m09s of work, 55m39s of
+# it idle). Flat per-node queues dropped the barrier but could not
+# express a real dependency, which is how a gfx1250 run scheduled
+# vllm-wheel with no pytorch image to build on.
+declare -A DEPS STATE RUNTGT RUNNODE BUSY DF DFBUSY
+
+load_deps() {
+    local t rest
+    while read -r t rest; do
+        [ -n "$t" ] && DEPS[$t]="${rest}"
+    done < <(python3 -I "${HERE}/depgraph.py" --deps ${TARGETS} 2>/dev/null)
+    while read -r t rest; do
+        [ -n "$t" ] && DF[$t]="${rest}"
+    done < <(python3 -I "${HERE}/depgraph.py" --dockerfiles ${TARGETS} 2>/dev/null)
+}
+
+# Targets over the same Dockerfile share its stages — pytorch and
+# pytorch-wheel are `final` and `wheel` over one builder — so running
+# them concurrently compiles the same objects twice.
+#
+# Not a dependency: neither consumes the other, and ordering between
+# them is free either way. It is mutual exclusion, so it lives here
+# rather than as an edge in the graph.
+#
+# Serialised, NOT pinned to one node. The compiler cache is shared
+# fleet-wide over WebDAV, so the second build hits whatever the first
+# wrote wherever it runs. Measured on the gfx1250 run that prompted
+# this, where the two ran concurrently on different nodes: pytorch took
+# 2533 sccache hits against 186 misses, while pytorch-wheel — racing it
+# for the same objects, neither having written them yet — managed 1918
+# hits against 801. Ordering is what recovers those 615; co-location
+# would have bought nothing extra and would have wasted a node.
+df_busy() {
+    # Two `local`s, not one. Every argument to `local` is expanded
+    # before any of them is assigned, so `local t="$1" f="${DF[$t]:-}"`
+    # read DF at the CALLER's t, not at "$1". Every call site happens to
+    # pass the same name it already has in scope, so it worked by
+    # coincidence and the stub tests passed. shellcheck SC2318.
+    local t="$1"
+    local f="${DF[$t]:-}"
+    [ -n "$f" ] || return 1
+    [ -n "${DFBUSY[$f]:-}" ]
+}
+
+# Only deps that this run will itself build gate scheduling. An edge to
+# something outside TARGETS is satisfied from the registry.
+blocking_deps() {
+    local t="$1" d out=""
+    for d in ${DEPS[$t]:-}; do
+        case " ${TARGETS} " in
+            *" $d "*) out="${out} $d" ;;
+        esac
+    done
+    printf '%s' "${out# }"
+}
+
+ready_targets() {
+    local t d ok
+    for t in ${TARGETS}; do
+        [ "${STATE[$t]}" = pending ] || continue
+        # Deferred, not skipped: it becomes ready as soon as the
+        # sibling over its Dockerfile finishes.
+        df_busy "$t" && continue
+        ok=1
+        for d in $(blocking_deps "$t"); do
+            [ "${STATE[$d]}" = "done" ] || { ok=0; break; }
+        done
+        [ "$ok" = 1 ] && printf '%s %s\n' "$(cost_of "$t")" "$t"
+    done | sort -rn | awk '{print $2}'
+}
+
+free_nodes() {
+    local n
+    for n in "${ranked[@]}"; do
+        [ -z "${BUSY[$n]:-}" ] && printf '%s\n' "$n"
+    done
+}
+
+launch() {
+    local t="$1" node="$2" mk
+    mk=$(make_target "$t")
+    [ "$PUSH" = 0 ] && mk="${mk/push-/build-}"
+    : > "/tmp/balance-$t.log"
+    echo "   $node: starting $t"
+    if [ "$STREAM" = 1 ]; then
+        BUILDKIT_PROGRESS=plain make "$mk" BUILDER="$node" \
+            > "/tmp/balance-$t.log" 2>&1 &
+    else
+        make "$mk" BUILDER="$node" > "/tmp/balance-$t.log" 2>&1 &
+    fi
+    local pid=$!
+    RUNTGT[$pid]="$t"; RUNNODE[$pid]="$node"; BUSY[$node]="$t"
+    [ -n "${DF[$t]:-}" ] && DFBUSY[${DF[$t]}]="$t"
+    STATE[$t]=running
+    if [ "$STREAM" = 1 ]; then
+        tail -F -n +1 "/tmp/balance-$t.log" 2>/dev/null \
+            | sed -u "s/^/$(printf '%-14s' "$t") | /" &
+        TAILPIDS+=($!)
+    fi
+}
+
+run_dag() {
+    local t node rc=0 fpid prc n
+    TAILPIDS=()
     score_all
     mapfile -t ranked < <(rank_nodes)
     if [ "${#ranked[@]}" -eq 0 ]; then
         echo "balance: no node has ${MIN_MEM_GB}GB free; refusing to schedule" >&2
         return 1
     fi
+    for t in ${TARGETS}; do STATE[$t]=pending; done
+    for n in "${ranked[@]}"; do BUSY[$n]=""; done
+    load_deps
 
-    # Longest first, so the big jobs are placed while every node is
-    # still empty and the short ones fill whatever gaps remain.
-    local sorted
-    sorted=$(for t in ${targets}; do printf '%s %s\n' "$(cost_of "$t")" "$t"; done \
-             | sort -rn | awk '{print $2}')
+    echo "── scheduling ${TARGETS// /, }"
+    for n in "${ranked[@]}"; do printf '     %-14s score=%s\n' "$n" "${SCORE[$n]:-0}"; done
 
-    local -a load queue
-    local n
-    for ((n = 0; n < ${#ranked[@]}; n++)); do load[n]=0; queue[n]=""; done
-    for t in ${sorted}; do
-        # Earliest finish, not least loaded. The same target costs
-        # different amounts on different nodes once the export is
-        # counted, so the choice is which node finishes it soonest -
-        # a node that is idle but behind WiFi can still be the wrong
-        # answer for a cache-heavy target.
-        local best=0 bestfin=-1 i fin c
-        for ((i = 0; i < ${#ranked[@]}; i++)); do
-            c=$(cost_of "$t" "${ranked[i]}")
-            fin=$(( load[i] + c ))
-            if [ "${bestfin}" -lt 0 ] || [ "${fin}" -lt "${bestfin}" ]; then
-                bestfin=${fin}; best=${i}
-            fi
+    while :; do
+        # Fill every idle node with whatever is eligible now.
+        local placed=1
+        while [ "$placed" = 1 ]; do
+            placed=0
+            for t in $(ready_targets); do
+                # Re-checked here, not just in ready_targets. That list
+                # is a command substitution, evaluated once before any
+                # of these launches ran — so a sibling claiming the
+                # Dockerfile mid-loop is invisible to it, and both were
+                # launched anyway. Measured: all three pairs overlapped.
+                df_busy "$t" && continue
+                node=$(free_nodes | head -1)
+                [ -n "$node" ] || break
+                launch "$t" "$node"
+                placed=1
+            done
         done
-        queue[best]="${queue[best]} ${t}"
-        load[best]=${bestfin}
-    done
 
-    echo "── queues (no barrier; each node runs its list in order)"
-    for ((n = 0; n < ${#ranked[@]}; n++)); do
-        printf '   %-14s %5ss  %s\n' "${ranked[n]}" "${load[n]}" "${queue[n]# }"
-    done
-    [ "$DRY_RUN" = 1 ] && return 0
+        # Nothing running: either everything is done, or what is left
+        # can never become ready.
+        if [ "${#RUNTGT[@]}" -eq 0 ]; then
+            local stuck=""
+            for t in ${TARGETS}; do
+                [ "${STATE[$t]}" = pending ] && stuck="${stuck} $t"
+            done
+            if [ -n "${stuck// /}" ]; then
+                echo "balance: cannot schedule${stuck} — unmet dependencies" >&2
+                rc=1
+            fi
+            break
+        fi
 
-    for ((n = 0; n < ${#ranked[@]}; n++)); do
-        [ -n "${queue[n]// /}" ] || continue
-        local node="${ranked[n]}" list="${queue[n]}"
-        (
-            for t in ${list}; do
-                local mk; mk=$(make_target "$t")
-                [ "$PUSH" = 0 ] && mk="${mk/push-/build-}"
-                : > "/tmp/balance-$t.log"
-                echo "   $node: starting $t"
-                if [ "$STREAM" = 1 ]; then
-                    BUILDKIT_PROGRESS=plain make "$mk" BUILDER="$node" \
-                        > "/tmp/balance-$t.log" 2>&1
-                else
-                    make "$mk" BUILDER="$node" > "/tmp/balance-$t.log" 2>&1
-                fi || exit 1
-                echo "   $node: finished $t"
-            done
-        ) &
-        pids+=($!)
-        if [ "$STREAM" = 1 ]; then
-            for t in ${list}; do
-                tail -F -n +1 "/tmp/balance-$t.log" 2>/dev/null \
-                    | sed -u "s/^/$(printf '%-14s' "$t") | /" &
-                tailpids+=($!)
-            done
+        # Block until some build exits; -p gives us which one, so a
+        # node is freed the moment its own target ends rather than at a
+        # barrier. Requires bash 4.3+ for -n and 5.1+ for -p.
+        if wait -n -p fpid; then prc=0; else prc=$?; fi
+        [ -n "${fpid:-}" ] || continue
+        t="${RUNTGT[$fpid]:-}"
+        [ -n "$t" ] || continue        # a stream tail exited, not a build
+        node="${RUNNODE[$fpid]}"
+        unset "RUNTGT[$fpid]" "RUNNODE[$fpid]"
+        BUSY[$node]=""
+        [ -n "${DF[$t]:-}" ] && DFBUSY[${DF[$t]}]=""
+        if [ "$prc" = 0 ]; then
+            STATE[$t]="done"
+            echo "   $node: finished $t"
+        else
+            STATE[$t]=failed
+            rc=1
+            echo "   $node: FAILED $t (exit $prc)"
+            grep -aiE '^ERROR|error:' "/tmp/balance-$t.log" 2>/dev/null \
+                | grep -v 'cache importer\|rpc error' | tail -3 | sed 's/^/     /'
+            # Let the in-flight builds finish rather than killing them:
+            # they are independent of this one, and a half-pushed image
+            # is worse than a wasted minute.
+            break
         fi
     done
 
-    for p in "${pids[@]:-}"; do
-        [ -n "$p" ] || continue
-        wait "$p" || rc=1
-    done
-    for p in "${tailpids[@]:-}"; do
-        [ -n "$p" ] && kill "$p" 2>/dev/null
-    done
+    for n in "${!RUNTGT[@]}"; do wait "$n" 2>/dev/null || rc=1; done
+    for n in "${TAILPIDS[@]:-}"; do [ -n "$n" ] && kill "$n" 2>/dev/null; done
     return "$rc"
 }
 
-run_stage() {
-    local stage="$1" ranked=() pids=() tailpids=() rc=0 i=0
+# Plan only: the same eligibility walk, with cost_of standing in for
+# real durations, so a dry run shows the order and the placement
+# without building. Prints the "<target> -> <node>" form; perfreport
+# parses that as well as the "<node>: starting <target>" the live path
+# emits.
+plan_dag() {
+    local t d ok node i=0 wave=0
     score_all
     mapfile -t ranked < <(rank_nodes)
-
-    if [ "${#ranked[@]}" -eq 0 ]; then
-        echo "balance: no node has ${MIN_MEM_GB}GB free; refusing to schedule" >&2
-        return 1
-    fi
-
-    echo "── stage: $stage"
-    for n in "${ranked[@]}"; do printf '     %-14s score=%s\n' "$n" "${SCORE[$n]:-0}"; done
-
-    for target in $stage; do
-        local node="${ranked[$((i % ${#ranked[@]}))]}"
-        i=$((i + 1))
-        echo "   $target -> $node   (log: /tmp/balance-$target.log)"
-        [ "$DRY_RUN" = 1 ] && continue
-        local mk; mk=$(make_target "$target")
-        [ "$PUSH" = 0 ] && mk="${mk/push-/build-}"
-        : > "/tmp/balance-$target.log"
-        if [ "$STREAM" = 1 ]; then
-            BUILDKIT_PROGRESS=plain make "$mk" BUILDER="$node" \
-                > "/tmp/balance-$target.log" 2>&1 &
-        else
-            make "$mk" BUILDER="$node" > "/tmp/balance-$target.log" 2>&1 &
-        fi
-        pids+=($!)
-        # Interleaved buildx progress is unreadable, so each target is
-        # prefixed with its name when streaming.
-        if [ "$STREAM" = 1 ]; then
-            tail -F -n +1 "/tmp/balance-$target.log" 2>/dev/null \
-                | sed -u "s/^/$(printf '%-14s' "$target") | /" &
-            tailpids+=($!)
-        fi
-    done
-
-    for p in "${pids[@]:-}"; do
-        [ -n "$p" ] || continue
-        wait "$p" || rc=1
-    done
-    for p in "${tailpids[@]:-}"; do
-        [ -n "$p" ] && kill "$p" 2>/dev/null
-    done
-    # Surface the reason without needing the log file.
-    if [ "$rc" != 0 ] && [ "$STREAM" != 1 ]; then
-        for target in $stage; do
-            grep -qiE '^ERROR|error:' "/tmp/balance-$target.log" 2>/dev/null || continue
-            echo "   $target failed:"
-            grep -iE '^ERROR|error:' "/tmp/balance-$target.log" \
-                | grep -v 'cache importer\|rpc error' | tail -3 | sed 's/^/     /'
+    [ "${#ranked[@]}" -gt 0 ] || { echo "balance: no usable node" >&2; return 1; }
+    for t in ${TARGETS}; do STATE[$t]=pending; done
+    load_deps
+    while :; do
+        local batch=()
+        for t in $(ready_targets); do batch+=("$t"); done
+        [ "${#batch[@]}" -gt 0 ] || break
+        wave=$((wave + 1))
+        echo "── wave ${wave}"
+        i=0
+        # One target per Dockerfile per wave, matching run_dag's mutual
+        # exclusion. Without this the plan shows pytorch and
+        # pytorch-wheel side by side in one wave, which is exactly the
+        # concurrency the scheduler now refuses.
+        local seen_df=""
+        for target in "${batch[@]}"; do
+            local f="${DF[$target]:-}"
+            if [ -n "$f" ]; then
+                case " ${seen_df} " in *" $f "*) continue ;; esac
+                seen_df="${seen_df} $f"
+            fi
+            node="${ranked[$((i % ${#ranked[@]}))]}"
+            i=$((i + 1))
+            # This exact spelling is also what perfreport's
+            # read_placement parses for stage-format logs, and
+            # check-contracts.py asserts the two still agree.
+            echo "   $target -> $node   (log: /tmp/balance-$target.log)"
+            STATE[$target]="done"
         done
-    fi
-    return $rc
+    done
+    local left=""
+    for t in ${TARGETS}; do [ "${STATE[$t]}" = pending ] && left="${left} $t"; done
+    [ -n "${left// /}" ] && { echo "balance: unschedulable:${left}" >&2; return 1; }
+    return 0
 }
 
 # --best: resolve a single node for callers that have one target to
@@ -378,23 +481,25 @@ if [ "$BEST_ONLY" = 1 ]; then
     exit 0
 fi
 
-# Skip stages with nothing in them. The defaults are ${STAGE_N:-...},
-# so a caller that wants fewer stages than the seven here has to blank
-# them with a space — an empty string reads as unset and gets the
-# default back. Without this guard each of those spaces printed a
-# "── stage:" header and the whole node ranking underneath it, so
-# perfrun.sh's four-stage plan rendered as seven, three of them empty.
-if [ "$QUEUE" = 1 ]; then
-    # Every stage flattened into one pool. Safe only because nothing
-    # here depends on anything else here; see the comment on
-    # run_queues.
-    all="$STAGE_1 $STAGE_2 $STAGE_2B $STAGE_3 $STAGE_3B $STAGE_4 $STAGE_5"
-    run_queues "$all" || { echo "balance: a queue failed" >&2; exit 1; }
-else
-    for stage in "$STAGE_1" "$STAGE_2" "$STAGE_2B" "$STAGE_3" "$STAGE_3B" "$STAGE_4" "$STAGE_5"; do
-        [ -z "${stage// /}" ] && continue
-        run_stage "$stage" || { echo "balance: stage failed: $stage" >&2; exit 1; }
-    done
+# Every image these targets resolve from the registry, minus the ones
+# this run publishes itself, checked before a single build starts.
+#
+# Worth the two bake --print calls it costs. Without it a missing input
+# surfaces as a target failing at step 1 of 7 after the scheduler has
+# already committed, and under the old per-node queues that took the
+# rest of that node's list down with it — which is exactly how a
+# gfx1250 run lost snoc-think while strix built for another 40 minutes.
+if ! python3 -I "${HERE}/depgraph.py" --preflight ${TARGETS}; then
+    echo "balance: refusing to schedule against missing inputs" >&2
+    exit 1
 fi
+
+if [ "$DRY_RUN" = 1 ]; then
+    plan_dag || exit 1
+    echo "balance: plan complete"
+    exit 0
+fi
+
+run_dag || { echo "balance: build failed" >&2; exit 1; }
 
 echo "balance: all stages complete"

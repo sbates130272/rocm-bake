@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
-# PyTorch ROCm build from source targeting gfx950 (Strix Halo)
-# Builds PyTorch with HIP support optimized for RDNA3/4 architecture
-# Requires PyTorch 2.14.0+ and ROCm 10.1+
+# PyTorch ROCm build from source, targeting gfx950 by default
+# Builds PyTorch with HIP support; PYTORCH_ROCM_ARCH selects the target
+# Requires PyTorch 2.15.0+ and ROCm 10.1+
 
 # Both ARGs before the first FROM: an ARG declared after a FROM belongs
 # to that stage, and a later `FROM ${X}` then sees it blank. This file,
@@ -19,11 +19,14 @@ FROM ${BASE_IMAGE} AS builder
 # These precede the LABELs below on purpose: an ARG referenced before it
 # is declared expands to the empty string, and the label silently loses
 # the version it is meant to record.
-ARG PYTORCH_VERSION=2.14.1
+ARG PYTORCH_VERSION=2.15.0
 ARG ROCM_VERSION=10.1.0-full
 ARG USE_AITER=ON
 ARG USE_FLYDSL=ON
 ARG USE_FLASH_ATTENTION=ON
+# RDNA4 Composable Kernel SDPA, new in 2.15 and OFF upstream. bake
+# derives this from the target architecture; OFF here matches both.
+ARG USE_ROCM_CK_SDPA_GFX12=OFF
 ARG GIT_REF=""
 # Declared or the ENV references below expand to empty and the build
 # silently targets no GPU architecture at all.
@@ -36,13 +39,52 @@ LABEL org.opencontainers.image.description="PyTorch ${PYTORCH_VERSION} ROCm ${RO
 # --recurse-submodules is not optional: PyTorch builds from third_party
 # submodules, and a plain clone produces empty directories and a cmake
 # failure a long way into the build.
+#
+# --jobs, because git fetches submodules ONE AT A TIME: submodule.
+# fetchJobs defaults to 1 when unset, and -j/--jobs is the only thing
+# that changes it. PyTorch has 36 submodules at v2.15.0, so the clone
+# is 37 sequential fetches.
+#
+# Measured, and it is a far smaller win than it looks like it should
+# be:
+#
+#   serial (no --jobs)   206.0s, 209.3s   two cold runs
+#   --jobs 8             179.5s           cold, same clone step
+#
+# ~27s, or 13%. Not the ~60-90s a naive 36-way-serial model predicts,
+# which means submodule FETCHING was never the dominant term in this
+# band. The floor is the checkout of ~80k files plus the superproject,
+# and --jobs does not touch either. Raising it further is very unlikely
+# to pay: there is only ~27s of parallelisable work in the whole step.
+#
+# Keep the flag anyway — 27s for one word, with no measured downside.
+# But do not reach for this pattern elsewhere expecting more.
+#
+# COLD ONLY. On a normal run this layer is a cache hit — target-costs
+# records pytorch-wheel moving 17KB on a warm build — so none of the
+# above applies to the builds run most often.
+#
+# If the proxy ever throttles 8 concurrent TLS sessions to github.com,
+# it surfaces as a clone failure mid-build rather than a slow build.
+# No edit needed to back off: --set '*.args.GIT_JOBS=4' on the bake
+# invocation.
+#
+# Not --revision here, unlike Dockerfile.triton. PYTORCH_VERSION names a
+# tag, so --branch v<version> with --depth 1 already fetches only that
+# tag's tip; --revision would be equivalent for the superproject and
+# reaches nothing in the submodules, which are the cost. It would also
+# leave a clone with no refs, and PyTorch's version machinery reads git
+# metadata.
+ARG GIT_JOBS=8
 RUN git clone --depth 1 --branch v${PYTORCH_VERSION} --recurse-submodules \
-    --shallow-submodules \
+    --shallow-submodules --jobs ${GIT_JOBS} \
     https://github.com/pytorch/pytorch.git /opt/pytorch \
     && cd /opt/pytorch \
     && if [ -n "${GIT_REF}" ]; then \
-       git fetch origin ${GIT_REF} && git checkout ${GIT_REF} \
-       && git submodule sync && git submodule update --init --recursive; \
+       git fetch --depth 1 origin ${GIT_REF} && git checkout ${GIT_REF} \
+       && git submodule sync \
+       && git submodule update --init --recursive --depth 1 \
+              --jobs ${GIT_JOBS}; \
     fi
 
 WORKDIR /opt/pytorch
@@ -170,13 +212,14 @@ RUN if sccache --show-stats > /dev/null 2>&1; then \
     fi
 
 # ─── Build configuration ─────────────────────────────────────────
-# gfx950 is Strix Halo (RDNA 3.5 / CDNA 3 hybrid)
-# Build with: gfx900 gfx940 gfx941 gfx942 gfx950 gfx1030 gfx1100 gfx1101 gfx1102
+# gfx950 is CDNA-class (MI350 series). The arch is selected by
+# PYTORCH_ROCM_ARCH alone; a ";"-separated list produces a fat binary.
 
 # Optional libraries — control via bake variables or build args
 ENV USE_AITER=${USE_AITER} \
     USE_FLYDSL=${USE_FLYDSL} \
-    USE_FLASH_ATTENTION=${USE_FLASH_ATTENTION}
+    USE_FLASH_ATTENTION=${USE_FLASH_ATTENTION} \
+    USE_ROCM_CK_SDPA_GFX12=${USE_ROCM_CK_SDPA_GFX12}
 
 # CMAKE_CUDA_ARCHITECTURES="ROCM" and CMAKE_CXX_FLAGS="-march=gfx950"
 # are both gone. -march/-mtune are host-CPU flags: gfx950 is a GPU

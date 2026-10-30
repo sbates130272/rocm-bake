@@ -43,6 +43,50 @@ build nixl-wheel       180
 build aiter-wheel       72
 build lmcache-wheel     66
 
+# The image targets. These were absent until 2026-10-30, and the
+# absence was not harmless: cost_of falls back to build=1 for a target
+# with no row, so the scheduler believed `pytorch` cost one second.
+# ready_targets sorts by cost descending and the packer is LPT, so the
+# single most expensive target in the graph sorted LAST and was handed
+# the weakest node — measured on run 20261030T171813Z, where pytorch
+# took 3388s on snoc-gaming while pytorch-wheel did the same compile in
+# 933s on snoc-think. Nothing warned; a missing row and a genuinely
+# one-second target are indistinguishable to awk.
+#
+# These are weaker numbers than the rows above, and deliberately
+# marked as such. `make build-status` cannot separate pytorch from
+# pytorch-wheel, nor vllm from vllm-wheel, because each pair shares a
+# BUILDKIT_BUILD_NAME (rocm-bake.hcl:593 and :980) — so these come
+# from reasoning plus observed spans, not from a clean per-target
+# measurement.
+#
+#   pytorch       equal to pytorch-wheel: the two are `final` and
+#                 `wheel` over ONE builder stage, so cold they do
+#                 identical work. Corroborated by the 38m25s/38m33s
+#                 pair in buildx history. Note the scheduler now
+#                 serialises them, so whichever runs second is a near
+#                 total cache hit (68.8s measured) — this row is the
+#                 cost of the one that runs FIRST, which is what
+#                 placement has to be right about.
+#   vllm          same argument against vllm-wheel; 23m15s/23m19s
+#                 observed, consistent with vllm-wheel's 1409.
+#   lmcache       1m45s/1m49s/1m42s observed across three nodes.
+#   pytorch-base  5s/6s observed. Small, but a row of 6 beats a
+#                 fallback of 1 that means "unknown".
+build pytorch         2336
+build vllm            1409
+build lmcache          105
+build pytorch-base       6
+
+# STALE as of the --revision change in Dockerfile.triton. This figure
+# was measured 2026-10-29, when the clone wrote 838MB of unreachable
+# history into the exported layer; that is now 8.9MB, so this row
+# over-states triton-wheel's export by roughly 829MB. balance.sh packs
+# on build + cache/netmb, so until it is re-measured the scheduler
+# keeps triton-wheel off nodes it can now afford — snoc-gaming most of
+# all, where 829MB is ~224s of upload that no longer happens.
+# Re-measure with `make perf-build` then `make perf-report`, taking the
+# transfer bytes from the HTTP spans as the header describes.
 cache triton-wheel    6695603582
 cache vllm-wheel      2954089155
 cache aiter-wheel     1520455242

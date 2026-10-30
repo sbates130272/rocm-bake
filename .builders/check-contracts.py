@@ -18,9 +18,10 @@ Checks:
   3. perfsample's DEFAULT_NODES and perfreport's SERIES name the same
      builders.
   4. perfsample writes every sample field perfreport reads.
-  5. perfrun's default stages cover exactly bake's `wheels` group.
-  6. Every target in those stages has a build-* Makefile rule, via the
-     same mk_name mapping bench.sh uses.
+  5. The schedulers name their work by bake group, through depgraph.py,
+     rather than keeping a hand-written copy of it.
+  6. Every target they can be asked for has a build-* Makefile rule,
+     via the same mk_name mapping bench.sh uses.
   7. target-costs covers every wheel and every default node, so no
      target is scheduled as though it were free.
   8. versioncheck.py's wheel_repo names are real artifacts, i.e. they
@@ -181,15 +182,39 @@ def check_costs():
     bake = read("rocm-bake.hcl")
     m = re.search(r'group\s+"wheels"\s*\{(.*?)\}', bake, re.S)
     wheels = set(re.findall(r'"([a-z0-9-]+)"', m.group(1))) if m else set()
-    for kind in ("build", "cache"):
-        missing = wheels - seen[kind]
-        if missing:
-            fail("costs", f"no `{kind}` line for {sorted(missing)}; those "
-                          f"targets would be scheduled as if free")
-        extra = seen[kind] - wheels
-        if extra:
-            fail("costs", f"`{kind}` lines for targets not in bake's wheels "
-                          f"group: {sorted(extra)}")
+    # `build` must cover everything balance.sh can schedule, not just
+    # the wheels. It defaults TARGETS to bake's `default` group, which
+    # includes four image targets — and all four were missing until
+    # 2026-10-30. cost_of returned 1 for each, so `pytorch`, the most
+    # expensive target in the graph, sorted last and was handed the
+    # weakest node. A missing row and a one-second target look
+    # identical to awk, which is exactly why this has to be asserted.
+    m = re.search(r'group\s+"default"\s*\{(.*?)\}', bake, re.S)
+    schedulable = set(re.findall(r'"([a-z0-9-]+)"', m.group(1))) if m else set()
+    missing = schedulable - seen["build"]
+    if missing:
+        fail("costs", f"no `build` line for {sorted(missing)}; cost_of "
+                      f"falls back to 1s, so LPT sorts them last and "
+                      f"earliest-finish hands them the weakest free node")
+    extra = seen["build"] - schedulable
+    if extra:
+        fail("costs", f"`build` lines for targets not in bake's default "
+                      f"group: {sorted(extra)}")
+
+    # `cache` stays scoped to the wheels. The network term needs a
+    # measured export size and only the wheels have one; inventing
+    # figures for the image targets to satisfy a checker would be
+    # worse than letting cost_of fall back to the build term, which is
+    # what it does when the cache row is absent.
+    missing = wheels - seen["cache"]
+    if missing:
+        fail("costs", f"no `cache` line for {sorted(missing)}; their "
+                      f"exports would be costed as free and cache-heavy "
+                      f"targets would pile onto whichever node is slowest")
+    extra = seen["cache"] - wheels
+    if extra:
+        fail("costs", f"`cache` lines for targets not in bake's wheels "
+                      f"group: {sorted(extra)}")
 
     hit = re.search(r'NODES="\$\{NODES:-([^}]*)\}"', read(".builders/balance.sh"))
     nodes = set(hit.group(1).split()) if hit else set()
@@ -200,8 +225,60 @@ def check_costs():
                       f"would pile onto whichever is slowest")
 
 
-# ── 5 & 6. perfrun stages ↔ bake wheels group ↔ make rules ────────
+# ── 8. BUILDKIT_BUILD_NAME uniqueness ─────────────────────────────
+def check_build_names():
+    """Two targets must never share a build record name.
+
+    buildx history is keyed by that name, so a shared one gives both
+    targets a single record. perftrace.py then fetches the same record
+    for each and the report draws one target's timeline under both
+    names, while build-status cannot say which of the two a row is.
+    pytorch/pytorch-wheel and vllm/vllm-wheel did exactly this until
+    2026-10-30 — on run 20261030T182519Z, trace-pytorch.json and
+    trace-pytorch-wheel.json were byte-identical. It also made the
+    `build pytorch` and `build vllm` rows in target-costs unmeasurable
+    by direct observation.
+
+    Shape matters too: history.py reads the arch from parts[-2] and the
+    run id from parts[-1], so a name with fewer than four components
+    silently degrades both columns to "-".
+    """
+    names = re.findall(r'BUILDKIT_BUILD_NAME\s*=\s*"([^"]+)"',
+                       read("rocm-bake.hcl"))
+    if not names:
+        return fail("buildnames", "no BUILDKIT_BUILD_NAME in rocm-bake.hcl")
+
+    seen = {}
+    for raw in names:
+        parts = raw.split("/")
+        if len(parts) != 4:
+            fail("buildnames",
+                 f"{raw!r} is not <repo>/<image>/<arch>/<run-id>; "
+                 f"history.py would lose its arch and run-id columns")
+            continue
+        key = (parts[1], parts[2])
+        if key in seen:
+            fail("buildnames",
+                 f"two targets share the build record name "
+                 f"{'/'.join(parts[:3])}/...; buildx history keys on it, "
+                 f"so their traces and history rows are indistinguishable")
+        seen[key] = raw
+
+
+# ── 5 & 6. perf target set ↔ bake groups ↔ make rules ─────────────
 def check_stages():
+    """The schedulers must name their work by group, not by hand.
+
+    balance.sh used to carry the dependency order as STAGE_1..STAGE_5
+    and perfrun.sh its own three-stage copy of the wheels list. Both
+    were duplicates of rocm-bake.hcl, and both could drift from it
+    silently — which is how a gfx1250 run came to schedule vllm-wheel
+    with no pytorch image in the graph at all.
+
+    There is no longer a list to compare, so this asserts the
+    indirection itself: each scheduler asks depgraph.py for a bake
+    group rather than spelling one out.
+    """
     bake = read("rocm-bake.hcl")
     m = re.search(r'group\s+"wheels"\s*\{(.*?)\}', bake, re.S)
     if not m:
@@ -209,23 +286,36 @@ def check_stages():
     wheels = set(re.findall(r'"([a-z0-9-]+)"', m.group(1)))
 
     run = read(".builders/perfrun.sh")
-    staged = set()
-    for var in ("PERF_STAGE_A", "PERF_STAGE_B", "PERF_STAGE_C"):
-        hit = re.search(rf'\$\{{{var}:-([^}}]*)\}}', run)
-        if hit:
-            staged |= set(hit.group(1).split())
-    if staged != wheels:
+    if "depgraph.py\" --group wheels" not in run and \
+            "depgraph.py --group wheels" not in run:
         fail("stages",
-             f"perfrun stages {sorted(staged)} != bake wheels group "
-             f"{sorted(wheels)}; a perf run would skip or invent a target")
+             "perfrun.sh no longer derives its targets from bake's "
+             "`wheels` group; a hand-written list can drift from it")
+    # pytorch is not a wheel, so the group alone would omit the image
+    # every wheel builds FROM — and the most expensive target measured.
+    if not re.search(r'PERF_TARGETS=.*\bpytorch\b', run):
+        fail("stages",
+             "perfrun.sh dropped `pytorch` from PERF_TARGETS; perf runs "
+             "would measure only the wheels and could schedule them "
+             "against an image no run builds")
+
+    bal = read(".builders/balance.sh")
+    if "--group default" not in bal:
+        fail("stages",
+             "balance.sh no longer defaults TARGETS to bake's `default` "
+             "group")
+    if re.search(r'^STAGE_[0-9]', bal, re.M):
+        fail("stages",
+             "balance.sh has STAGE_* definitions again; ordering belongs "
+             "to the bake graph, read by depgraph.py")
 
     # bench.sh dispatches through `make build-<mk_name>`; every target
-    # it can be asked for needs that rule to exist.
+    # a scheduler can be asked for needs that rule to exist.
     bench = read(".builders/bench.sh")
     mapping = dict(re.findall(r"^\s*([a-z0-9-]+)\)\s*echo\s+([a-z0-9-]+)\s*;;",
                               bench, re.M))
     makefile = read("Makefile")
-    for target in sorted(wheels):
+    for target in sorted(wheels | {"pytorch", "pytorch-base"}):
         rule = mapping.get(target, target)
         if not re.search(rf"^build-{re.escape(rule)}:", makefile, re.M):
             fail("stages",
@@ -273,6 +363,7 @@ def main():
     check_placement(report)
     check_sample_shape(report, sample)
     check_stages()
+    check_build_names()
     check_costs()
     check_version_wheel_repos()
 
@@ -281,9 +372,9 @@ def main():
         for f in FAIL:
             print(f"  {f}", file=sys.stderr)
         return 1
-    print("contracts ok: nginx log_format, balance placement, sample shape, "
-          "perf stages, build-* rules, target-costs and versioncheck's "
-          "wheel repos all agree")
+    print("contracts ok: nginx log_format, balance placement, sample "
+          "shape, perf stages, build-* rules, build-record names, "
+          "target-costs and versioncheck's wheel repos all agree")
     return 0
 
 

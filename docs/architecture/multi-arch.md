@@ -26,8 +26,8 @@ compiler cache, so running them concurrently only makes both slower.
 
 ## `gfx1250` is in the list without being in the fleet
 
-The builders cross-compile — the two `gfx1201` nodes build `gfx950`
-every day — so having no such card only means `make test` and
+The builders cross-compile — no node has a `gfx950` card, yet the
+fleet builds `gfx950` every day — so having no such card only means `make test` and
 `make gpu-test` cannot cover it. The ROCm 10.1 toolchain in the base
 image compiles it:
 
@@ -76,13 +76,6 @@ prebuild to level 0 — turning off, on the one architecture that most
 wants it, an optimisation that exists for exactly this class of card.
 
 Set `PREBUILD_KERNELS` to pin a level for every target.
-
-!!! note "`gfx950` is CDNA, not Strix Halo"
-    Older text in this repository called `gfx950` "Strix Halo". It is
-    not — Strix Halo is `gfx1151`. `gfx950` is a CDNA-class
-    (MI350-series) architecture, which is why it takes the
-    prebuild-level-2 path above. The build host is named `snoc-strix`;
-    that is a hostname.
 
 ## The layer cache is scoped by architecture
 

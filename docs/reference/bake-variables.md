@@ -18,13 +18,13 @@ Change a default by editing its `variable` block.
 
 | Variable | Default |
 | --- | --- |
-| `PYTORCH_VERSION` | `2.14.1` |
+| `PYTORCH_VERSION` | `2.15.0` |
 | `ROCM_VERSION` | `10.1.0-full` |
 | `PYTHON_VERSION` | `3.14` |
-| `TRITON_VERSION` | `3.8.0` |
-| `TRITON_REF` | `675c59878aa2280b31f722aaf42b825fcee21de8` |
+| `TRITON_VERSION` | `3.9.0` |
+| `TRITON_REF` | `aad2a60d958f945420c5c40936b37d411fb02e89` |
 | `AITER_REF` | `v0.1.27` |
-| `NIXL_REF` | `v1.5.1` |
+| `NIXL_REF` | `v1.5.2` |
 | `UCX_REF` | `v1.22.0` |
 | `VLLM_REF` | `v0.32.0` |
 | `CUPY_REF` | `v14.2.0` |
@@ -62,6 +62,7 @@ builds `vllm/vllm-rs` during `setup.py`.
 | `USE_AITER` | `ON` | |
 | `USE_FLYDSL` | `ON` | |
 | `USE_FLASH_ATTENTION` | `ON` | |
+| `USE_ROCM_CK_SDPA_GFX12` | `""` | RDNA4 Composable Kernel SDPA, new in PyTorch 2.15 and `OFF` upstream. `ON` takes effect only on a gfx12 RDNA4 target; anywhere else it stays `OFF` |
 | `MAX_JOBS` | `""` | Empty derives it per node from `MemAvailable` |
 | `PREBUILD_KERNELS` | `""` | Empty derives it from the architecture: 0 on RDNA, 2 on CDNA |
 

@@ -57,6 +57,13 @@ ALLOWED = {
         "composed from the host resolved to an address; bake's own "
         "default is the name form, correct outside a build container"
     ),
+    "RUN_ID": (
+        "a timestamp plus VCS_REF, and HCL has no clock — bake's "
+        "default stays 'dev' for a bare `docker buildx bake`. Safe to "
+        "vary per build: it reaches only BUILDKIT_BUILD_NAME, a "
+        "reserved frontend arg no Dockerfile declares, so it enters no "
+        "cache key"
+    ),
 }
 
 

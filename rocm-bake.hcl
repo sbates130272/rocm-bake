@@ -17,7 +17,7 @@
 #   docker buildx bake -f rocm-bake.hcl --builder snoc-think pytorch
 #
 # Override variables at build time:
-#   docker buildx bake -f rocm-bake.hcl --set 'target.pytorch.args.PYTORCH_VERSION=2.14.1'
+#   docker buildx bake -f rocm-bake.hcl --set 'target.pytorch.args.PYTORCH_VERSION=2.15.0'
 #   docker buildx bake -f rocm-bake.hcl --set 'target.pytorch.args.ROCM_VERSION=7.14'
 
 # Bare-metal zot on Strix (zot.service, /etc/zot/config.json), plain HTTP
@@ -33,7 +33,7 @@ variable "REGISTRY_NAME" {
 }
 
 variable "PYTORCH_VERSION" {
-  default = "2.14.1"
+  default = "2.15.0"
 }
 
 variable "ROCM_VERSION" {
@@ -56,6 +56,20 @@ variable "USE_FLASH_ATTENTION" {
   default = "ON"
 }
 
+# PyTorch 2.15 (#188114) adds Composable Kernel SDPA for RDNA4, behind
+# USE_ROCM_CK_SDPA_GFX12 — a cmake option that is OFF upstream while the
+# backend is new, unlike USE_ROCM_CK_SDPA which is already ON for us.
+# gfx1201 is half this fleet, so the knob is worth having; the default
+# tracks upstream's rather than our own enthusiasm.
+#
+# Only meaningful on an RDNA4 target. On gfx950 it builds CK SDPA
+# kernels for a GPU class the image will never see; IS_RDNA4 below is
+# what keeps ON from meaning that. Set to ON to try it, "" for the
+# arch-derived default (currently OFF everywhere).
+variable "USE_ROCM_CK_SDPA_GFX12" {
+  default = ""
+}
+
 # Ubuntu 26.04 ships only 3.14 — 3.12 and 3.13 are absent from the
 # archive, so an older pin cannot be apt-installed on this base.
 variable "PYTHON_VERSION" {
@@ -70,7 +84,7 @@ variable "GIT_REF" {
 # one. Two builds of the same PyTorch version from different repo states
 # otherwise produce identical tags and silently overwrite each other.
 # The Makefile passes it; empty means "no repo tag", not "unknown".
-# PyTorch v2.14.1's own pins: .ci/docker/triton_version.txt (3.8.0) and
+# PyTorch v2.15.0's own pins: .ci/docker/triton_version.txt (3.9.0) and
 # .ci/docker/ci_commit_pins/triton.txt. Building this commit gives the
 # triton PyTorch expects, for ROCm 10.1 instead of AMD's newest
 # published channel (7.2.0).
@@ -78,11 +92,17 @@ variable "GIT_REF" {
 # and carries no version, which is why the published tag used to have
 # no version component. Bump both together.
 variable "TRITON_VERSION" {
-  default = "3.8.0"
+  default = "3.9.0"
 }
 
+# Must be the FULL 40-character SHA. Dockerfile.triton clones with
+# `git clone --revision`, which does not resolve an abbreviation
+# against the remote — a short SHA fails outright with "Remote revision
+# ... not found in upstream origin" rather than falling back. The old
+# full-clone-then-checkout tolerated an abbreviation, so this is a new
+# constraint and the failure comes at clone time, not at build time.
 variable "TRITON_REF" {
-  default = "675c59878aa2280b31f722aaf42b825fcee21de8"
+  default = "aad2a60d958f945420c5c40936b37d411fb02e89"
 }
 
 # ─── Reproducible image timestamps ───────────────────────────────
@@ -221,7 +241,7 @@ USE_PUB = PUBLISHED_INPUTS != ""
 # served from the layer cache indefinitely once built, so an "update"
 # would silently be a no-op. Bump them here.
 variable "NIXL_REF" {
-  default = "v1.5.1"
+  default = "v1.5.2"
 }
 
 # UCX is built from source inside Dockerfile.nixl because Ubuntu's libucx
@@ -326,6 +346,19 @@ IS_RDNA = (
 )
 
 PREBUILD_LEVEL = PREBUILD_KERNELS != "" ? PREBUILD_KERNELS : (IS_RDNA ? "0" : "2")
+
+# RDNA4 specifically, where IS_RDNA is RDNA3-or-4. Same gfx125x strip:
+# gfx1250 is gfx12-numbered and is not RDNA, so it must not pull in a
+# cmake option whose whole subject is RDNA4 CK kernels.
+IS_RDNA4 = ARCH_RDNA_TEST != replace(ARCH_RDNA_TEST, "gfx12", "")
+
+# An explicit ON on a non-RDNA4 target is still refused: the kernels
+# would be dead weight in the image, and upstream gates the option on
+# USE_ROCM_CK_SDPA rather than on the architecture, so nothing further
+# down would catch it.
+CK_SDPA_GFX12 = (
+  USE_ROCM_CK_SDPA_GFX12 != "" && IS_RDNA4 ? USE_ROCM_CK_SDPA_GFX12 : "OFF"
+)
 
 # Shared OCI provenance. Without revision and created there is no way to
 # work back from a running container to the commit that built it.
@@ -566,6 +599,7 @@ target "pytorch" {
     USE_AITER            = USE_AITER
     USE_FLYDSL           = USE_FLYDSL
     USE_FLASH_ATTENTION  = USE_FLASH_ATTENTION
+    USE_ROCM_CK_SDPA_GFX12 = CK_SDPA_GFX12
     GIT_REF              = GIT_REF
 
     # The compiler-cache settings are build ARGs, not env. A bake target
@@ -591,6 +625,22 @@ target "pytorch" {
 # Same idea as the aiter target: the wheel as its own image so it can
 # live in Zot and be pulled without rebuilding PyTorch.
 target "pytorch-wheel" {
+  # Its own build record name. Inheriting the parent's meant this
+  # target and pytorch shared one, so `docker buildx history` held a
+  # single record for both: perftrace.py fetched it twice and the
+  # report drew the same bands under both names, while build-status
+  # could not tell which of the two a row described. Verified by
+  # md5sum on run 20261030T182519Z — trace-pytorch.json and
+  # trace-pytorch-wheel.json were byte-identical.
+  #
+  # Keeps the <repo>/<image>/<arch>/<run-id> shape history.py parses
+  # for its arch and run-id columns. Costs nothing to change:
+  # BUILDKIT_BUILD_NAME is a reserved frontend arg that no Dockerfile
+  # declares, so it reaches no cache key.
+  args = {
+    BUILDKIT_BUILD_NAME = "rocm-pytorch-build/pytorch-wheel/${PYTORCH_ROCM_ARCH}/${RUN_ID}"
+  }
+
   inherits   = ["pytorch"]
   target     = "wheel"
   dockerfile = "docker/Dockerfile.pytorch"
@@ -625,7 +675,7 @@ target "triton-wheel" {
 
   labels = merge(OCI_LABELS, {
     "org.opencontainers.image.title"       = "triton wheel"
-    "org.opencontainers.image.description" = "Triton 3.8.0 built for ROCm ${ROCM_VERSION}, ${PYTORCH_ROCM_ARCH}"
+    "org.opencontainers.image.description" = "Triton ${TRITON_VERSION} built for ROCm ${ROCM_VERSION}, ${PYTORCH_ROCM_ARCH}"
     "org.opencontainers.image.version"     = "${ROCM_VERSION}-${ARCH_TAG}"
   })
 
@@ -967,6 +1017,22 @@ target "vllm" {
 
 # ─── vLLM wheel artifact ─────────────────────────────────────────
 target "vllm-wheel" {
+  # Its own build record name. Inheriting the parent's meant this
+  # target and vllm shared one, so `docker buildx history` held a
+  # single record for both: perftrace.py fetched it twice and the
+  # report drew the same bands under both names, while build-status
+  # could not tell which of the two a row described. Verified by
+  # md5sum on run 20261030T182519Z — trace-pytorch.json and
+  # trace-pytorch-wheel.json were byte-identical.
+  #
+  # Keeps the <repo>/<image>/<arch>/<run-id> shape history.py parses
+  # for its arch and run-id columns. Costs nothing to change:
+  # BUILDKIT_BUILD_NAME is a reserved frontend arg that no Dockerfile
+  # declares, so it reaches no cache key.
+  args = {
+    BUILDKIT_BUILD_NAME = "rocm-pytorch-build/vllm-wheel/${PYTORCH_ROCM_ARCH}/${RUN_ID}"
+  }
+
   inherits   = ["vllm"]
   target     = "wheel"
   dockerfile = "docker/Dockerfile.vllm"
@@ -1041,6 +1107,22 @@ target "lmcache" {
 
 # ─── LMCache wheel artifact ──────────────────────────────────────
 target "lmcache-wheel" {
+  # Its own build record name. Inheriting the parent's meant this
+  # target and lmcache shared one, so `docker buildx history` held a
+  # single record for both: perftrace.py fetched it twice and the
+  # report drew the same bands under both names, while build-status
+  # could not tell which of the two a row described. Verified by
+  # md5sum on run 20261030T182519Z — trace-pytorch.json and
+  # trace-pytorch-wheel.json were byte-identical.
+  #
+  # Keeps the <repo>/<image>/<arch>/<run-id> shape history.py parses
+  # for its arch and run-id columns. Costs nothing to change:
+  # BUILDKIT_BUILD_NAME is a reserved frontend arg that no Dockerfile
+  # declares, so it reaches no cache key.
+  args = {
+    BUILDKIT_BUILD_NAME = "rocm-pytorch-build/lmcache-wheel/${PYTORCH_ROCM_ARCH}/${RUN_ID}"
+  }
+
   inherits   = ["lmcache"]
   target     = "wheel"
   dockerfile = "docker/Dockerfile.lmcache"
@@ -1065,7 +1147,7 @@ target "lmcache-wheel" {
 # builder-* targets in the Makefile, which also pass the buildkitd config
 # that teaches each node to reach Zot over plain HTTP.
 #
-#   make builder-snoc-strix    # snoc-strix: local, gfx950, runs the GPU tests
+#   make builder-snoc-strix    # snoc-strix: local, gfx1151, hosts Zot + sccache
 #   make builder-snoc-think    # snoc-think: snoc-thinkstation over SSH, gfx1201
 #   make builder-snoc-gaming   # snoc-gaming: over SSH, gfx1201
 #   make builder-snoc-pool     # snoc-pool: all three as one builder

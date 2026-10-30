@@ -12,7 +12,7 @@
 # Why build it: LMCache's `cuda_ops` extension is a torch C++ extension.
 # It hipifies its CUDA sources and compiles them with hipcc against the
 # torch that is present at build time, so it is bound to our torch
-# 2.14.1 / ROCm 10.1 build exactly as AITER is. The ROCm wheels LMCache
+# 2.15.0 / ROCm 10.1 build exactly as AITER is. The ROCm wheels LMCache
 # publishes are built against ROCm 7.2.4 and torch 2.10.
 #
 # Like Dockerfile.vllm, one builder produces both a runnable image and a

@@ -131,6 +131,25 @@ BUILD_DATE ?= $(shell git log -1 --format=%cI 2>/dev/null || date -u +%Y-%m-%dT%
 export VCS_REF
 export BUILD_DATE
 
+# Identifies a run in the build records: it is the last component of
+# every target's BUILDKIT_BUILD_NAME, and the column `make build-status`
+# and `make watch` print. The bake default is "dev", which made every
+# build since the beginning of time look like the same run.
+#
+# `:=`, not `?=`. A recursively-expanded `?=` re-runs its $(shell) at
+# every reference, so a timestamp would differ between two uses inside
+# one build. VCS_REF above gets away with `?=` only because a commit
+# hash is stable. $(or $(RUN_ID),...) keeps the override: make imports
+# the environment, and a command-line RUN_ID=x beats the assignment.
+#
+# Safe to vary per build. RUN_ID reaches no layer: it appears only in
+# BUILDKIT_BUILD_NAME, which is a reserved BuildKit frontend arg that
+# no Dockerfile declares as an ARG, so it cannot enter any build
+# environment or any cache key. That was worth checking before making
+# it change on every invocation.
+RUN_ID := $(or $(RUN_ID),$(shell date -u +%Y%m%dT%H%M%SZ)-$(VCS_REF))
+export RUN_ID
+
 # SOURCE_DATE_EPOCH used to be computed and exported from here, one
 # value per image. It lives in rocm-bake.hcl now — see the SDE_EPOCH block
 # there for why it is a constant rather than a date from git history.
@@ -174,6 +193,7 @@ BAKE_PRINT = docker buildx bake -f rocm-bake.hcl
         build-serving push-serving \
         cache-summary cache-check cache-logs builder-load \
         perf-plan perf-run perf-build perf-report perf-runs perf-serve \
+        perf-publish \
         layer-summary \
         list-vars \
         build-base build-pytorch build-runtime build-all \
@@ -764,13 +784,17 @@ _push-all: builder-ensure
 # one of the six wheel targets then built on that one machine while the
 # other two sat idle.
 #
-# The staged path reuses balance.sh: stages 2 and 3 already produce the
-# torch, triton, aiter and nixl wheels, so only the serving wheels need
-# adding on the end.
+# The target set is bake's `wheels` group plus the two images the
+# wheels build on. pytorch and pytorch-base are not wheels and are not
+# in that group, but every wheel resolves one or both of them from the
+# registry — so naming only the group would either rebuild nothing
+# usable or, worse, schedule wheels against an image no run creates.
+# balance.sh orders them from the bake graph; nothing here says when.
 push-wheels: ## Push the wheel artifacts (torch, triton, aiter, nixl, vllm, lmcache)
 	@if [ "$(BUILDER)" = "$(POOL_BUILDER)" ]; then \
 		BALANCE_STREAM=$(BALANCE_STREAM) \
-		STAGE_4="lmcache-wheel" STAGE_5="vllm-wheel" .builders/balance.sh; \
+		TARGETS="$$(python3 -I .builders/depgraph.py --group wheels) pytorch pytorch-base" \
+			.builders/balance.sh; \
 	else \
 		$(MAKE_BIN) --no-print-directory _push-wheels BUILDER=$(BUILDER); \
 	fi
@@ -780,10 +804,11 @@ _push-wheels: builder-ensure
 
 ##@ Multi-GFX
 
-# The archs the fleet runs: snoc-strix is gfx950, snoc-think and
-# snoc-gaming are gfx1201. PYTORCH_ROCM_ARCH stays single-valued and
-# still defaults to gfx950, so every existing target is unchanged; this
-# is the list the arches-* wrappers fan out over.
+# The archs the fleet BUILDS FOR, which are not the archs it runs:
+# snoc-strix is gfx1151 and the other two are gfx1201, so gfx950 — the
+# default — is cross-compiled by every node. PYTORCH_ROCM_ARCH stays
+# single-valued and still defaults to gfx950, so every existing target
+# is unchanged; this is the list the arches-* wrappers fan out over.
 #
 # gfx1250 (MI450) is in the list without being in the fleet. The
 # builders already cross-compile — the two gfx1201 nodes build gfx950
@@ -945,6 +970,66 @@ perf-runs: ## List collected performance runs, newest last
 	@found=$$(ls -1d /var/tmp/rocm-perf/*/ 2>/dev/null); \
 	if [ -n "$$found" ]; then printf '  %s\n' $$found; \
 	else echo "  (none yet — make perf-run)"; fi
+
+# Publish one perf run onto gh-pages, beside the bench data. Same
+# reasoning as bench-publish, and deliberately the same shape: the run
+# only exists on this fleet, the docs workflow preserves data/ when it
+# deploys, and the push is gated behind PUSH=1 because the numbers are
+# public the moment they land.
+#
+# Under data/perf/<stamp>/ rather than data/perf.json: a run is a
+# directory of SVGs, an index.html and a report, not one file, and
+# keeping the stamp means publishing a second run never overwrites the
+# first. bench-publish can use a single file because bench.sh already
+# aggregates across runs; nothing aggregates these.
+#
+# The heavy inputs stay behind. samples.jsonl and the build-*.jsonl
+# streams are tens of MB per run and are the raw material the report
+# was already rendered from — committing them to a branch GitHub Pages
+# serves would put the repo on a diet of binary-ish churn for data
+# nobody fetches over HTTP.
+PERF_PUBLISH_FILES ?= report.md run.json data.json index.html *.svg
+
+perf-publish: ## Publish a perf run onto gh-pages (PERF_RUN=, PUSH=1 to push)
+	@run="$(PERF_RUN)"; \
+	[ -n "$$run" ] || run=$$(ls -1d /var/tmp/rocm-perf/*/ 2>/dev/null | tail -1); \
+	[ -n "$$run" ] || { echo "no perf run found — run make perf-run"; exit 1; }; \
+	test -s "$$run/report.md" \
+		|| { echo "$$run has no report.md — run make perf-report"; exit 1; }; \
+	stamp=$$(basename "$$run"); \
+	echo "publishing $$stamp"; \
+	git fetch origin \
+		"+$(GH_PAGES_BRANCH):refs/remotes/origin/$(GH_PAGES_BRANCH)" 2>/dev/null || true; \
+	if [ ! -d $(GH_PAGES_DIR) ]; then \
+		if git rev-parse --verify -q origin/$(GH_PAGES_BRANCH) >/dev/null; then \
+			git worktree add $(GH_PAGES_DIR) origin/$(GH_PAGES_BRANCH) --detach; \
+			git -C $(GH_PAGES_DIR) checkout -B $(GH_PAGES_BRANCH) origin/$(GH_PAGES_BRANCH); \
+		else \
+			echo "$(GH_PAGES_BRANCH) does not exist on origin yet."; \
+			echo "Run the Docs workflow once to create it, then re-run this."; \
+			exit 1; \
+		fi; \
+	fi; \
+	git -C $(GH_PAGES_DIR) fetch origin \
+		"+$(GH_PAGES_BRANCH):refs/remotes/origin/$(GH_PAGES_BRANCH)"; \
+	git -C $(GH_PAGES_DIR) reset --hard origin/$(GH_PAGES_BRANCH); \
+	mkdir -p $(GH_PAGES_DIR)/data/perf/$$stamp; \
+	for f in $(PERF_PUBLISH_FILES); do \
+		cp $$run/$$f $(GH_PAGES_DIR)/data/perf/$$stamp/ 2>/dev/null || true; \
+	done; \
+	git -C $(GH_PAGES_DIR) add data; \
+	git -C $(GH_PAGES_DIR) diff --cached --quiet \
+		&& echo "no change to publish" \
+		|| git -C $(GH_PAGES_DIR) commit -s \
+			-m "data: add perf run $$stamp"; \
+	if [ "$(PUSH)" = 1 ]; then \
+		git -C $(GH_PAGES_DIR) push origin $(GH_PAGES_BRANCH); \
+	else \
+		echo; \
+		echo "Committed locally. To publish:"; \
+		echo "  git -C $(GH_PAGES_DIR) push origin $(GH_PAGES_BRANCH)"; \
+		echo "or re-run with PUSH=1."; \
+	fi
 
 ##@ Wheels
 
@@ -1154,7 +1239,7 @@ COMPOSE        = DOCKER_HOST=ssh://$(GPU_HOST) RENDER_GID=$(GPU_RENDER_GID) \
 
 # The machine that serves is not the machine that builds, and on this
 # fleet it does not even have the same GPU: PYTORCH_ROCM_ARCH defaults
-# to gfx950 (Strix Halo) while GPU_HOST is a gfx1201 RX 9070 XT. Taking
+# to gfx950 while GPU_HOST is a gfx1201 RX 9070 XT. Taking
 # the serving tag from the build default therefore asked Zot for an
 # image nobody had built, and the only symptom was a pull failure
 # naming a tag that looked plausible.

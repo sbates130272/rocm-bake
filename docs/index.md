@@ -21,15 +21,6 @@ Every pinned version is on the
 `make version-check` compares it against the latest upstream releases
 and against the wheels published in the registry.
 
-!!! note "gfx950 is not Strix Halo"
-    Earlier revisions of this repository described `gfx950` as Strix
-    Halo. It is not: `gfx950` is a CDNA-class (MI350-series)
-    architecture, and Strix Halo is `gfx1151`. The build host is called
-    `snoc-strix` — that is a hostname, not an architecture claim. The
-    distinction matters because the pipeline branches on it: AITER's
-    kernel prebuild is enabled on CDNA and disabled on RDNA. See
-    [Multiple GFX targets](architecture/multi-arch.md).
-
 ## Where to start
 
 <div class="grid cards" markdown>
@@ -62,7 +53,7 @@ and against the wheels published in the registry.
 ```mermaid
 flowchart LR
     subgraph fleet["Build fleet (Tailscale mesh)"]
-        strix["snoc-strix<br/>gfx950"]
+        strix["snoc-strix<br/>gfx1151"]
         think["snoc-think<br/>gfx1201"]
         gaming["snoc-gaming<br/>gfx1201"]
     end

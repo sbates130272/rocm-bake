@@ -69,31 +69,30 @@ DRY_PUSH_FLAG="--no-push"
 
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 RUN_DIR="${PERF_DIR:-/var/tmp/rocm-perf}/${STAMP}"
+# Label the build records with this run's own stamp, so a row in
+# `make build-status` can be traced to the directory under
+# /var/tmp/rocm-perf that describes it. Without this the two
+# identifiers are unrelated and correlating them is guesswork.
+export RUN_ID="${RUN_ID:-${STAMP}}"
 INTERVAL="${PERF_INTERVAL:-5}"
 SCCACHE_LOG="${SCCACHE_LOG_FILE:-/var/log/nginx/sccache.log}"
 
-# Ordered heaviest first. balance.sh ranks nodes by capacity but hands
-# targets out in list order, so the first target in a stage gets the
-# strongest node. Left alphabetical, vllm-wheel — hours on gfx1201 —
-# lands on the 15GB box while cupy gets the 123GB one.
-STAGE_A="${PERF_STAGE_A:-vllm-wheel pytorch-wheel aiter-wheel}"
-STAGE_B="${PERF_STAGE_B:-lmcache-wheel nixl-wheel triton-wheel}"
-STAGE_C="${PERF_STAGE_C:-cupy-wheel}"
-
-# Per-node queues by default, not stage barriers. Nothing in this run
-# depends on anything else in it - PUBLISHED_INPUTS=1 makes every wheel
-# a single self-contained target pulling its inputs from Zot - so a
-# barrier only idles whichever nodes finish early. Measured on
-# 20261029T184335Z: 44m16s of wall clock to do 77m09s of work, 55m39s
-# of it idle.
+# What this run measures.
 #
-# The stage variables still set the pool; --queue flattens them and
-# packs longest-first onto the least-loaded node, each node then
-# draining its list sequentially. Set PERF_QUEUE=0 to go back to
-# barriers, which is worth doing if a target ever gains a real
-# dependency on another.
-QUEUE_FLAG="--queue"
-[ "${PERF_QUEUE:-1}" = "0" ] && QUEUE_FLAG=""
+# bake's `wheels` group, plus pytorch. pytorch is not a wheel and is
+# not in that group, but it is the image every other wheel builds
+# FROM, and it is the most expensive thing in the graph — leaving it
+# out measured the cheap half of a build and, on an arch nobody had
+# built before, scheduled wheels against an image that did not exist.
+#
+# Including it is close to free on a normal run: the layer cache
+# serves it in seconds. On a cold run it genuinely rebuilds, which is
+# what cold means.
+#
+# No ordering here. balance.sh reads the dependency edges out of
+# rocm-bake.hcl via depgraph.py and schedules against them, so a
+# target starts when its own inputs are published and not before.
+PERF_TARGETS="${PERF_TARGETS:-$(python3 -I "$(dirname "${BASH_SOURCE[0]}")/depgraph.py" --group wheels) pytorch}"
 
 # A prefix of this run's own, deleted afterwards. Identical reasoning to
 # bench.sh: the store is shared with the fleet and with the sibling
@@ -115,9 +114,8 @@ log "arch      ${ARCH}  mode=${MODE}"
 if [ "${DRY}" = 1 ]; then
     log "dry run: showing placement only"
     PUBLISHED_INPUTS=1 PYTORCH_ROCM_ARCH="${ARCH}" \
-    STAGE_1="${STAGE_A}" STAGE_2="${STAGE_B}" STAGE_3="${STAGE_C}" \
-    STAGE_2B=" " STAGE_3B=" " STAGE_4=" " STAGE_5=" " \
-        ./.builders/balance.sh --dry-run ${DRY_PUSH_FLAG} ${QUEUE_FLAG}
+    TARGETS="${PERF_TARGETS}" \
+        ./.builders/balance.sh --dry-run ${DRY_PUSH_FLAG}
     exit 0
 fi
 
@@ -132,7 +130,8 @@ cat > "${RUN_DIR}/run.json" <<EOF
   "mode": "${MODE}",
   "interval_seconds": ${INTERVAL},
   "sccache_key_prefix": "${PREFIX}",
-  "stages": ["${STAGE_A}", "${STAGE_B}", "${STAGE_C}"],
+  "run_id": "${RUN_ID}",
+  "targets": "${PERF_TARGETS}",
   "vcs_ref": "$(git rev-parse --short HEAD 2>/dev/null)",
   "vcs_dirty": $( [ -n "$(git status --porcelain 2>/dev/null)" ] && echo true || echo false )
 }
@@ -164,7 +163,7 @@ trap 'kill "${SAMPLER}" 2>/dev/null || true' EXIT INT TERM
 # the collection loop below would copy it in as if it were ours. An
 # aborted run picked up a nixl-wheel stream from the previous day that
 # way. Clear them up front so a stale file cannot be mistaken for data.
-for t in ${STAGE_A} ${STAGE_B} ${STAGE_C}; do
+for t in ${PERF_TARGETS}; do
     rm -f "/tmp/balance-${t}.log"
 done
 
@@ -201,9 +200,8 @@ BAKE_EXTRA="${EXTRA}" \
 PUBLISHED_INPUTS=1 \
 PYTORCH_ROCM_ARCH="${ARCH}" \
 SCCACHE_WEBDAV_KEY_PREFIX="${PREFIX:-rocm-pytorch}" \
-STAGE_1="${STAGE_A}" STAGE_2="${STAGE_B}" STAGE_3="${STAGE_C}" \
-STAGE_2B=" " STAGE_3B=" " STAGE_4=" " STAGE_5=" " \
-    ./.builders/balance.sh ${PUSH_FLAG} ${QUEUE_FLAG} \
+TARGETS="${PERF_TARGETS}" \
+    ./.builders/balance.sh ${PUSH_FLAG} \
         > "${RUN_DIR}/balance.log" 2>&1
 RC=$?
 END=$(date +%s)
@@ -218,7 +216,7 @@ wait "${SAMPLER}" 2>/dev/null
 # Only logs this run actually wrote. The mtime test is redundant given
 # the clear above, but the cost of a stale stream here is a report that
 # looks complete and is not, so it is worth asserting twice.
-for t in ${STAGE_A} ${STAGE_B} ${STAGE_C}; do
+for t in ${PERF_TARGETS}; do
     src="/tmp/balance-${t}.log"
     [ -f "${src}" ] || continue
     if [ "$(stat -c %Y "${src}" 2>/dev/null || echo 0)" -lt "${START}" ]; then
@@ -246,7 +244,7 @@ done
 PLACEMENT=$(python3 .builders/placement.py "${RUN_DIR}")
 [ -n "${PLACEMENT}" ] || log "warning: no placement parsed; traces will be skipped"
 
-for t in ${STAGE_A} ${STAGE_B} ${STAGE_C}; do
+for t in ${PERF_TARGETS}; do
     node=$(echo "${PLACEMENT}" | awk -v t="${t}" '$1 == t {print $2; exit}')
     [ -n "${node}" ] || continue
     name=$(PYTORCH_ROCM_ARCH="${ARCH}" docker buildx bake -f rocm-bake.hcl \
