@@ -1147,7 +1147,7 @@ target "lmcache-wheel" {
 # builder-* targets in the Makefile, which also pass the buildkitd config
 # that teaches each node to reach Zot over plain HTTP.
 #
-#   make builder-snoc-strix    # snoc-strix: local, gfx950, runs the GPU tests
+#   make builder-snoc-strix    # snoc-strix: local, gfx1151, hosts Zot + sccache
 #   make builder-snoc-think    # snoc-think: snoc-thinkstation over SSH, gfx1201
 #   make builder-snoc-gaming   # snoc-gaming: over SSH, gfx1201
 #   make builder-snoc-pool     # snoc-pool: all three as one builder

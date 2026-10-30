@@ -50,10 +50,20 @@ LOG="${PERF_DIR}/.perfserve.log"
 # against an idle node's 0.08s, and polling that every cycle would be
 # a tax on the very run being watched.
 catch_traces() {
-    local d="$1" arch node name t
+    local d="$1" arch node name t run_id
     arch=$(python3 -c "import json;print(json.load(open('${d}/run.json'))['arch'])" \
            2>/dev/null) || return 0
     [ -n "${arch}" ] || return 0
+    # The RUN_ID the builds were stamped with, not this server's.
+    # BUILDKIT_BUILD_NAME ends in ${RUN_ID}, and the bake --print below
+    # runs in perfserve's environment, which has none — so it resolved
+    # to bake's "dev" default. While every build was named .../dev that
+    # accidentally matched; once RUN_ID became a timestamp it matched a
+    # leftover dev record instead, and this wrote ANOTHER run's trace
+    # into this run's directory. Caught because two runs'
+    # trace-triton-wheel.json were byte-identical.
+    run_id=$(python3 -c "import json;print(json.load(open('${d}/run.json')).get('run_id') or '')" \
+             2>/dev/null)
     # Errors to the log, not /dev/null. If this stops parsing, no
     # trace is ever captured and the page shows CPU lines with no
     # bands for the whole run — silently, which is how it failed
@@ -63,7 +73,8 @@ catch_traces() {
         [ -f "${d}/trace-${t}.json" ] && continue
         node=$(echo "${pairs}" | awk -v t="${t}" '$1 == t {print $2; exit}')
         [ -n "${node}" ] || continue
-        name=$(PYTORCH_ROCM_ARCH="${arch}" timeout 60 docker buildx bake \
+        name=$(PYTORCH_ROCM_ARCH="${arch}" RUN_ID="${run_id:-dev}" \
+               timeout 60 docker buildx bake \
                -f rocm-bake.hcl --print "${t}" 2>/dev/null \
                | jq -r ".target[\"${t}\"].args.BUILDKIT_BUILD_NAME // empty")
         [ -n "${name}" ] || continue

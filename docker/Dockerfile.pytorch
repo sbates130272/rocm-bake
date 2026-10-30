@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
-# PyTorch ROCm build from source targeting gfx950 (Strix Halo)
-# Builds PyTorch with HIP support optimized for RDNA3/4 architecture
+# PyTorch ROCm build from source, targeting gfx950 by default
+# Builds PyTorch with HIP support; PYTORCH_ROCM_ARCH selects the target
 # Requires PyTorch 2.15.0+ and ROCm 10.1+
 
 # Both ARGs before the first FROM: an ARG declared after a FROM belongs
@@ -212,8 +212,8 @@ RUN if sccache --show-stats > /dev/null 2>&1; then \
     fi
 
 # ─── Build configuration ─────────────────────────────────────────
-# gfx950 is Strix Halo (RDNA 3.5 / CDNA 3 hybrid)
-# Build with: gfx900 gfx940 gfx941 gfx942 gfx950 gfx1030 gfx1100 gfx1101 gfx1102
+# gfx950 is CDNA-class (MI350 series). The arch is selected by
+# PYTORCH_ROCM_ARCH alone; a ";"-separated list produces a fat binary.
 
 # Optional libraries — control via bake variables or build args
 ENV USE_AITER=${USE_AITER} \

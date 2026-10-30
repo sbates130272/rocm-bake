@@ -6,7 +6,7 @@ set up, skip to [step 5](#step-5-build).
 ## Prerequisites
 
 - All nodes on the same Tailscale network.
-- `snoc-strix`: a `gfx950` GPU, Docker 27+. Runs the Zot registry, the
+- `snoc-strix`: a `gfx1151` GPU, Docker 27+. Runs the Zot registry, the
   shared compiler cache, and the GPU tests.
 - `snoc-thinkstation`, `snoc-gaming`: Docker 27+, reachable as
   `ssh <host>` from Strix. Both are `gfx1201` (RDNA4): they
@@ -106,7 +106,7 @@ needs it in `/etc/docker/daemon.json` (already set on Strix):
 ## Step 3 — Create the builders
 
 ```bash
-make builder-snoc-strix     # local, gfx950, runs the GPU tests
+make builder-snoc-strix     # local, gfx1151, hosts Zot + sccache
 make builder-snoc-think     # snoc-thinkstation, over SSH
 make builder-snoc-gaming    # snoc-gaming, over SSH
 make builder-status         # what exists now

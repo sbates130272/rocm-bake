@@ -106,9 +106,16 @@ COMPONENTS = [
          source=("hub", "rocm/dev-ubuntu-26.04"), norm="verbatim",
          wheel_repo=None, label="rocm/dev-ubuntu-26.04",
          url="https://hub.docker.com/r/rocm/dev-ubuntu-26.04"),
+    # No `source`: the version is not chosen against an upstream release
+    # but by what the ROCm base image's Ubuntu archive carries, which is
+    # why version-check reports it as "the base image decides" rather
+    # than comparing it to anything. The link is the language's own
+    # home, for reference only — bumping PYTHON_VERSION past what the
+    # base image can apt-install fails regardless of what python.org has
+    # released.
     dict(name="Python", var="PYTHON_VERSION", readme=True,
          source=("none", None), norm="verbatim", wheel_repo=None,
-         label=None, url=None),
+         label="python.org", url="https://www.python.org/"),
     dict(name="Triton", var="TRITON_VERSION", readme=True,
          source=("pin", ("pytorch/pytorch", ".ci/docker/triton_version.txt",
                          "PYTORCH_VERSION", "v{}", "text")),

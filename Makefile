@@ -804,10 +804,11 @@ _push-wheels: builder-ensure
 
 ##@ Multi-GFX
 
-# The archs the fleet runs: snoc-strix is gfx950, snoc-think and
-# snoc-gaming are gfx1201. PYTORCH_ROCM_ARCH stays single-valued and
-# still defaults to gfx950, so every existing target is unchanged; this
-# is the list the arches-* wrappers fan out over.
+# The archs the fleet BUILDS FOR, which are not the archs it runs:
+# snoc-strix is gfx1151 and the other two are gfx1201, so gfx950 — the
+# default — is cross-compiled by every node. PYTORCH_ROCM_ARCH stays
+# single-valued and still defaults to gfx950, so every existing target
+# is unchanged; this is the list the arches-* wrappers fan out over.
 #
 # gfx1250 (MI450) is in the list without being in the fleet. The
 # builders already cross-compile — the two gfx1201 nodes build gfx950
@@ -1238,7 +1239,7 @@ COMPOSE        = DOCKER_HOST=ssh://$(GPU_HOST) RENDER_GID=$(GPU_RENDER_GID) \
 
 # The machine that serves is not the machine that builds, and on this
 # fleet it does not even have the same GPU: PYTORCH_ROCM_ARCH defaults
-# to gfx950 (Strix Halo) while GPU_HOST is a gfx1201 RX 9070 XT. Taking
+# to gfx950 while GPU_HOST is a gfx1201 RX 9070 XT. Taking
 # the serving tag from the build default therefore asked Zot for an
 # image nobody had built, and the only symptom was a pull failure
 # naming a tag that looked plausible.

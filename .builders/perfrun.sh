@@ -130,6 +130,7 @@ cat > "${RUN_DIR}/run.json" <<EOF
   "mode": "${MODE}",
   "interval_seconds": ${INTERVAL},
   "sccache_key_prefix": "${PREFIX}",
+  "run_id": "${RUN_ID}",
   "targets": "${PERF_TARGETS}",
   "vcs_ref": "$(git rev-parse --short HEAD 2>/dev/null)",
   "vcs_dirty": $( [ -n "$(git status --porcelain 2>/dev/null)" ] && echo true || echo false )
