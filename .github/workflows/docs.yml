@@ -77,7 +77,12 @@ jobs:
             git worktree add "$old" origin/gh-pages --detach
             if [ -d "$old/data" ]; then
               cp -r "$old/data" site/data
-              echo "::notice::carried $(ls "$old/data" | wc -l) data file(s) across"
+              # find, not ls: shellcheck SC2012, and it counts files
+              # rather than directory entries — bench-publish writes
+              # bench.json and bench.jsonl side by side today, but the
+              # count should stay right if that grows a subdirectory.
+              n=$(find "$old/data" -type f | wc -l)
+              echo "::notice::carried $n data file(s) across"
             else
               echo "::notice::gh-pages has no data/ yet"
             fi
