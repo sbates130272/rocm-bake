@@ -30,6 +30,13 @@ Two modes, because the scheduler needs two different answers:
                set of targets — the Makefile, perfrun.sh — do not keep
                their own copy of a list rocm-bake.hcl already has.
 
+  --dockerfiles  "<target> <dockerfile>" per requested target. Targets
+               sharing a Dockerfile share its build stages — pytorch
+               and pytorch-wheel are `final` and `wheel` over the same
+               builder — so running them at the same time means
+               compiling the same objects twice. Not a dependency, so
+               it is not an edge; the scheduler uses it to serialise.
+
 Usage:
   depgraph.py --deps <target>...
   depgraph.py --preflight <target>...
@@ -171,7 +178,8 @@ def exists(ref):
 
 
 def main(argv):
-    if len(argv) < 2 or argv[0] not in ("--deps", "--preflight", "--group"):
+    if len(argv) < 2 or argv[0] not in ("--deps", "--preflight", "--group",
+                                        "--dockerfiles"):
         print(__doc__.strip(), file=sys.stderr)
         return 2
     mode, targets = argv[0], argv[1:]
@@ -201,6 +209,14 @@ def main(argv):
         graph = deps_of(plain)
         for name in targets:
             print(name, *graph.get(name, []))
+        return 0
+
+    if mode == "--dockerfiles":
+        spec = plain.get("target") or {}
+        for name in targets:
+            path = (spec.get(name) or {}).get("dockerfile")
+            if path:
+                print(name, path)
         return 0
 
     pub = bake_print(targets, published=True)

@@ -238,13 +238,38 @@ cost_of() {
 # it idle). Flat per-node queues dropped the barrier but could not
 # express a real dependency, which is how a gfx1250 run scheduled
 # vllm-wheel with no pytorch image to build on.
-declare -A DEPS STATE RUNTGT RUNNODE BUSY
+declare -A DEPS STATE RUNTGT RUNNODE BUSY DF DFBUSY
 
 load_deps() {
     local t rest
     while read -r t rest; do
         [ -n "$t" ] && DEPS[$t]="${rest}"
     done < <(python3 -I "${HERE}/depgraph.py" --deps ${TARGETS} 2>/dev/null)
+    while read -r t rest; do
+        [ -n "$t" ] && DF[$t]="${rest}"
+    done < <(python3 -I "${HERE}/depgraph.py" --dockerfiles ${TARGETS} 2>/dev/null)
+}
+
+# Targets over the same Dockerfile share its stages — pytorch and
+# pytorch-wheel are `final` and `wheel` over one builder — so running
+# them concurrently compiles the same objects twice.
+#
+# Not a dependency: neither consumes the other, and ordering between
+# them is free either way. It is mutual exclusion, so it lives here
+# rather than as an edge in the graph.
+#
+# Serialised, NOT pinned to one node. The compiler cache is shared
+# fleet-wide over WebDAV, so the second build hits whatever the first
+# wrote wherever it runs. Measured on the gfx1250 run that prompted
+# this, where the two ran concurrently on different nodes: pytorch took
+# 2533 sccache hits against 186 misses, while pytorch-wheel — racing it
+# for the same objects, neither having written them yet — managed 1918
+# hits against 801. Ordering is what recovers those 615; co-location
+# would have bought nothing extra and would have wasted a node.
+df_busy() {
+    local t="$1" f="${DF[$t]:-}"
+    [ -n "$f" ] || return 1
+    [ -n "${DFBUSY[$f]:-}" ]
 }
 
 # Only deps that this run will itself build gate scheduling. An edge to
@@ -263,6 +288,9 @@ ready_targets() {
     local t d ok
     for t in ${TARGETS}; do
         [ "${STATE[$t]}" = pending ] || continue
+        # Deferred, not skipped: it becomes ready as soon as the
+        # sibling over its Dockerfile finishes.
+        df_busy "$t" && continue
         ok=1
         for d in $(blocking_deps "$t"); do
             [ "${STATE[$d]}" = done ] || { ok=0; break; }
@@ -292,6 +320,7 @@ launch() {
     fi
     local pid=$!
     RUNTGT[$pid]="$t"; RUNNODE[$pid]="$node"; BUSY[$node]="$t"
+    [ -n "${DF[$t]:-}" ] && DFBUSY[${DF[$t]}]="$t"
     STATE[$t]=running
     if [ "$STREAM" = 1 ]; then
         tail -F -n +1 "/tmp/balance-$t.log" 2>/dev/null \
@@ -322,6 +351,12 @@ run_dag() {
         while [ "$placed" = 1 ]; do
             placed=0
             for t in $(ready_targets); do
+                # Re-checked here, not just in ready_targets. That list
+                # is a command substitution, evaluated once before any
+                # of these launches ran — so a sibling claiming the
+                # Dockerfile mid-loop is invisible to it, and both were
+                # launched anyway. Measured: all three pairs overlapped.
+                df_busy "$t" && continue
                 node=$(free_nodes | head -1)
                 [ -n "$node" ] || break
                 launch "$t" "$node"
@@ -353,6 +388,7 @@ run_dag() {
         node="${RUNNODE[$fpid]}"
         unset "RUNTGT[$fpid]" "RUNNODE[$fpid]"
         BUSY[$node]=""
+        [ -n "${DF[$t]:-}" ] && DFBUSY[${DF[$t]}]=""
         if [ "$prc" = 0 ]; then
             STATE[$t]=done
             echo "   $node: finished $t"
@@ -393,7 +429,17 @@ plan_dag() {
         wave=$((wave + 1))
         echo "── wave ${wave}"
         i=0
+        # One target per Dockerfile per wave, matching run_dag's mutual
+        # exclusion. Without this the plan shows pytorch and
+        # pytorch-wheel side by side in one wave, which is exactly the
+        # concurrency the scheduler now refuses.
+        local seen_df=""
         for target in "${batch[@]}"; do
+            local f="${DF[$target]:-}"
+            if [ -n "$f" ]; then
+                case " ${seen_df} " in *" $f "*) continue ;; esac
+                seen_df="${seen_df} $f"
+            fi
             node="${ranked[$((i % ${#ranked[@]}))]}"
             i=$((i + 1))
             # This exact spelling is also what perfreport's

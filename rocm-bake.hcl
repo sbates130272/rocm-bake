@@ -95,6 +95,12 @@ variable "TRITON_VERSION" {
   default = "3.9.0"
 }
 
+# Must be the FULL 40-character SHA. Dockerfile.triton clones with
+# `git clone --revision`, which does not resolve an abbreviation
+# against the remote — a short SHA fails outright with "Remote revision
+# ... not found in upstream origin" rather than falling back. The old
+# full-clone-then-checkout tolerated an abbreviation, so this is a new
+# constraint and the failure comes at clone time, not at build time.
 variable "TRITON_REF" {
   default = "aad2a60d958f945420c5c40936b37d411fb02e89"
 }
