@@ -1,0 +1,9 @@
+{
+  "stamp": "20261029T204149Z",
+  "arch": "gfx1201",
+  "interval_seconds": 5,
+  "sccache_key_prefix": "perf-20261029T204149Z",
+  "stages": ["vllm-wheel pytorch-wheel aiter-wheel", "lmcache-wheel nixl-wheel triton-wheel", "cupy-wheel"],
+  "vcs_ref": "15e12d7",
+  "vcs_dirty": false
+}
