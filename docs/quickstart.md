@@ -223,12 +223,12 @@ By hand:
 
 ```bash
 docker run --rm -it --device /dev/kfd --device /dev/dri \
-  snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/pytorch:2.14.1-10.1.0-full-gfx950
+  snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/pytorch:2.15.0-10.1.0-full-gfx950
 ```
 
 ```python
 import torch
-print(torch.__version__)           # 2.14.1+rocm10.1
+print(torch.__version__)           # 2.15.0+rocm10.1
 print(torch.cuda.is_available())   # True
 print(torch.cuda.get_device_name(0))
 ```

@@ -13,18 +13,18 @@
 # constraints cannot share an environment.
 #
 # The version and commit are PyTorch's own pins, so the result is the
-# triton that v2.14.1 expects — just built for ROCm 10.1 instead of 7.2:
-#   .ci/docker/triton_version.txt        -> 3.8.0
-#   .ci/docker/ci_commit_pins/triton.txt -> 675c5987...
+# triton that v2.15.0 expects — just built for ROCm 10.1 instead of 7.2:
+#   .ci/docker/triton_version.txt        -> 3.9.0
+#   .ci/docker/ci_commit_pins/triton.txt -> aad2a60d...
 
 ARG BASE_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/base:10.1.0-full-3.14
 FROM ${BASE_IMAGE} AS builder
 
-ARG TRITON_REF=675c59878aa2280b31f722aaf42b825fcee21de8
+ARG TRITON_REF=aad2a60d958f945420c5c40936b37d411fb02e89
 # The release the pinned commit belongs to, for tags and labels.
 # TRITON_REF is a bare SHA and carries no version, which is why the
 # published tag had no version component at all.
-ARG TRITON_VERSION=3.8.0
+ARG TRITON_VERSION=3.9.0
 # No PYTORCH_ROCM_ARCH. Triton is a compiler: it generates code for
 # whatever GPU it finds at run time, and nothing in this build consumes
 # a target architecture. The arch used to be carried here as an ARG, an
@@ -130,11 +130,18 @@ WORKDIR /opt/triton
 # cmake<4 per triton's [build-system].requires. Installing it into the
 # venv shadows the system cmake for this build only.
 #
-# pybind11 is pinned to 3.0.1 to match PyTorch CI's recipe
+# pybind11 and nanobind are pinned to match PyTorch CI's recipe
 # (.ci/docker/common/install_triton.sh) rather than taking whatever
-# >=2.13.1 resolves to today.
+# resolves to today. It installs both, so we do too.
+#
+# nanobind is not optional at 3.9.0: triton moved its bindings to it,
+# and [build-system].requires now reads nanobind==2.10.2 with no
+# pybind11 at all. `python -m build --no-isolation` does not fetch that
+# list, so the 3.8.0 package set built 3.9.0 for 0.17s and died with
+# "ModuleNotFoundError: No module named 'nanobind'" before a single
+# compile. pybind11 stays because PyTorch CI still installs it.
 RUN pip install --no-cache-dir build "cmake>=3.20,<4.0" "ninja>=1.11.1" \
-        "pybind11==3.0.1" "setuptools>=40.8.0" wheel && \
+        "pybind11==3.0.1" "nanobind==2.10.2" "setuptools>=40.8.0" wheel && \
     cmake --version
 
 # PyTorch CI rewrites a stale LLVM build host here as a workaround for

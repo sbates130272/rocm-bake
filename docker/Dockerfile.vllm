@@ -3,7 +3,7 @@
 # 10.1 PyTorch, Triton and AITER, with NIXL for KV-cache transfer.
 #
 # Why build it: AMD publishes rocm/vllm-dev images, but they are built
-# against AMD's own torch for ROCm 7.x. Ours is torch 2.14.1 on ROCm
+# against AMD's own torch for ROCm 7.x. Ours is torch 2.15.0 on ROCm
 # 10.1 for gfx950, and vLLM's HIP extensions link against torch's C++
 # ABI — a prebuilt vLLM wheel and our torch cannot share a process.
 #

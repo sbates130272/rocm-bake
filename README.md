@@ -12,12 +12,12 @@ artifact published to a local OCI registry.
 
 | Component | Upstream | Bake variable | Pinned |
 | --- | --- | --- | --- |
-| PyTorch | [pytorch/pytorch](https://github.com/pytorch/pytorch) | `PYTORCH_VERSION` | `2.14.1` |
+| PyTorch | [pytorch/pytorch](https://github.com/pytorch/pytorch) | `PYTORCH_VERSION` | `2.15.0` |
 | ROCm | [rocm/dev-ubuntu-26.04](https://hub.docker.com/r/rocm/dev-ubuntu-26.04) | `ROCM_VERSION` | `10.1.0-full` |
 | Python | &mdash; | `PYTHON_VERSION` | `3.14` |
-| Triton | [triton-lang/triton](https://github.com/triton-lang/triton) | `TRITON_VERSION` | `3.8.0` |
+| Triton | [triton-lang/triton](https://github.com/triton-lang/triton) | `TRITON_VERSION` | `3.9.0` |
 | AITER | [ROCm/aiter](https://github.com/ROCm/aiter) | `AITER_REF` | `v0.1.27` |
-| NIXL | [ai-dynamo/nixl](https://github.com/ai-dynamo/nixl) | `NIXL_REF` | `v1.5.1` |
+| NIXL | [ai-dynamo/nixl](https://github.com/ai-dynamo/nixl) | `NIXL_REF` | `v1.5.2` |
 | UCX | [openucx/ucx](https://github.com/openucx/ucx) | `UCX_REF` | `v1.22.0` |
 | vLLM | [vllm-project/vllm](https://github.com/vllm-project/vllm) | `VLLM_REF` | `v0.32.0` |
 | CuPy | [cupy/cupy](https://github.com/cupy/cupy) | `CUPY_REF` | `v14.2.0` |

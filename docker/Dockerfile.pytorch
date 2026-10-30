@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # PyTorch ROCm build from source targeting gfx950 (Strix Halo)
 # Builds PyTorch with HIP support optimized for RDNA3/4 architecture
-# Requires PyTorch 2.14.0+ and ROCm 10.1+
+# Requires PyTorch 2.15.0+ and ROCm 10.1+
 
 # Both ARGs before the first FROM: an ARG declared after a FROM belongs
 # to that stage, and a later `FROM ${X}` then sees it blank. This file,
@@ -19,11 +19,14 @@ FROM ${BASE_IMAGE} AS builder
 # These precede the LABELs below on purpose: an ARG referenced before it
 # is declared expands to the empty string, and the label silently loses
 # the version it is meant to record.
-ARG PYTORCH_VERSION=2.14.1
+ARG PYTORCH_VERSION=2.15.0
 ARG ROCM_VERSION=10.1.0-full
 ARG USE_AITER=ON
 ARG USE_FLYDSL=ON
 ARG USE_FLASH_ATTENTION=ON
+# RDNA4 Composable Kernel SDPA, new in 2.15 and OFF upstream. bake
+# derives this from the target architecture; OFF here matches both.
+ARG USE_ROCM_CK_SDPA_GFX12=OFF
 ARG GIT_REF=""
 # Declared or the ENV references below expand to empty and the build
 # silently targets no GPU architecture at all.
@@ -176,7 +179,8 @@ RUN if sccache --show-stats > /dev/null 2>&1; then \
 # Optional libraries — control via bake variables or build args
 ENV USE_AITER=${USE_AITER} \
     USE_FLYDSL=${USE_FLYDSL} \
-    USE_FLASH_ATTENTION=${USE_FLASH_ATTENTION}
+    USE_FLASH_ATTENTION=${USE_FLASH_ATTENTION} \
+    USE_ROCM_CK_SDPA_GFX12=${USE_ROCM_CK_SDPA_GFX12}
 
 # CMAKE_CUDA_ARCHITECTURES="ROCM" and CMAKE_CXX_FLAGS="-march=gfx950"
 # are both gone. -march/-mtune are host-CPU flags: gfx950 is a GPU
