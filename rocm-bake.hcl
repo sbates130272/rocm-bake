@@ -228,6 +228,8 @@ variable "PUBLISHED_INPUTS" {
 # change to the other.
 PUB_BASE    = "${REGISTRY}/${REGISTRY_NAME}/base:${ROCM_VERSION}-${PYTHON_VERSION}"
 PUB_PYTORCH = "${REGISTRY}/${REGISTRY_NAME}/pytorch:${PYTORCH_VERSION}-${ROCM_VERSION}-${ARCH_TAG}"
+PYTORCH_CACHE_TO = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/pytorch-cache:latest${CACHE_ARCH}${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=true,ignore-error=true"]
+
 PUB_PYTORCH_WHEEL = "${REGISTRY}/${REGISTRY_NAME}/pytorch-wheel:${PYTORCH_VERSION}-${ROCM_VERSION}-${ARCH_TAG}"
 PUB_TRITON  = "${REGISTRY}/${REGISTRY_NAME}/triton-wheel:${TRITON_VERSION}-${ROCM_VERSION}"
 PUB_AITER   = "${REGISTRY}/${REGISTRY_NAME}/aiter-wheel:${PYTORCH_VERSION}-${ROCM_VERSION}-${ARCH_TAG}"
@@ -570,7 +572,13 @@ target "pytorch-common" {
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/base-cache:latest,mode=max,registry.insecure=true",
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/base-cache:latest-ref,mode=max,registry.insecure=true",
   ]
-  cache-to = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/pytorch-cache:latest${CACHE_ARCH}${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=true,ignore-error=true"]
+  # cache-to lives on the two concrete targets, not here. CI asserts
+  # that a target's cache ref and its tags agree about the arch, and
+  # this target has no tags of its own — it inherits pytorch-base's,
+  # which are arch-independent — so an arch-scoped cache ref here reads
+  # as a real disagreement. It is not one, but the check cannot know
+  # that, and the check is worth more than the one line it costs to
+  # move. PYTORCH_CACHE_TO keeps the two copies identical.
 
   # Named context, not a registry ref: bake resolves "target:x" by
   # building x first and feeding its result straight in, so pytorch is
@@ -637,6 +645,7 @@ target "pytorch-common" {
 # which `make build-report` reads.
 target "pytorch" {
   inherits = ["pytorch-common"]
+  cache-to = PYTORCH_CACHE_TO
   # Explicit: without it buildkit builds the LAST stage in the file, so
   # appending the wheel stage silently made this target publish a
   # scratch image with no shell.
@@ -683,6 +692,7 @@ target "pytorch-wheel" {
   }
 
   inherits   = ["pytorch-common"]
+  cache-to   = PYTORCH_CACHE_TO
   target     = "wheel"
   dockerfile = "docker/Dockerfile.pytorch"
 
