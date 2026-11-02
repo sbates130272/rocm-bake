@@ -403,6 +403,21 @@ async function poll(){
   } catch (e) { /* server restarting mid-regeneration; try again */ }
 }
 
+// Poll only when something is actually being written. runs.json marks
+// the newest run live when a server is watching it; a published site
+// marks every run frozen, and polling that forever would re-fetch
+// bytes that never change, on every open tab. With no runs.json at all
+// — a single run directory opened directly, or a permalink — we cannot
+// tell, so the old behaviour stands.
+//
+// Scheduled INSIDE initRuns, after the fetch resolves. Called at top
+// level it would run before RUNS was populated and always see an empty
+// list, i.e. always poll — which is the case it exists to avoid.
+function pollingWorthIt(){
+  if (!RUNS.length) return true;          // no index: assume live
+  return RUNS[0].live !== false;
+}
+
 (async function initRuns(){
   if (!(await refreshRuns())) {
     // No runs.json, or no change: either way settle on the newest.
@@ -410,7 +425,12 @@ async function poll(){
   }
   const sel = document.getElementById("run");
   if (sel) sel.addEventListener("change", () => loadRun(sel.value));
-})();
 
-setInterval(poll, REFRESH_MS);
+  if (pollingWorthIt()) {
+    setInterval(poll, REFRESH_MS);
+  } else {
+    const el = document.getElementById("live");
+    if (el) el.textContent = "published run";
+  }
+})();
 </script></body></html>

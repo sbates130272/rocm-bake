@@ -980,7 +980,15 @@ perf-runs: ## List collected performance runs, newest last
 # Under data/perf/<stamp>/ rather than data/perf.json: a run is a
 # directory of SVGs, an index.html and a report, not one file, and
 # keeping the stamp means publishing a second run never overwrites the
-# first. bench-publish can use a single file because bench.sh already
+# first.
+#
+# perfsite.py then builds the selector index at data/perf/, so that URL
+# is the same tool `make perf-serve` gives locally — the chart is
+# self-contained, so a single run already rendered on the site; what it
+# could not do was offer the OTHER runs. Each <stamp>/ keeps working as
+# a permalink. No --live: a published run is frozen, and the page reads
+# that from runs.json and stops polling rather than re-fetching static
+# bytes every 20s on every open tab. bench-publish can use a single file because bench.sh already
 # aggregates across runs; nothing aggregates these.
 #
 # The heavy inputs stay behind. samples.jsonl and the build-*.jsonl
@@ -1017,6 +1025,8 @@ perf-publish: ## Publish a perf run onto gh-pages (PERF_RUN=, PUSH=1 to push)
 	for f in $(PERF_PUBLISH_FILES); do \
 		cp $$run/$$f $(GH_PAGES_DIR)/data/perf/$$stamp/ 2>/dev/null || true; \
 	done; \
+	python3 -I .builders/perfsite.py \
+		$(GH_PAGES_DIR)/data/perf $(GH_PAGES_DIR)/data/perf; \
 	git -C $(GH_PAGES_DIR) add data; \
 	git -C $(GH_PAGES_DIR) diff --cached --quiet \
 		&& echo "no change to publish" \
