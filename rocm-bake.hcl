@@ -202,7 +202,7 @@ variable "RUN_ID" {
 }
 
 variable "AITER_REF" {
-  default = "v0.1.27"
+  default = "v0.1.28"
 }
 
 # ─── Input wiring ────────────────────────────────────────────────
