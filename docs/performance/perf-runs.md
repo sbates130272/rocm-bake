@@ -67,6 +67,22 @@ collector:
 | `artifacts.txt` | `wheelhouse.py` | what ended up published |
 | `index.html` + `data.json` | `perfreport.py` | the interactive chart, and the sidecar it polls |
 
+The two cache logs are appended to *during* the run, every
+`PERF_CACHE_INTERVAL` seconds (default 15), and then replaced by a
+single authoritative slice when the build ends. Only the live copy is
+incremental: what a finished run keeps is the same deterministic slice
+it always was. Without this a run in flight had no cache data at all,
+and because the chart drops the whole bar lane when the `hits` key is
+missing, a live page looked exactly like one built before cache bars
+existed.
+
+Appending is far cheaper than re-slicing, which is why it is not simply
+done on a timer: `zot.jsonl` reached 294.6 MB on run `20261102T195216Z`,
+and `perfreport.py` re-reads all of it on every `perf-serve` regen —
+2.94 s in `load_zot` plus 3.23 s in `load_zot_hits`. That parse, not
+the capture, is what sets the floor on how often a live page can
+refresh.
+
 `make perf-report` writes `report.md` with SVG charts beside it, plus
 `index.html` for interrogating a run: overlaid CPU and memory lines, a
 clickable legend that filters by builder *and* by target, and per-band

@@ -75,6 +75,13 @@ RUN_DIR="${PERF_DIR:-/var/tmp/rocm-perf}/${STAMP}"
 # identifiers are unrelated and correlating them is guesswork.
 export RUN_ID="${RUN_ID:-${STAMP}}"
 INTERVAL="${PERF_INTERVAL:-5}"
+# How often the two cache logs are appended to while the build runs.
+# Slower than the sampler on purpose: a sample is one line, whereas
+# perfserve re-parses the whole of zot.jsonl on every regen, and that
+# file reaches a few hundred MB. Measured on run 20261102T195216Z,
+# 294.6MB: load_zot 2.94s plus load_zot_hits 3.23s. Appending more
+# often than the page is re-rendered buys nothing.
+CACHE_INTERVAL="${PERF_CACHE_INTERVAL:-15}"
 SCCACHE_LOG="${SCCACHE_LOG_FILE:-/var/log/nginx/sccache.log}"
 
 # What this run measures.
@@ -150,13 +157,75 @@ fi
 ZOT_CURSOR=$(sudo journalctl -u zot -n0 --show-cursor -o cat 2>/dev/null \
              | sed -n 's/^-- cursor: //p')
 
+# Append whatever each log has gained since the last pass, and carry
+# the position forward. This exists so a run *in flight* has cache data
+# to draw: perfserve re-renders the run directory every PERF_REFRESH
+# seconds, and perfreport omits the `hits` key entirely when these two
+# files are absent — so until the end-of-run slice below ran, a live
+# page showed no cache bars at all and looked identical to a build
+# where the feature was missing.
+#
+# Incremental, not a repeated full slice. The end-of-run slice re-reads
+# from the original offset and cursor, which is correct but costs a
+# re-read of a file that reached 294MB on run 20261102T195216Z; doing
+# that every CACHE_INTERVAL seconds for the length of a build is not.
+#
+# The authoritative slice at the end still runs and still overwrites
+# both files, so what a finished run publishes is byte-for-byte what it
+# published before this loop existed. This only fills the gap while the
+# build is running, and anything it gets wrong is discarded.
+cache_follow() {
+    local off="${NGINX_OFFSET}" cur="${ZOT_CURSOR}" now tmp new
+    while :; do
+        sleep "${CACHE_INTERVAL}"
+
+        if sudo test -f "${SCCACHE_LOG}"; then
+            now=$(sudo stat -c %s "${SCCACHE_LOG}" 2>/dev/null || echo "${off}")
+            # Shrinking means logrotate moved it under us. Re-anchor at
+            # the new end rather than replaying a rotated file's bytes
+            # as if they were this run's; the final slice is what the
+            # published run carries either way.
+            if [ "${now}" -lt "${off}" ]; then
+                off="${now}"
+            elif [ "${now}" -gt "${off}" ]; then
+                # shellcheck disable=SC2024
+                # Same split as the end-of-run slice: sudo reads, the
+                # caller's shell writes, so RUN_DIR stays user-owned.
+                sudo tail -c "+$((off + 1))" "${SCCACHE_LOG}" 2>/dev/null \
+                    | head -c "$((now - off))" >> "${RUN_DIR}/sccache.log"
+                off="${now}"
+            fi
+        fi
+
+        if [ -n "${cur}" ]; then
+            tmp=$(mktemp)
+            # --show-cursor prints `-- cursor: X` after the records, so
+            # one call both reads the new lines and says where to
+            # resume. Without it this would need a second journalctl.
+            #
+            # shellcheck disable=SC2024
+            # Deliberate, as in the end-of-run slice: only the read
+            # needs privilege and the temp file is the caller's.
+            sudo journalctl -u zot --after-cursor "${cur}" --show-cursor \
+                -o cat 2>/dev/null > "${tmp}" || true
+            grep -a '^{' "${tmp}" >> "${RUN_DIR}/zot.jsonl" || true
+            new=$(sed -n 's/^-- cursor: //p' "${tmp}" | tail -1)
+            [ -n "${new}" ] && cur="${new}"
+            rm -f "${tmp}"
+        fi
+    done
+}
+
 log "starting sampler every ${INTERVAL}s"
 python3 -I .builders/perfsample.py \
     --out "${RUN_DIR}/samples.jsonl" --interval "${INTERVAL}" &
 SAMPLER=$!
-# Always reap the sampler: it outlives a Ctrl-C otherwise and keeps
-# appending to a run nobody is watching.
-trap 'kill "${SAMPLER}" 2>/dev/null || true' EXIT INT TERM
+log "following cache logs every ${CACHE_INTERVAL}s"
+cache_follow &
+CACHE_FOLLOWER=$!
+# Always reap both: they outlive a Ctrl-C otherwise and keep appending
+# to a run nobody is watching.
+trap 'kill "${SAMPLER}" "${CACHE_FOLLOWER}" 2>/dev/null || true' EXIT INT TERM
 
 # balance.sh truncates a target's log when it runs it, but a target in
 # a stage that never ran keeps whatever the last run left there — and
@@ -255,7 +324,17 @@ for t in ${PERF_TARGETS}; do
         --out "${RUN_DIR}/trace-${t}.json" 2>&1 | sed 's/^/  /' || true
 done
 
+# Stop the live follower before the authoritative slice, or the two
+# race: the follower appends while these redirects truncate, and the
+# published file ends up with a duplicated tail. Waited on rather than
+# just signalled, so a pass already inside its append finishes first.
+kill "${CACHE_FOLLOWER}" 2>/dev/null || true
+wait "${CACHE_FOLLOWER}" 2>/dev/null || true
+
 # Slice both logs to the window. tail -c +N is 1-indexed, hence the +1.
+# These overwrite what the follower appended, deliberately: the
+# follower's output is a best effort for a page being watched live, and
+# this is the record the run keeps.
 if sudo test -f "${SCCACHE_LOG}"; then
     # shellcheck disable=SC2024
     # The redirect is deliberately the caller's, not root's: only the
