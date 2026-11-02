@@ -432,6 +432,12 @@ run_dag() {
 # emits.
 plan_dag() {
     local t d ok node i=0 wave=0
+    # Why a target slipped a wave, carried to the wave that prints it.
+    # "wave" reads as a dependency level, so a target held back by the
+    # Dockerfile guard looks like it is waiting on the one above it —
+    # pytorch after pytorch-wheel has been read as "pytorch needs the
+    # wheel", which is backwards and not a dependency at all.
+    local -A defer=() owner=()
     score_all
     mapfile -t ranked < <(rank_nodes)
     [ "${#ranked[@]}" -gt 0 ] || { echo "balance: no usable node" >&2; return 1; }
@@ -452,15 +458,27 @@ plan_dag() {
         for target in "${batch[@]}"; do
             local f="${DF[$target]:-}"
             if [ -n "$f" ]; then
-                case " ${seen_df} " in *" $f "*) continue ;; esac
+                case " ${seen_df} " in
+                    *" $f "*)
+                        defer[$target]="${f##*/} taken by ${owner[$f]}"
+                        continue ;;
+                esac
                 seen_df="${seen_df} $f"
+                owner[$f]="$target"
             fi
             node="${ranked[$((i % ${#ranked[@]}))]}"
             i=$((i + 1))
+            # Appended, never spliced: read_placement anchors on
+            # "<target> -> <node>" followed by whitespace, so anything
+            # after the log path is ignored by it and by the contract
+            # check that feeds it this very line.
+            local why=""
+            [ -n "${defer[$target]:-}" ] \
+                && why="   deferred: ${defer[$target]}"
             # This exact spelling is also what perfreport's
             # read_placement parses for stage-format logs, and
             # check-contracts.py asserts the two still agree.
-            echo "   $target -> $node   (log: /tmp/balance-$target.log)"
+            echo "   $target -> $node   (log: /tmp/balance-$target.log)$why"
             STATE[$target]="done"
         done
     done
