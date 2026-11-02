@@ -254,7 +254,7 @@ variable "UCX_REF" {
 }
 
 variable "VLLM_REF" {
-  default = "v0.32.0"
+  default = "v0.33.0"
 }
 
 # CuPy, built from source because no published wheel fits: PyPI's
@@ -268,8 +268,8 @@ variable "LMCACHE_REF" {
   default = "v0.5.6"
 }
 
-# vLLM v0.32 builds vllm/vllm-rs during setup.py; this tracks the
-# channel in its rust-toolchain.toml.
+# vLLM builds vllm/vllm-rs during setup.py; this tracks the channel in
+# its rust-toolchain.toml, which v0.33 still pins to 1.95.
 variable "RUST_VERSION" {
   default = "1.95"
 }

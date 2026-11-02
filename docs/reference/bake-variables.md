@@ -26,7 +26,7 @@ Change a default by editing its `variable` block.
 | `AITER_REF` | `v0.1.28` |
 | `NIXL_REF` | `v1.5.2` |
 | `UCX_REF` | `v1.22.0` |
-| `VLLM_REF` | `v0.32.0` |
+| `VLLM_REF` | `v0.33.0` |
 | `CUPY_REF` | `v14.2.0` |
 | `LMCACHE_REF` | `v0.5.6` |
 | `RUST_VERSION` | `1.95` |
@@ -43,8 +43,8 @@ The four serving-stack refs are release tags, never branches. A moving
 ref would be served from the layer cache indefinitely once built, so an
 "update" would silently be a no-op.
 
-`RUST_VERSION` tracks the channel in vLLM's `rust-toolchain.toml`; v0.32
-builds `vllm/vllm-rs` during `setup.py`.
+`RUST_VERSION` tracks the channel in vLLM's `rust-toolchain.toml`, which
+v0.33 still pins to 1.95; `setup.py` builds `vllm/vllm-rs`.
 
 ## Registry
 

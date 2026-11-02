@@ -84,6 +84,11 @@ DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 # build.
 SEMVER = r"^v[0-9]+\\.[0-9]+\\.[0-9]+$"
 
+# The same shape for Python's re rather than jq's test(). The doubled
+# backslashes above survive the trip through a jq program string; here
+# they would mean "a literal backslash, then any character".
+SEMVER_RE = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
+
 # One row per thing we pin, in rocm-bake.hcl declaration order, which
 # is also roughly build order. This is the only place a component is
 # named.
@@ -95,7 +100,7 @@ SEMVER = r"^v[0-9]+\\.[0-9]+\\.[0-9]+$"
 # bumping to either independently would build a stack whose compiler
 # disagrees with the torch it compiles for. rocm-bake.hcl:80 and :250
 # say so in prose; this encodes it. Verified: pytorch v2.14.1 pins
-# triton 3.8.0 at 675c5987, and vllm v0.32.0 pins rust 1.95 - exactly
+# triton 3.8.0 at 675c5987, and vllm v0.33.0 pins rust 1.95 - exactly
 # our three defaults.
 COMPONENTS = [
     dict(name="PyTorch", var="PYTORCH_VERSION", readme=True,
@@ -173,6 +178,21 @@ COMPONENTS = [
 # Repos whose releases need the strict filter above rather than
 # /releases/latest.
 STRICT_SEMVER_REPOS = {"LMCache/LMCache", "ROCm/aiter"}
+
+# Repos that publish the real version as the release *name* while
+# tag_name still points at the last release candidate. vLLM's v0.33.0
+# release carries tag_name "v0.33.0rc3"; the plain v0.33.0 tag exists in
+# the repo and is what VLLM_REF resolves. Reading tag_name here reports
+# us permanently "behind" a tag we deliberately did not pin, and tells
+# the reader to bump to an rc.
+#
+# The strict filter above cannot do this job: it drops the whole release
+# for failing the shape test and falls back to the previous one, which
+# says we are ahead of upstream instead. So the name is used only when
+# it has the vX.Y.Z shape *and* a tag by that name really exists - a
+# name that is prose, or a release whose tag was never pushed, falls
+# back to tag_name rather than proposing a ref that cannot be cloned.
+RELEASE_NAME_REPOS = {"vllm-project/vllm"}
 
 # Rows where "behind upstream" is the intended state, with the reason.
 # Same shape and same purpose as check-defaults.py's ALLOWED: adding
@@ -306,13 +326,28 @@ def gh_latest(repo):
     UCX's -rc2 tags because those repos flag them honestly.
 
     The repos in STRICT_SEMVER_REPOS do not flag them honestly, so they
-    get the full list and a shape filter instead.
+    get the full list and a shape filter instead. The repos in
+    RELEASE_NAME_REPOS flag them honestly but tag them as the rc, so
+    they get the release name, confirmed against the tag list.
     """
     if repo in STRICT_SEMVER_REPOS:
         jq = ('[.[]|select(.prerelease==false and .draft==false)'
               '|.tag_name|select(test("%s"))][0]' % SEMVER)
         return gh_api("repos/%s/releases?per_page=100" % repo, jq)
-    return gh_api("repos/%s/releases/latest" % repo, ".tag_name")
+
+    tag, err = gh_api("repos/%s/releases/latest" % repo, ".tag_name")
+    if repo not in RELEASE_NAME_REPOS or err is not None or tag is None:
+        return tag, err
+    if SEMVER_RE.match(tag):
+        return tag, None
+
+    name, name_err = gh_api("repos/%s/releases/latest" % repo, ".name")
+    if name_err is not None or not name or not SEMVER_RE.match(name):
+        return tag, None
+    ref, ref_err = gh_api("repos/%s/git/refs/tags/%s" % (repo, name), ".ref")
+    if ref_err is not None or not ref:
+        return tag, None
+    return name, None
 
 
 def gh_file(repo, path, ref):
