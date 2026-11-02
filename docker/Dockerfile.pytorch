@@ -9,9 +9,17 @@
 # rule before.
 ARG TRITON_WHEEL_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/triton-wheel:latest
 ARG BASE_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/base:10.1.0-full-3.14
+ARG TORCH_WHEEL_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/pytorch-wheel:latest
 
 # Our ROCm 10.1 triton, installed into the shipped image below.
 FROM ${TRITON_WHEEL_IMAGE} AS tritonwheels
+
+# The torch wheel this file's own `wheel` stage produced, on a previous
+# target. `final` takes it from here rather than from `builder`, so the
+# builder stage is unreachable from `final` and buildkit does not build
+# it — which is what stops the compile step running twice. The bake
+# `pytorch` target supplies this as a context on `pytorch-wheel`.
+FROM ${TORCH_WHEEL_IMAGE} AS torchwheels
 
 FROM ${BASE_IMAGE} AS builder
 
@@ -344,12 +352,18 @@ LABEL org.opencontainers.image.description="PyTorch ${PYTORCH_VERSION} for ${PYT
 
 # Build records, kept so timing and cache-hit data survive the build
 # stage being discarded. `make build-report` reads sccache-stats.txt.
-COPY --from=builder /opt/pytorch/build.log /opt/pytorch/sccache-stats.txt /var/log/pytorch-build/
+#
+# From torchwheels, not builder: the wheel stage already publishes both
+# of these at its root, so nothing is lost by sourcing them here, and
+# referencing builder would pull the whole compile back into this
+# target. Same for the dist below — those two COPYs were the only
+# thing tying `final` to `builder`.
+COPY --from=torchwheels /build.log /sccache-stats.txt /var/log/pytorch-build/
 
 # Destination is a directory, not a glob. `COPY src/*.whl dest/*.whl`
 # treats the destination literally, so the wheel did not land where the
 # install step looked for it.
-COPY --from=builder /opt/pytorch/dist/ /opt/pytorch/dist/
+COPY --from=torchwheels /wheels/ /opt/pytorch/dist/
 
 # The torch install must be able to fail the build. Previously the
 # trailing `|| true` covered this whole chain, so when the glob did not
