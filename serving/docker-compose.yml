@@ -173,8 +173,22 @@ services:
       L1_SIZE_GB: ${L1_SIZE_GB:-8}
       CHUNK_SIZE: ${CHUNK_SIZE:-256}
       LMCACHE_LOG_LEVEL: ${LMCACHE_LOG_LEVEL:-INFO}
+    # KV_STORE overrides where L2 actually lands, the same way HF_CACHE
+    # does for model weights. The default named volume lives under
+    # /var/lib/docker on the root disk, which is the wrong device to
+    # measure a disk tier on: on snoc-thinkstation that is the same
+    # NVMe the OS and the build tree are on, so an L2 read competes
+    # with whatever else is running and the number means little.
+    #
+    # Point it at a path to use a dedicated device, e.g. the spare
+    # SN850X on snoc-thinkstation:
+    #
+    #   KV_STORE=/mnt/kv-nvme/rocm-bake-l2 make serve-stack KV_TIER=file
+    #
+    # A path is bind-mounted; a bare name is still a named volume, so
+    # the default is unchanged for anyone who sets nothing.
     volumes:
-      - kv-store:/kv-store
+      - ${KV_STORE:-kv-store}:/kv-store
     # Deliberately no `ports:`. 5555 and 9000 stay on the internal
     # network; vllm reaches them as lmcache:5555 / lmcache:9000.
     networks:

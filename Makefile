@@ -1368,7 +1368,8 @@ compose_default = $(shell sed -n 's/.*$${$(1):-\([^}]*\)}.*/\1/p' $(COMPOSE_FILE
 # "" — the same trap the bake refs hit. $(if ...) omits it instead,
 # leaving the default to apply.
 COMPOSE_VARS = $(foreach v,TRANSFER_MODE KV_TIER VLLM_DEV_MODE HSA_IPC_LEGACY \
-                           L1_SIZE_GB CHUNK_SIZE MAX_MODEL_LEN GPU_UTIL, \
+                           L1_SIZE_GB CHUNK_SIZE MAX_MODEL_LEN GPU_UTIL \
+                           KV_STORE HF_CACHE, \
                  $(if $($(v)),$(v)=$($(v))))
 
 COMPOSE        = DOCKER_HOST=ssh://$(GPU_HOST) RENDER_GID=$(GPU_RENDER_GID) \
