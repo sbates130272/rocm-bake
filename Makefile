@@ -69,6 +69,42 @@ export NO_PROXY := $(NO_PROXY_LIST)
 # would run whatever target happens to come first.
 .DEFAULT_GOAL := help
 
+# Colour for help and list-vars, empty when nothing can render it.
+# `make help | less` otherwise prints literal ESC[1m through the whole
+# page, because less needs -R to interpret them and a pipe cannot ask
+# for it. Same for `make help > file`.
+#
+# MAKE_TERMOUT is how make answers "is my stdout a terminal": set to
+# the device when it is, empty when it is not, and set before the
+# makefile is read so these can be simple := assignments. A $(shell
+# [ -t 1 ]) would not work — the shell's stdout is the pipe make reads
+# the result from, never a terminal.
+#
+# Detection is only a default, because a pipe is not always a pipe to
+# something colour-blind: `FORCE_COLOR=1 make help | less -R` is the
+# case this exists for, and no amount of looking at fd 1 can tell it
+# from `make help | grep`. NO_COLOR and FORCE_COLOR are the usual
+# spellings (non-empty wins, either way), so a shell that already
+# exports them for other tools gets this one too.
+ifeq ($(MAKE_TERMOUT),)
+USE_COLOR := $(if $(FORCE_COLOR)$(CLICOLOR_FORCE),1,)
+else
+USE_COLOR := 1
+endif
+ifdef NO_COLOR
+USE_COLOR :=
+endif
+
+ifeq ($(USE_COLOR),)
+C_BOLD :=
+C_CYAN :=
+C_OFF  :=
+else
+C_BOLD := \033[1m
+C_CYAN := \033[36m
+C_OFF  := \033[0m
+endif
+
 # Aliased so the recipe text does not contain the literal $(MAKE):
 # make executes any line referencing $(MAKE) even under -n, which made
 # `make -n watch` launch a full-screen watch instead of printing it.
@@ -193,7 +229,7 @@ BAKE_PRINT = docker buildx bake -f rocm-bake.hcl
         build-serving push-serving \
         cache-summary cache-check cache-logs builder-load \
         perf-plan perf-run perf-build perf-report perf-runs perf-serve \
-        perf-publish \
+        perf-serve-stop perf-serve-status perf-publish \
         layer-summary \
         list-vars \
         build-base build-pytorch build-runtime build-all \
@@ -550,6 +586,8 @@ watch: ## Live build history across all snoc-* builders (WATCH_BUILDERS=, WATCH_
 		$(MAKE_BIN) --no-print-directory layer-summary; \
 		echo; \
 		$(MAKE_BIN) --no-print-directory cache-summary; \
+		echo; \
+		$(MAKE_BIN) --no-print-directory perf-serve-status; \
 		echo; \
 		for b in $(WATCH_BUILDERS); do \
 			out=$$(python3 .builders/history.py $$b $(WATCH_HISTORY) 2>/dev/null); \
@@ -966,6 +1004,98 @@ perf-report: ## Render the newest perf run as markdown + SVG charts
 perf-serve: ## Serve the newest run's interactive chart (PERF_PORT=8090)
 	@.builders/perfserve.sh
 
+# Ctrl-C in the terminal that started it does the same thing; this is
+# for the usual case, where that terminal is long gone and the server
+# has been exposing 0.0.0.0 for days.
+#
+# Signal the parent only and let its EXIT trap reap the regen loop and
+# the http.server. TERM, never KILL: SIGKILL skips the trap and leaves
+# both children orphaned, still rewriting .current every cycle, which
+# is the mess perfserve's own port-claim guard exists to apologise for.
+#
+# Parentage is read for every match before anything is signalled, which
+# is why this is two loops rather than one. Killing the parent inside
+# the loop reparents the regen loop to init first, so by the time its
+# turn came its ppid no longer named a perfserve and it was reported as
+# "stopping" — an already-dead process, named as if it had been missed.
+# The grace loop is why this reports rather than escalating — anything
+# still alive after it wants looking at, not a bigger hammer.
+#
+# [p]erfserve, not perfserve: pgrep matches whole command lines, and
+# this recipe's own shell has the pattern in its argv. The literal
+# form matched that shell, so the recipe killed itself halfway through
+# and the server survived. pgrep excludes itself but not its parent.
+#
+# Anchored, too, so a match is a server and not a command line that
+# merely mentions one — `nohup .builders/perfserve.sh >log` names the
+# script and is not the script, and killing that wrapper signals
+# nothing the trap would hear. make exec's the recipe shell, so a real
+# server's argv ends at the script with no sh -c left in between.
+perf-serve-stop: ## Stop a running perf-serve (and free PERF_PORT)
+	@port=$${PERF_PORT:-8090}; \
+	pids=$$(pgrep -f '[p]erfserve\.sh$$' 2>/dev/null); \
+	if [ -z "$$pids" ]; then \
+		echo "no perfserve running"; \
+	else \
+		tops=; \
+		for p in $$pids; do \
+			ppid=$$(ps -o ppid= -p "$$p" 2>/dev/null | tr -d ' '); \
+			echo "$$pids" | grep -qx "$$ppid" && continue; \
+			tops="$$tops $$p"; \
+		done; \
+		for p in $$tops; do \
+			echo "stopping perfserve $$p"; \
+			kill "$$p" 2>/dev/null || true; \
+		done; \
+		for _ in 1 2 3 4 5 6 7 8 9 10; do \
+			pgrep -f '[p]erfserve\.sh$$' >/dev/null 2>&1 || break; \
+			sleep 0.5; \
+		done; \
+	fi; \
+	left=$$(pgrep -f '[p]erfserve\.sh$$' 2>/dev/null); \
+	if [ -n "$$left" ]; then \
+		echo "still running after SIGTERM: $$left" >&2; \
+		ps -o pid,ppid,etime,cmd -p $$(echo $$left | tr ' ' ',') >&2; \
+		exit 1; \
+	fi; \
+	if ss -ltn "sport = :$$port" 2>/dev/null | grep -q LISTEN; then \
+		echo "port $$port is still held by something else:" >&2; \
+		ss -ltnp "sport = :$$port" 2>/dev/null >&2; \
+		exit 1; \
+	fi; \
+	echo "port $$port free"
+
+# One line, for the watch panel. A perf-serve binds 0.0.0.0 by default
+# and outlives the terminal that started it, so "is one up, and where"
+# is otherwise a pgrep away at exactly the moment you are not thinking
+# about it — this one has been found three days old.
+#
+# The port comes from the http.server child's argv, not from PERF_PORT:
+# the variable says what the next server would use, and the question
+# here is what the running one *did* use. Same for the bind address,
+# which is why an exposed server reads differently from a loopback one
+# rather than both printing a URL that looks equally safe.
+perf-serve-status: ## Show whether a perf-serve is running, and where
+	@pids=$$(pgrep -f '[p]erfserve\.sh$$' 2>/dev/null); \
+	if [ -z "$$pids" ]; then \
+		printf '\033[36m══ perf-serve\033[0m  not running\n'; \
+		exit 0; \
+	fi; \
+	for p in $$pids; do \
+		srv=$$(pgrep -a -P "$$p" -f 'http\.server' 2>/dev/null | head -1); \
+		[ -n "$$srv" ] || continue; \
+		port=$$(echo "$$srv" | sed -n 's/.*http\.server \([0-9]*\).*/\1/p'); \
+		bind=$$(echo "$$srv" | sed -n 's/.*--bind \([^ ]*\).*/\1/p'); \
+		up=$$(ps -o etime= -p "$$p" 2>/dev/null | tr -d ' '); \
+		case "$$bind" in \
+			0.0.0.0|"") host=$$(hostname -I 2>/dev/null | awk '{print $$1}'); \
+				where="http://$$host:$$port/  \033[33mLAN-visible\033[0m" ;; \
+			*) where="http://$$bind:$$port/" ;; \
+		esac; \
+		printf '\033[36m══ perf-serve\033[0m  %b  pid %s  up %s\n' \
+			"$$where" "$$p" "$$up"; \
+	done
+
 perf-runs: ## List collected performance runs, newest last
 	@found=$$(ls -1d /var/tmp/rocm-perf/*/ 2>/dev/null); \
 	if [ -n "$$found" ]; then printf '  %s\n' $$found; \
@@ -980,7 +1110,15 @@ perf-runs: ## List collected performance runs, newest last
 # Under data/perf/<stamp>/ rather than data/perf.json: a run is a
 # directory of SVGs, an index.html and a report, not one file, and
 # keeping the stamp means publishing a second run never overwrites the
-# first. bench-publish can use a single file because bench.sh already
+# first.
+#
+# perfsite.py then builds the selector index at data/perf/, so that URL
+# is the same tool `make perf-serve` gives locally — the chart is
+# self-contained, so a single run already rendered on the site; what it
+# could not do was offer the OTHER runs. Each <stamp>/ keeps working as
+# a permalink. No --live: a published run is frozen, and the page reads
+# that from runs.json and stops polling rather than re-fetching static
+# bytes every 20s on every open tab. bench-publish can use a single file because bench.sh already
 # aggregates across runs; nothing aggregates these.
 #
 # The heavy inputs stay behind. samples.jsonl and the build-*.jsonl
@@ -1017,6 +1155,8 @@ perf-publish: ## Publish a perf run onto gh-pages (PERF_RUN=, PUSH=1 to push)
 	for f in $(PERF_PUBLISH_FILES); do \
 		cp $$run/$$f $(GH_PAGES_DIR)/data/perf/$$stamp/ 2>/dev/null || true; \
 	done; \
+	python3 -I .builders/perfsite.py \
+		$(GH_PAGES_DIR)/data/perf $(GH_PAGES_DIR)/data/perf; \
 	git -C $(GH_PAGES_DIR) add data; \
 	git -C $(GH_PAGES_DIR) diff --cached --quiet \
 		&& echo "no change to publish" \
@@ -1534,80 +1674,80 @@ setup: zot-check builder-setup ## Full setup: check Zot, then builders
 # target. A multiplier on build time that large should not be something
 # you only find out from a comment in here.
 help: ## Show this help
-	@printf '\n\033[1mROCm PyTorch Build\033[0m — PyTorch %s on ROCm %s for %s\n' \
+	@printf '\n$(C_BOLD)ROCm PyTorch Build$(C_OFF) — PyTorch %s on ROCm %s for %s\n' \
 		"$(PYTORCH_VERSION)" "$(ROCM_VERSION)" "$(PYTORCH_ROCM_ARCH)"
 	@printf 'Registry %s · builder %s\n' "$(REGISTRY)" "$(BUILDER)"
-	@printf 'One arch per build · \033[36mmake arches-*\033[0m covers ARCHES = %s\n' "$(ARCHES)"
+	@printf 'One arch per build · $(C_CYAN)make arches-*$(C_OFF) covers ARCHES = %s\n' "$(ARCHES)"
 	@printf 'Usage: make <target> [VAR=value]\n'
 	@awk 'BEGIN {FS = ":.*?## "; cmd = "sort"} \
-		/^##@/ { if (insec) close(cmd); printf "\n\033[1m%s\033[0m\n", substr($$0, 5); insec = 1; next } \
+		/^##@/ { if (insec) close(cmd); printf "\n$(C_BOLD)%s$(C_OFF)\n", substr($$0, 5); insec = 1; next } \
 		/^[a-zA-Z0-9_-]+:.*?## / { \
 			name = $$1; text = $$2; \
 			if (substr(text, 1, 2) == "* ") { name = name " *"; text = substr(text, 3) } \
-			line = sprintf("  \033[36m%-20s\033[0m %s", name, text); \
+			line = sprintf("  $(C_CYAN)%-20s$(C_OFF) %s", name, text); \
 			if (insec) print line | cmd; else print line } \
 		END { if (insec) close(cmd) }' \
 		$(MAKEFILE_LIST)
 	@printf '\n'
 
 list-vars: ## Show the variables these targets read, and their values
-	@printf '\n\033[1mBuild\033[0m\n'
-	@printf '  \033[36m%-24s\033[0m %s\n' PYTORCH_VERSION "$(PYTORCH_VERSION)"
-	@printf '  \033[36m%-24s\033[0m %s\n' ROCM_VERSION "$(ROCM_VERSION)"
-	@printf '  \033[36m%-24s\033[0m %s\n' PYTHON_VERSION "$(PYTHON_VERSION)"
-	@printf '  \033[36m%-24s\033[0m %s\n' TRITON_REF "$(call bake_default,TRITON_REF)  (bake)"
-	@printf '  \033[36m%-24s\033[0m %s\n' AITER_REF "$(call bake_default,AITER_REF)  (bake)"
-	@printf '  \033[36m%-24s\033[0m %s\n' NIXL_REF "$(NIXL_REF)"
-	@printf '  \033[36m%-24s\033[0m %s\n' UCX_REF "$(UCX_REF)  (built inside the nixl wheel)"
-	@printf '  \033[36m%-24s\033[0m %s\n' VLLM_REF "$(VLLM_REF)"
-	@printf '  \033[36m%-24s\033[0m %s\n' LMCACHE_REF "$(LMCACHE_REF)"
-	@printf '  \033[36m%-24s\033[0m %s\n' CUPY_REF "$(call bake_default,CUPY_REF)  (bake)"
-	@printf '  \033[36m%-24s\033[0m %s\n' PYTORCH_ROCM_ARCH "$(PYTORCH_ROCM_ARCH)"
-	@printf '  \033[36m%-24s\033[0m %s\n' ARCHES "$(ARCHES)  (what arches-* fans out over)"
-	@printf '  \033[36m%-24s\033[0m %s\n' MAX_JOBS "$(if $(MAX_JOBS),$(MAX_JOBS),(derived per node from free memory))"
-	@printf '\n\033[1mLocation\033[0m\n'
-	@printf '  \033[36m%-24s\033[0m %s\n' BUILDER "$(BUILDER)"
-	@printf '  \033[36m%-24s\033[0m %s\n' REGISTRY "$(REGISTRY)"
-	@printf '  \033[36m%-24s\033[0m %s\n' REGISTRY_NAME "$(REGISTRY_NAME)"
-	@printf '\n\033[1mCompiler Cache\033[0m\n'
-	@printf '  \033[36m%-24s\033[0m %s\n' WEBDAV_HOST "$(WEBDAV_HOST)"
-	@printf '  \033[36m%-24s\033[0m %s\n' SCCACHE_WEBDAV_ENDPOINT "$(SCCACHE_WEBDAV_ENDPOINT)"
-	@printf '  \033[36m%-24s\033[0m %s\n' WEBDAV_DIR "$(WEBDAV_DIR)"
-	@printf '\n\033[1mReproducibility\033[0m\n'
-	@printf '  \033[36m%-24s\033[0m %s\n' SDE_EPOCH \
+	@printf '\n$(C_BOLD)Build$(C_OFF)\n'
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' PYTORCH_VERSION "$(PYTORCH_VERSION)"
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' ROCM_VERSION "$(ROCM_VERSION)"
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' PYTHON_VERSION "$(PYTHON_VERSION)"
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' TRITON_REF "$(call bake_default,TRITON_REF)  (bake)"
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' AITER_REF "$(call bake_default,AITER_REF)  (bake)"
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' NIXL_REF "$(NIXL_REF)"
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' UCX_REF "$(UCX_REF)  (built inside the nixl wheel)"
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' VLLM_REF "$(VLLM_REF)"
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' LMCACHE_REF "$(LMCACHE_REF)"
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' CUPY_REF "$(call bake_default,CUPY_REF)  (bake)"
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' PYTORCH_ROCM_ARCH "$(PYTORCH_ROCM_ARCH)"
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' ARCHES "$(ARCHES)  (what arches-* fans out over)"
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' MAX_JOBS "$(if $(MAX_JOBS),$(MAX_JOBS),(derived per node from free memory))"
+	@printf '\n$(C_BOLD)Location$(C_OFF)\n'
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' BUILDER "$(BUILDER)"
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' REGISTRY "$(REGISTRY)"
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' REGISTRY_NAME "$(REGISTRY_NAME)"
+	@printf '\n$(C_BOLD)Compiler Cache$(C_OFF)\n'
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' WEBDAV_HOST "$(WEBDAV_HOST)"
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' SCCACHE_WEBDAV_ENDPOINT "$(SCCACHE_WEBDAV_ENDPOINT)"
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' WEBDAV_DIR "$(WEBDAV_DIR)"
+	@printf '\n$(C_BOLD)Reproducibility$(C_OFF)\n'
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' SDE_EPOCH \
 		"$(call bake_default,SDE_EPOCH)  ($(shell date -u -d @$(call bake_default,SDE_EPOCH) '+%Y-%m-%d %H:%M' 2>/dev/null))  (bake)"
 	@printf '  %s\n' 'pinned into every image config; SDE_<IMAGE> overrides one'
 	@for v in $(foreach i,BASE PYTORCH TRITON AITER RUNTIME NIXL VLLM LMCACHE CUPY,$(if $(SDE_$(i)),SDE_$(i)=$(SDE_$(i)))); do \
-		printf '  \033[36m%-24s\033[0m %s\n' "$${v%%=*}" "$${v#*=}  (overridden)"; \
+		printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' "$${v%%=*}" "$${v#*=}  (overridden)"; \
 	done
-	@printf '\n\033[1mServing\033[0m  (make serve-vllm / serve-stack / serve-test)\n'
-	@printf '  \033[36m%-24s\033[0m %s\n' GPU_HOST "$(GPU_HOST)"
-	@printf '  \033[36m%-24s\033[0m %s\n' SERVE_MODEL "$(SERVE_MODEL)"
-	@printf '  \033[36m%-24s\033[0m %s\n' SERVE_ARCH "$(SERVE_ARCH)  (probed from GPU_HOST, not the build arch)"
-	@printf '  \033[36m%-24s\033[0m %s\n' VLLM_TAG "$(VLLM_TAG)"
-	@printf '  \033[36m%-24s\033[0m %s\n' LMCACHE_TAG "$(LMCACHE_TAG)"
-	@printf '  \033[36m%-24s\033[0m %s\n' VLLM_BIND "$(VLLM_BIND)  (0.0.0.0 to drive it from another host)"
-	@printf '  \033[36m%-24s\033[0m %s\n' KV_TIER \
+	@printf '\n$(C_BOLD)Serving$(C_OFF)  (make serve-vllm / serve-stack / serve-test)\n'
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' GPU_HOST "$(GPU_HOST)"
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' SERVE_MODEL "$(SERVE_MODEL)"
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' SERVE_ARCH "$(SERVE_ARCH)  (probed from GPU_HOST, not the build arch)"
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' VLLM_TAG "$(VLLM_TAG)"
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' LMCACHE_TAG "$(LMCACHE_TAG)"
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' VLLM_BIND "$(VLLM_BIND)  (0.0.0.0 to drive it from another host)"
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' KV_TIER \
 		"$(or $(KV_TIER),$(call compose_default,KV_TIER))  (cpu = L1 only, file = L1 + L2 on disk)  (compose)"
-	@printf '  \033[36m%-24s\033[0m %s\n' TRANSFER_MODE \
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' TRANSFER_MODE \
 		"$(or $(TRANSFER_MODE),$(call compose_default,TRANSFER_MODE))  (auto|engine_driven|lmcache_driven)  (compose)"
-	@printf '  \033[36m%-24s\033[0m %s\n' HSA_IPC_LEGACY \
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' HSA_IPC_LEGACY \
 		"$(or $(HSA_IPC_LEGACY),$(call compose_default,HSA_IPC_LEGACY))  (1 required for cross-container HIP IPC)  (compose)"
-	@printf '  \033[36m%-24s\033[0m %s\n' VLLM_DEV_MODE \
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' VLLM_DEV_MODE \
 		"$(or $(VLLM_DEV_MODE),$(call compose_default,VLLM_DEV_MODE))  (1 exposes /reset_prefix_cache for serve-test)  (compose)"
-	@printf '  \033[36m%-24s\033[0m %s\n' L1_SIZE_GB \
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' L1_SIZE_GB \
 		"$(or $(L1_SIZE_GB),$(call compose_default,L1_SIZE_GB))  (LMCache host-RAM tier)  (compose)"
-	@printf '  \033[36m%-24s\033[0m %s\n' CHUNK_SIZE \
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' CHUNK_SIZE \
 		"$(or $(CHUNK_SIZE),$(call compose_default,CHUNK_SIZE))  (tokens per cached chunk)  (compose)"
-	@printf '\n\033[1mToggles\033[0m\n'
-	@printf '  \033[36m%-24s\033[0m %s\n' TELEMETRY "$(TELEMETRY)  (0 skips metrics collection)"
-	@printf '  \033[36m%-24s\033[0m %s\n' FORCE_RECACHE "$(if $(FORCE_RECACHE),$(FORCE_RECACHE),false)  (true = recompile everything, ignoring sccache)"
-	@printf '  \033[36m%-24s\033[0m %s\n' BAKE_EXTRA "$(if $(BAKE_EXTRA),$(BAKE_EXTRA),(none))"
-	@printf '  \033[36m%-24s\033[0m %s\n' PREBUILD_KERNELS "$(if $(PREBUILD_KERNELS),$(PREBUILD_KERNELS),(from arch: 0 on RDNA, 2 on CDNA))  (bake)"
-	@printf '  \033[36m%-24s\033[0m %s\n' PUBLISHED_INPUTS "$(if $(PUBLISHED_INPUTS),$(PUBLISHED_INPUTS),(unset: targets feed each other directly))  (bake)"
-	@printf '  \033[36m%-24s\033[0m %s\n' RUN_ID "$(if $(RUN_ID),$(RUN_ID),$(call bake_default,RUN_ID))  (bake; stamped into build records)"
-	@printf '  \033[36m%-24s\033[0m %s\n' CACHE_TAG_SUFFIX "$(if $(CACHE_TAG_SUFFIX),$(CACHE_TAG_SUFFIX),(empty: write the rolling tag; -ref refreshes the baseline))  (bake)"
-	@printf '  \033[36m%-24s\033[0m %s\n' SCCACHE_LOG "$(if $(SCCACHE_LOG),$(SCCACHE_LOG),warn)  (debug reveals the Cache errors count; env only, see below)"
+	@printf '\n$(C_BOLD)Toggles$(C_OFF)\n'
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' TELEMETRY "$(TELEMETRY)  (0 skips metrics collection)"
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' FORCE_RECACHE "$(if $(FORCE_RECACHE),$(FORCE_RECACHE),false)  (true = recompile everything, ignoring sccache)"
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' BAKE_EXTRA "$(if $(BAKE_EXTRA),$(BAKE_EXTRA),(none))"
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' PREBUILD_KERNELS "$(if $(PREBUILD_KERNELS),$(PREBUILD_KERNELS),(from arch: 0 on RDNA, 2 on CDNA))  (bake)"
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' PUBLISHED_INPUTS "$(if $(PUBLISHED_INPUTS),$(PUBLISHED_INPUTS),(unset: targets feed each other directly))  (bake)"
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' RUN_ID "$(if $(RUN_ID),$(RUN_ID),$(call bake_default,RUN_ID))  (bake; stamped into build records)"
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' CACHE_TAG_SUFFIX "$(if $(CACHE_TAG_SUFFIX),$(CACHE_TAG_SUFFIX),(empty: write the rolling tag; -ref refreshes the baseline))  (bake)"
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' SCCACHE_LOG "$(if $(SCCACHE_LOG),$(SCCACHE_LOG),warn)  (debug reveals the Cache errors count; env only, see below)"
 	@printf '\nOverride any of these on the command line: make <target> VAR=value\n'
 	@printf 'SCCACHE_LOG is read by bake from the environment, so it needs\n'
 	@printf 'SCCACHE_LOG=debug make <target> rather than make <target> SCCACHE_LOG=debug.\n\n'

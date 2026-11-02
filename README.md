@@ -16,7 +16,7 @@ artifact published to a local OCI registry.
 | ROCm | [rocm/dev-ubuntu-26.04](https://hub.docker.com/r/rocm/dev-ubuntu-26.04) | `ROCM_VERSION` | `10.1.0-full` |
 | Python | [python.org](https://www.python.org/) | `PYTHON_VERSION` | `3.14` |
 | Triton | [triton-lang/triton](https://github.com/triton-lang/triton) | `TRITON_VERSION` | `3.9.0` |
-| AITER | [ROCm/aiter](https://github.com/ROCm/aiter) | `AITER_REF` | `v0.1.27` |
+| AITER | [ROCm/aiter](https://github.com/ROCm/aiter) | `AITER_REF` | `v0.1.28` |
 | NIXL | [ai-dynamo/nixl](https://github.com/ai-dynamo/nixl) | `NIXL_REF` | `v1.5.2` |
 | UCX | [openucx/ucx](https://github.com/openucx/ucx) | `UCX_REF` | `v1.22.0` |
 | vLLM | [vllm-project/vllm](https://github.com/vllm-project/vllm) | `VLLM_REF` | `v0.32.0` |

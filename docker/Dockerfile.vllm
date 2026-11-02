@@ -148,10 +148,30 @@ ARG RUST_VERSION=1.95
 LABEL org.opencontainers.image.source="https://github.com/vllm-project/vllm"
 LABEL org.opencontainers.image.description="vLLM ${VLLM_REF} for ROCm ${ROCM_VERSION}, ${PYTORCH_ROCM_ARCH}"
 
+# SCCACHE_IDLE_TIMEOUT=0 — never, rather than sccache's default 600s.
+#
+# This build is one long pole: 50 ninja edges, 48 of which finish in
+# 139s, and then csrc/rocm/attention.hip.o alone runs for 1115s of a
+# 1324s build. While that single compile holds the critical path no new
+# requests reach the local sccache server, it passes its idle timeout
+# and exits, and the next client finds it gone:
+#
+#   sccache: warning: The server looks like it shut down unexpectedly,
+#   compiling locally instead
+#
+# Measured on the gfx1201 cold run 20261102T161307Z, where the final
+# `--show-stats` then reported zeroes across the board — not because
+# nothing was cached, but because it had spawned a fresh server to ask.
+# Not memory: the node held 106GB+ free throughout.
+#
+# Only this build is long-poled enough to hit it. PyTorch's 2772
+# objects keep their server busy continuously, which is why the same
+# default has never caused trouble there.
 ENV SCCACHE_WEBDAV_ENDPOINT=${SCCACHE_WEBDAV_ENDPOINT} \
     SCCACHE_SERVER_UDS=/tmp/sccache.sock \
     SCCACHE_WEBDAV_KEY_PREFIX=${SCCACHE_WEBDAV_KEY_PREFIX} \
     SCCACHE_IGNORE_CLIENT_VERSION=1 \
+    SCCACHE_IDLE_TIMEOUT=0 \
     SCCACHE_CONF=/etc/sccache.toml \
     CMAKE_C_COMPILER_LAUNCHER=sccache \
     CMAKE_CXX_COMPILER_LAUNCHER=sccache \

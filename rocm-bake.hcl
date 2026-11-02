@@ -202,7 +202,7 @@ variable "RUN_ID" {
 }
 
 variable "AITER_REF" {
-  default = "v0.1.27"
+  default = "v0.1.28"
 }
 
 # ─── Input wiring ────────────────────────────────────────────────
@@ -228,6 +228,9 @@ variable "PUBLISHED_INPUTS" {
 # change to the other.
 PUB_BASE    = "${REGISTRY}/${REGISTRY_NAME}/base:${ROCM_VERSION}-${PYTHON_VERSION}"
 PUB_PYTORCH = "${REGISTRY}/${REGISTRY_NAME}/pytorch:${PYTORCH_VERSION}-${ROCM_VERSION}-${ARCH_TAG}"
+PYTORCH_CACHE_TO = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/pytorch-cache:latest${CACHE_ARCH}${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=true,ignore-error=true"]
+
+PUB_PYTORCH_WHEEL = "${REGISTRY}/${REGISTRY_NAME}/pytorch-wheel:${PYTORCH_VERSION}-${ROCM_VERSION}-${ARCH_TAG}"
 PUB_TRITON  = "${REGISTRY}/${REGISTRY_NAME}/triton-wheel:${TRITON_VERSION}-${ROCM_VERSION}"
 PUB_AITER   = "${REGISTRY}/${REGISTRY_NAME}/aiter-wheel:${PYTORCH_VERSION}-${ROCM_VERSION}-${ARCH_TAG}"
 PUB_NIXL    = "${REGISTRY}/${REGISTRY_NAME}/nixl-wheel:${NIXL_REF}-${ROCM_VERSION}-${ARCH_TAG}"
@@ -541,23 +544,21 @@ target "pytorch-base" {
 }
 
 # ─── Full PyTorch build ──────────────────────────────────────────
-target "pytorch" {
+# Everything `pytorch` and `pytorch-wheel` share, and nothing either
+# one owns. Abstract: it is in no group, so naming a group never builds
+# it, and `target` is deliberately unset — each concrete target picks
+# its own stage.
+#
+# This exists because `pytorch` needs a context on `pytorch-wheel` (see
+# there) and `pytorch-wheel` used to `inherits = ["pytorch"]`. bake
+# MERGES inherited contexts rather than letting a child replace them,
+# so the wheel inherited a context pointing at itself and bake refused
+# the whole file with "target pytorch-wheel cannot link to itself".
+# Overriding `contexts` in the child does not help; only taking the
+# inheritance edge off does. Hence a sibling, not a parent.
+target "pytorch-common" {
   inherits = ["pytorch-base"]
   dockerfile = "docker/Dockerfile.pytorch"
-  # Explicit: without it buildkit builds the LAST stage in the file, so
-  # appending the wheel stage silently made this target publish a
-  # scratch image with no shell.
-  target     = "final"
-  tags = compact([
-    "${REGISTRY}/${REGISTRY_NAME}/pytorch:${PYTORCH_VERSION}-${ROCM_VERSION}-${ARCH_TAG}",
-    "${REGISTRY}/${REGISTRY_NAME}/pytorch:latest",
-    VCS_REF != "" ? "${REGISTRY}/${REGISTRY_NAME}/pytorch:${PYTORCH_VERSION}-${ROCM_VERSION}-${ARCH_TAG}-g${VCS_REF}" : "",
-  ])
-  labels = merge(OCI_LABELS, {
-    "org.opencontainers.image.title"       = "rocm-pytorch"
-    "org.opencontainers.image.description" = "PyTorch ${PYTORCH_VERSION} for ROCm ${ROCM_VERSION}, ${PYTORCH_ROCM_ARCH}"
-    "org.opencontainers.image.version"     = "${PYTORCH_VERSION}-${ROCM_VERSION}-${ARCH_TAG}"
-  })
   platforms  = ["linux/amd64"]
 
   # Inherit base cache + pytorch-specific cache
@@ -571,7 +572,13 @@ target "pytorch" {
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/base-cache:latest,mode=max,registry.insecure=true",
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/base-cache:latest-ref,mode=max,registry.insecure=true",
   ]
-  cache-to = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/pytorch-cache:latest${CACHE_ARCH}${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=true,ignore-error=true"]
+  # cache-to lives on the two concrete targets, not here. CI asserts
+  # that a target's cache ref and its tags agree about the arch, and
+  # this target has no tags of its own — it inherits pytorch-base's,
+  # which are arch-independent — so an arch-scoped cache ref here reads
+  # as a real disagreement. It is not one, but the check cannot know
+  # that, and the check is worth more than the one line it costs to
+  # move. PYTORCH_CACHE_TO keeps the two copies identical.
 
   # Named context, not a registry ref: bake resolves "target:x" by
   # building x first and feeding its result straight in, so pytorch is
@@ -621,6 +628,49 @@ target "pytorch" {
   output = ["type=image,compression=zstd"]
 }
 
+# The runnable image. It takes the torch wheel from `pytorch-wheel`
+# rather than compiling its own, which is the whole point of the split
+# above.
+#
+# Both stages used to COPY from `builder`, so `final` dragged the
+# builder stage in and ran the compile step a second time. Serialising
+# them (49a406b) stopped that being a true double-compile — sccache
+# served the second — but the step still ran: measured on the gfx1201
+# cold run 20261102T161307Z, 1035s for the wheel then 424s for this.
+# Taking the wheel as a context removes the stage from this target
+# altogether, so there is nothing left to re-run.
+#
+# Safe because the wheel image already carries everything `final` took
+# from builder: /wheels (the dist) plus build.log and sccache-stats.txt,
+# which `make build-report` reads.
+target "pytorch" {
+  inherits = ["pytorch-common"]
+  cache-to = PYTORCH_CACHE_TO
+  # Explicit: without it buildkit builds the LAST stage in the file, so
+  # appending the wheel stage silently made this target publish a
+  # scratch image with no shell.
+  target   = "final"
+
+  contexts = USE_PUB ? {} : {
+    torch-wheels = "target:pytorch-wheel"
+  }
+
+  args = {
+    TORCH_WHEEL_IMAGE = USE_PUB ? PUB_PYTORCH_WHEEL : "torch-wheels"
+  }
+
+  tags = compact([
+    "${REGISTRY}/${REGISTRY_NAME}/pytorch:${PYTORCH_VERSION}-${ROCM_VERSION}-${ARCH_TAG}",
+    "${REGISTRY}/${REGISTRY_NAME}/pytorch:latest",
+    VCS_REF != "" ? "${REGISTRY}/${REGISTRY_NAME}/pytorch:${PYTORCH_VERSION}-${ROCM_VERSION}-${ARCH_TAG}-g${VCS_REF}" : "",
+  ])
+  labels = merge(OCI_LABELS, {
+    "org.opencontainers.image.title"       = "rocm-pytorch"
+    "org.opencontainers.image.description" = "PyTorch ${PYTORCH_VERSION} for ROCm ${ROCM_VERSION}, ${PYTORCH_ROCM_ARCH}"
+    "org.opencontainers.image.version"     = "${PYTORCH_VERSION}-${ROCM_VERSION}-${ARCH_TAG}"
+  })
+}
+
 # ─── PyTorch wheel artifact ──────────────────────────────────────
 # Same idea as the aiter target: the wheel as its own image so it can
 # live in Zot and be pulled without rebuilding PyTorch.
@@ -641,7 +691,8 @@ target "pytorch-wheel" {
     BUILDKIT_BUILD_NAME = "rocm-pytorch-build/pytorch-wheel/${PYTORCH_ROCM_ARCH}/${RUN_ID}"
   }
 
-  inherits   = ["pytorch"]
+  inherits   = ["pytorch-common"]
+  cache-to   = PYTORCH_CACHE_TO
   target     = "wheel"
   dockerfile = "docker/Dockerfile.pytorch"
 

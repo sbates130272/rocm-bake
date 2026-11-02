@@ -82,6 +82,13 @@ legend *is* the filter: a reload would discard whichever builders and
 targets the viewer had narrowed to, which is exactly the state someone
 mid-question is in.
 
+`make perf-publish PUSH=1` puts that same page on the web, at
+**[data/perf/](https://sbates130272.github.io/rocm-bake/data/perf/)** —
+the newest run, with a selector for every run published before it. The
+polling stops there: `runs.json` marks a published run frozen, so the
+page says "published run" instead of re-fetching a `data.json` that
+will never change again.
+
 ## `build` and `total` are different numbers
 
 The per-target table carries both. `build` is the span of the target's

@@ -23,7 +23,7 @@ Change a default by editing its `variable` block.
 | `PYTHON_VERSION` | `3.14` |
 | `TRITON_VERSION` | `3.9.0` |
 | `TRITON_REF` | `aad2a60d958f945420c5c40936b37d411fb02e89` |
-| `AITER_REF` | `v0.1.27` |
+| `AITER_REF` | `v0.1.28` |
 | `NIXL_REF` | `v1.5.2` |
 | `UCX_REF` | `v1.22.0` |
 | `VLLM_REF` | `v0.32.0` |
