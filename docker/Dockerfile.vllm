@@ -167,6 +167,26 @@ LABEL org.opencontainers.image.description="vLLM ${VLLM_REF} for ROCm ${ROCM_VER
 # Only this build is long-poled enough to hit it. PyTorch's 2772
 # objects keep their server busy continuously, which is why the same
 # default has never caused trouble there.
+#
+# RUSTC_WRAPPER is a separate lever from the CMAKE_*_COMPILER_LAUNCHER
+# above: v0.32 builds vllm/vllm-rs during setup.py, and sccache saw
+# zero rustc calls without it — its stats carried no Rust lines at all.
+# Worth about 50s of a rebuild (the cargo release profile reported
+# 51.64s on run 20261102T183000Z, against 26s for the whole HIP phase
+# once that was cached), so a tenth of what the idle-timeout fix
+# returned, not a second one of it.
+#
+# CARGO_INCREMENTAL=0 because sccache declines to cache incremental
+# compilation. The release profile already disables it, so this states
+# the requirement rather than changing behaviour — and keeps a profile
+# change upstream from silently turning the caching back off.
+#
+# CC/CXX are deliberately NOT wrapped. Crates with a build.rs compile
+# their C through cc-rs, which reads CC, so those stay uncached — but
+# CMake reads CC too, and setting it to "sccache cc" here would stack a
+# launcher on top of the CMAKE_*_COMPILER_LAUNCHER already set above.
+# The HIP path is the expensive one and it is covered; this is not
+# worth risking it for.
 ENV SCCACHE_WEBDAV_ENDPOINT=${SCCACHE_WEBDAV_ENDPOINT} \
     SCCACHE_SERVER_UDS=/tmp/sccache.sock \
     SCCACHE_WEBDAV_KEY_PREFIX=${SCCACHE_WEBDAV_KEY_PREFIX} \
@@ -176,6 +196,8 @@ ENV SCCACHE_WEBDAV_ENDPOINT=${SCCACHE_WEBDAV_ENDPOINT} \
     CMAKE_C_COMPILER_LAUNCHER=sccache \
     CMAKE_CXX_COMPILER_LAUNCHER=sccache \
     CMAKE_HIP_COMPILER_LAUNCHER=sccache \
+    RUSTC_WRAPPER=/usr/local/bin/sccache \
+    CARGO_INCREMENTAL=0 \
     CARGO_HOME=/opt/cargo \
     RUSTUP_HOME=/opt/rustup \
     PATH=/opt/cargo/bin:${PATH}
