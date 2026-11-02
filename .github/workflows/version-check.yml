@@ -65,6 +65,22 @@ jobs:
         # pin that stays behind for a month is one conversation, not
         # four duplicates.
         run: |
+          # `gh issue create --label X` fails outright when X does not
+          # exist, and neither label did — so the first time any pin
+          # went behind, this step died instead of filing the issue it
+          # exists to file. That is the worst possible moment for it:
+          # the job is green every week it has nothing to say, and red
+          # exactly when it has something.
+          #
+          # Observed on the 2026-11-02 scheduled run, which failed here
+          # with VLLM_REF behind v0.33.0. Creating them lazily, inside
+          # the `behind != 0` branch, keeps a repo that never falls
+          # behind free of labels it never uses. --force makes it a
+          # no-op once they exist.
+          gh label create version-update --force \
+            --color 0e8a16 --description "A pinned dependency is behind upstream"
+          gh label create automated --force \
+            --color ededed --description "Filed by a workflow, not a human"
           body=$(printf '%s\n\n%s\n\n%s\n' \
             "The weekly check found pin(s) behind upstream." \
             "$(cat /tmp/versions.md)" \
