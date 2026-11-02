@@ -43,6 +43,15 @@ SERIES = {
     "snoc-think":  ("#eb6834", "#d95926"),
     "snoc-gaming": ("#1baf7a", "#199e70"),
 }
+# Deliberately NOT from SERIES. Colour identifies a builder everywhere
+# else on this chart, and SERIES holds exactly three entries — one per
+# node — so every pick from it is some builder's colour. Taking "the
+# far end of the palette" handed sccache snoc-gaming's green and the
+# layer bar snoc-think's orange, which is precisely the misreading the
+# bars must not invite. Violet and magenta are in neither direction.
+CACHE_SERIES = (("#7a5af0", "#8f73f5"),
+                ("#c2258f", "#d4409f"))
+
 INK = ("#0b0b0b", "#f0efec")
 INK2 = ("#52514e", "#c3c2b7")
 GRID = ("#e4e3df", "#2e2e2c")
@@ -193,6 +202,60 @@ def load_zot(run_dir):
             pass
         if ts:
             out.append({"ts": ts, "bytes": size, "path": path})
+    return sorted(out, key=lambda r: r["ts"])
+
+
+# The read side of both caches. The write loaders above answer "what
+# did this run add to the store"; these answer "what did it get back",
+# which is the question a run that looks slow actually raises — and the
+# one that cost a day to answer from logs when sccache's server was
+# dying mid-build and every compile silently ran locally.
+def load_sccache_hits(run_dir):
+    """Compiler-cache hits: one row per GET that found something.
+
+    200 is a hit and 404 is a miss; sccache asks for an object it has
+    not got and takes the 404 as the signal to compile. Counting every
+    GET would therefore count the misses as hits.
+    """
+    out = []
+    path = run_dir / "sccache.log"
+    if not path.exists():
+        return out
+    for line in path.read_text(errors="replace").splitlines():
+        m = SCCACHE_RE.match(line.strip())
+        if not m or m.group("method") != "GET":
+            continue
+        if m.group("status") != "200":
+            continue
+        ts = parse_ts(m.group("ts"))
+        if ts:
+            out.append({"ts": ts})
+    return sorted(out, key=lambda r: r["ts"])
+
+
+def load_zot_hits(run_dir):
+    """Layer-cache reads: blob GETs served by the registry.
+
+    Blobs only, not manifests. A manifest GET is the resolution step
+    that precedes a pull and happens whether or not any layer is
+    reused, so counting them put the line about 3x high and made it
+    rise before any layer had moved.
+
+    This stands in for BuildKit's own cache-hit flags because those
+    carry no timestamp: BuildKit emits a span only for a vertex that
+    ran, so `cached_steps` can say how many layers were reused but
+    never when. See the fallback band in interactive() below, which
+    exists for the same reason.
+    """
+    out = []
+    for row in load_jsonl(run_dir / "zot.jsonl"):
+        if row.get("method") != "GET":
+            continue
+        if "/blobs/" not in (row.get("path") or ""):
+            continue
+        ts = parse_ts(row.get("time") or row.get("ts") or "")
+        if ts:
+            out.append({"ts": ts})
     return sorted(out, key=lambda r: r["ts"])
 
 
@@ -657,6 +720,32 @@ def cumulative(events, t0):
     return out
 
 
+def bucket_counts(elapsed, xmax, n=240):
+    """(per_bucket_counts, running_totals) over n even slices of the run.
+
+    Bucketed rather than shipped per event: a single run logged 17003
+    blob GETs, and data.json is re-fetched by every open page on a
+    poll. 240 buckets is about 4s of a 15-minute run — finer than the
+    bar can draw at 900px wide — and costs two short int arrays.
+
+    Events outside [0, xmax] are clamped in rather than dropped. A GET
+    can land a moment after the last sample that set xmax, and dropping
+    it would make the bar's total disagree with the count in the
+    legend, which is the one number someone might check against a log.
+    """
+    if n < 1 or xmax <= 0:
+        return [], []
+    per = [0] * n
+    for el in elapsed:
+        i = int(n * el / xmax)
+        per[min(n - 1, max(0, i))] += 1
+    run, cum = 0, []
+    for c in per:
+        run += c
+        cum.append(run)
+    return per, cum
+
+
 # ── interactive ───────────────────────────────────────────────────
 # The SVGs stay: they embed in markdown and need no runtime. This is
 # the companion for interrogating a run. A static chart answers "what
@@ -669,7 +758,8 @@ TEMPLATE = Path(__file__).with_name("perfreport.html.tmpl")
 
 def interactive_chart(path, title, sub, metrics, targets,
                       unit="%", y_max=None,
-                      x_label="Wall Clock Time (s)", y_label="CPU Load"):
+                      x_label="Wall Clock Time (s)", y_label="CPU Load",
+                      hits=None):
     """Standalone interactive HTML: overlaid lines, two filter groups.
 
     Two dimensions, because they answer different questions. The lines
@@ -763,6 +853,32 @@ def interactive_chart(path, title, sub, metrics, targets,
     data = {"series": rows, "targets": tgts, "xmax": xmax or 1,
             "metrics": list(metrics), "builders": builders,
             "ymax": y_max or max(10.0, peak_all * 1.1), "unit": unit}
+
+    # Cache reads, as density bars under the plot rather than lines on
+    # it. These are counts and the axis is percentages; the note above
+    # about a second y-scale applies, and a bar needs no scale at all.
+    # Colours come from the far end of the palette so a bar never wears
+    # a builder's colour and invite being read as one.
+    hit_rows = []
+    for hi, (name, elapsed) in enumerate(hits or []):
+        if not elapsed:
+            continue
+        per, cum = bucket_counts(elapsed, xmax or 1)
+        if not per:
+            continue
+        hit_rows.append({
+            "id": f"h{hi}", "name": name,
+            "color": CACHE_SERIES[hi % len(CACHE_SERIES)][0],
+            "buckets": per, "cum": cum, "total": cum[-1],
+            # Seconds per bucket, so the tooltip can say what slice a
+            # rect covers rather than making the reader derive it.
+            "width": (xmax or 1) / len(per),
+            "peak": max(per)})
+    # Absent, not empty, when there is nothing to show: an older run
+    # has no such logs and the page must still draw. The template
+    # guards with (DATA.hits||[]) for the same reason.
+    if hit_rows:
+        data["hits"] = hit_rows
     # Also as a sidecar, so a live page can poll the data alone and
     # redraw in place. A full reload would work too, and would also
     # throw away whichever builders and targets the viewer had
@@ -1092,7 +1208,15 @@ def main():
                          f"{len(by_target)} targets · "
                          f"{fmt_dur(result.get('seconds'))}",
                          {"cpu": cpu, "memory": mem_pct},
-                         by_target, unit="%", y_max=100):
+                         by_target, unit="%", y_max=100,
+                         hits=[
+                             ("sccache",
+                              [(e["ts"] - t0).total_seconds()
+                               for e in load_sccache_hits(run)]),
+                             ("layer cache",
+                              [(e["ts"] - t0).total_seconds()
+                               for e in load_zot_hits(run)]),
+                         ]):
         charts.append(("index.html", "Interactive chart"))
 
     writes = {}

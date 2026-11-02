@@ -53,6 +53,11 @@
   .legend button:hover { background:color-mix(in srgb, var(--ink) 7%, transparent); }
   .legend button[aria-pressed="false"] { opacity:.42; }
   .legend .sw { width:11px; height:11px; border-radius:3px; flex:0 0 auto; }
+  /* Same row shape as a legend button, minus the affordances: no
+     hover, no pointer, no press state. It reads a number; it does not
+     filter anything, and looking clickable would promise otherwise. */
+  .legend-ro { display:flex; align-items:center; gap:9px; width:100%;
+    padding:7px 6px; color:var(--ink); }
   .legend .val { margin-left:auto; color:var(--ink2); font-size:12px;
     font-variant-numeric:tabular-nums; }
   .hint { color:var(--ink2); font-size:11px; margin-top:10px; }
@@ -100,7 +105,12 @@
 <script>
 const DATA = __DATA__;
 const W=900,PL=120,PR=18,PT=14,PB=66;
-const SH=Math.max(34,(DATA.targets||[]).length*13+8);
+// The shelf under the plot carries the cache bars first, then one row
+// per target. HB is its own constant because the bars are drawn from a
+// different array and must not move when a target is filtered out.
+const HITS=DATA.hits||[];
+const HB=HITS.length?HITS.length*13+6:0;
+const SH=Math.max(34,(DATA.targets||[]).length*13+8)+HB;
 const H=320+SH;
 const pw=W-PL-PR, ph=H-PT-PB-SH;
 const hidden=new Set();
@@ -137,11 +147,42 @@ function draw(){
   // vllm-wheel"; the phases inside it say what vllm-wheel was doing.
   // Grouping by builder instead hid which target a band belonged to
   // whenever a node ran more than one across the run.
+  // Cache reads, as a density strip per source: one rect per bucket,
+  // opacity by that bucket's share of the busiest one. Counts, not
+  // percentages, so they get no y-scale — the shape says when the
+  // cache was being read and the legend carries the number.
+  //
+  // Drawn before the target rows and never filtered: a hit belongs to
+  // the run, not to a builder, and dropping it when a builder is
+  // toggled off would imply an attribution the log does not carry.
+  HITS.forEach((h,hi)=>{
+    const y0=PT+ph+6+hi*13;
+    const bw=pw/h.buckets.length;
+    for(let i=0;i<h.buckets.length;i++){
+      const c=h.buckets[i];
+      if(!c) continue;
+      const o=0.18+0.82*(c/(h.peak||1));
+      g+=`<rect x="${(PL+i*bw).toFixed(1)}" y="${y0}" `
+        +`width="${Math.max(0.6,bw).toFixed(2)}" height="11" `
+        +`fill="${h.color}" opacity="${o.toFixed(2)}"/>`;
+    }
+    // One transparent strip over the whole row as the hover target,
+    // rather than listening on each bucket. A bucket is about 3px
+    // wide and an empty one draws no rect at all, so per-rect hovering
+    // would be fiddly and would go dead over exactly the quiet
+    // stretches someone is asking about. The strip reports whichever
+    // bucket the pointer is above, including the empty ones.
+    g+=`<rect class="hitrow" x="${PL}" y="${y0}" width="${pw}" `
+      +`height="11" fill="transparent" data-h="${h.id}"/>`;
+    g+=`<text class="axis" x="${PL-6}" y="${y0+9}" `
+      +`text-anchor="end">${h.name}</text>`;
+  });
+
   let row=0;
   for(const t of DATA.targets){
     if(hiddenT.has(t.name)) continue;
     if(hidden.has(t.builder)) continue;
-    const y0=PT+ph+6+row*13;
+    const y0=PT+ph+6+HB+row*13;
     for(const b of t.bands){
       const x0=X(b.start);
       const bw=Math.max(2,X(b.start+b.dur)-x0);
@@ -196,6 +237,16 @@ function draw(){
       }
       el.textContent=best?best[1].toFixed(1)+DATA.unit:"";
     }
+    // Cumulative hits up to the cursor, so scrubbing right counts up.
+    // Index from the same bucket width the bars were drawn with, or
+    // the number would disagree with the strip directly above it.
+    for(const h of HITS){
+      const el=document.getElementById("v-"+h.id);
+      if(!el) continue;
+      const i=Math.max(0,Math.min(h.cum.length-1,
+                                  Math.floor(h.cum.length*t/xmax)));
+      el.textContent=h.cum[i];
+    }
     document.getElementById("at").textContent="at "+Math.round(t)+"s";
   });
   svg.addEventListener("pointerleave",()=>{clear();hideTip();});
@@ -204,7 +255,32 @@ function draw(){
   // run can draw hundreds of bands and they are redrawn on every
   // toggle, so binding each one leaks handlers.
   const tip=document.getElementById("tip");
+  // The cache bars answer a different question from a band, so they
+  // get their own tooltip: how many hits landed in this slice, and how
+  // many the run had reached by here. Same delegated listener, because
+  // the rows are redrawn on every toggle like the bands are.
+  function hitTip(r,e){
+    const h=HITS.find(x=>x.id===r.dataset.h); if(!h) return false;
+    const rc=svg.getBoundingClientRect();
+    const x=(e.clientX-rc.left)*(W/rc.width);
+    const i=Math.max(0,Math.min(h.buckets.length-1,
+                                Math.floor((x-PL)/pw*h.buckets.length)));
+    const t0=i*h.width, t1=t0+h.width;
+    const pct=h.total?(100*h.cum[i]/h.total).toFixed(0):"0";
+    tip.innerHTML=
+      `<div class="hd">${h.name} &middot; ${h.buckets[i]} hit`
+      +`${h.buckets[i]===1?"":"s"}</div>`
+      +`<div class="mt">${Math.round(t0)}–${Math.round(t1)}s `
+      +`&middot; ${h.cum[i]} of ${h.total} by here (${pct}%) `
+      +`&middot; peak ${h.peak} in a slice</div>`;
+    tip.style.display="block";
+    place(e);
+    return true;
+  }
+
   svg.addEventListener("pointerover",e=>{
+    const hr=e.target.closest(".hitrow");
+    if(hr){ hitTip(hr,e); return; }
     const r=e.target.closest(".band"); if(!r){hideTip();return;}
     const t=DATA.targets.find(x=>x.id===r.dataset.t);
     if(!t) return;
@@ -220,7 +296,15 @@ function draw(){
     tip.style.display="block";
     place(e);
   });
-  svg.addEventListener("pointermove",e=>{ if(tip.style.display==="block") place(e); });
+  // Re-read on move, not just on enter: the strip spans the whole run,
+  // so sliding along it without leaving it must change the numbers.
+  // Only placing the tip here would have frozen it on whichever bucket
+  // the pointer happened to arrive at.
+  svg.addEventListener("pointermove",e=>{
+    const hr=e.target.closest(".hitrow");
+    if(hr){ hitTip(hr,e); return; }
+    if(tip.style.display==="block") place(e);
+  });
   function place(e){
     const pad=14, w=tip.offsetWidth, h=tip.offsetHeight;
     let x=e.clientX+pad, y=e.clientY+pad;
@@ -246,6 +330,13 @@ function clear(){
     const el=document.getElementById("v-"+s.id);
     if(el) el.textContent=s.peak.toFixed(1)+DATA.unit;
   }
+  // Back to the run total off-cursor. The series above rest at their
+  // peak; a cumulative count's resting value is its end, which is the
+  // same number the legend was built with.
+  for(const h of HITS){
+    const el=document.getElementById("v-"+h.id);
+    if(el) el.textContent=h.total;
+  }
   const at=document.getElementById("at");
   if(at) at.textContent="peak";
 }
@@ -270,6 +361,16 @@ function legend(){
       +`<span class="sw" style="background:var(--ink2);`
       +`${i?"border-top:2px dashed var(--surface);":""}"></span>`
       +`<span>${m}${i?" (dashed)":""}</span></button>`).join("")
+    +(HITS.length?`<h2>Cache hits</h2>`
+      + HITS.map(h=>
+        // No aria-pressed and no data-k: these are readouts, not
+        // filters. Rendered as a div so it is not announced as a
+        // control that does nothing when clicked.
+        `<div class="legend-ro">`
+        +`<span class="sw" style="background:${h.color}"></span>`
+        +`<span>${h.name}</span>`
+        +`<span class="val" id="v-${h.id}">${h.total}</span></div>`).join("")
+      :"")
     +`<h2>Targets</h2>`
     + DATA.targets.map(t=>
       `<button aria-pressed="true" data-k="t" data-n="${t.name}">`
