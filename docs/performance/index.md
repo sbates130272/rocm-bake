@@ -157,6 +157,26 @@ make bench-publish           # commit it onto gh-pages
 make bench-publish PUSH=1    # and push
 ```
 
+Instrumented fleet runs publish separately, and to a page of their own:
+
+```bash
+make perf-publish            # commit the newest run onto gh-pages
+make perf-publish PUSH=1     # and push
+```
+
+They land at
+**[data/perf/](https://sbates130272.github.io/rocm-bake/data/perf/)**,
+which opens on the newest run and offers every published run in a
+selector. Each run also keeps a permalink of the form
+`data/perf/<stamp>/`.
+
+Two deliberate choices in that link. It points at the selector root
+rather than a stamp, because a stamp is correct for exactly one run and
+stale the moment the next one lands. And it is absolute rather than
+`../data/perf/`, because `data/` lives on `gh-pages` and never in the
+docs source — a relative link would be a broken internal link to
+`mkdocs --strict`, which is the thing that build is there to catch.
+
 This runs from a build node because that is the only place the data
 exists — a GitHub-hosted runner can neither reproduce the builds nor
 read the results. The docs workflow preserves `data/` when it deploys
