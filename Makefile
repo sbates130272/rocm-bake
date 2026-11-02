@@ -229,7 +229,7 @@ BAKE_PRINT = docker buildx bake -f rocm-bake.hcl
         build-serving push-serving \
         cache-summary cache-check cache-logs builder-load \
         perf-plan perf-run perf-build perf-report perf-runs perf-serve \
-        perf-publish \
+        perf-serve-stop perf-serve-status perf-publish \
         layer-summary \
         list-vars \
         build-base build-pytorch build-runtime build-all \
@@ -586,6 +586,8 @@ watch: ## Live build history across all snoc-* builders (WATCH_BUILDERS=, WATCH_
 		$(MAKE_BIN) --no-print-directory layer-summary; \
 		echo; \
 		$(MAKE_BIN) --no-print-directory cache-summary; \
+		echo; \
+		$(MAKE_BIN) --no-print-directory perf-serve-status; \
 		echo; \
 		for b in $(WATCH_BUILDERS); do \
 			out=$$(python3 .builders/history.py $$b $(WATCH_HISTORY) 2>/dev/null); \
@@ -1001,6 +1003,98 @@ perf-report: ## Render the newest perf run as markdown + SVG charts
 # viewer is a laptop on the LAN rather than on the tailnet.
 perf-serve: ## Serve the newest run's interactive chart (PERF_PORT=8090)
 	@.builders/perfserve.sh
+
+# Ctrl-C in the terminal that started it does the same thing; this is
+# for the usual case, where that terminal is long gone and the server
+# has been exposing 0.0.0.0 for days.
+#
+# Signal the parent only and let its EXIT trap reap the regen loop and
+# the http.server. TERM, never KILL: SIGKILL skips the trap and leaves
+# both children orphaned, still rewriting .current every cycle, which
+# is the mess perfserve's own port-claim guard exists to apologise for.
+#
+# Parentage is read for every match before anything is signalled, which
+# is why this is two loops rather than one. Killing the parent inside
+# the loop reparents the regen loop to init first, so by the time its
+# turn came its ppid no longer named a perfserve and it was reported as
+# "stopping" — an already-dead process, named as if it had been missed.
+# The grace loop is why this reports rather than escalating — anything
+# still alive after it wants looking at, not a bigger hammer.
+#
+# [p]erfserve, not perfserve: pgrep matches whole command lines, and
+# this recipe's own shell has the pattern in its argv. The literal
+# form matched that shell, so the recipe killed itself halfway through
+# and the server survived. pgrep excludes itself but not its parent.
+#
+# Anchored, too, so a match is a server and not a command line that
+# merely mentions one — `nohup .builders/perfserve.sh >log` names the
+# script and is not the script, and killing that wrapper signals
+# nothing the trap would hear. make exec's the recipe shell, so a real
+# server's argv ends at the script with no sh -c left in between.
+perf-serve-stop: ## Stop a running perf-serve (and free PERF_PORT)
+	@port=$${PERF_PORT:-8090}; \
+	pids=$$(pgrep -f '[p]erfserve\.sh$$' 2>/dev/null); \
+	if [ -z "$$pids" ]; then \
+		echo "no perfserve running"; \
+	else \
+		tops=; \
+		for p in $$pids; do \
+			ppid=$$(ps -o ppid= -p "$$p" 2>/dev/null | tr -d ' '); \
+			echo "$$pids" | grep -qx "$$ppid" && continue; \
+			tops="$$tops $$p"; \
+		done; \
+		for p in $$tops; do \
+			echo "stopping perfserve $$p"; \
+			kill "$$p" 2>/dev/null || true; \
+		done; \
+		for _ in 1 2 3 4 5 6 7 8 9 10; do \
+			pgrep -f '[p]erfserve\.sh$$' >/dev/null 2>&1 || break; \
+			sleep 0.5; \
+		done; \
+	fi; \
+	left=$$(pgrep -f '[p]erfserve\.sh$$' 2>/dev/null); \
+	if [ -n "$$left" ]; then \
+		echo "still running after SIGTERM: $$left" >&2; \
+		ps -o pid,ppid,etime,cmd -p $$(echo $$left | tr ' ' ',') >&2; \
+		exit 1; \
+	fi; \
+	if ss -ltn "sport = :$$port" 2>/dev/null | grep -q LISTEN; then \
+		echo "port $$port is still held by something else:" >&2; \
+		ss -ltnp "sport = :$$port" 2>/dev/null >&2; \
+		exit 1; \
+	fi; \
+	echo "port $$port free"
+
+# One line, for the watch panel. A perf-serve binds 0.0.0.0 by default
+# and outlives the terminal that started it, so "is one up, and where"
+# is otherwise a pgrep away at exactly the moment you are not thinking
+# about it — this one has been found three days old.
+#
+# The port comes from the http.server child's argv, not from PERF_PORT:
+# the variable says what the next server would use, and the question
+# here is what the running one *did* use. Same for the bind address,
+# which is why an exposed server reads differently from a loopback one
+# rather than both printing a URL that looks equally safe.
+perf-serve-status: ## Show whether a perf-serve is running, and where
+	@pids=$$(pgrep -f '[p]erfserve\.sh$$' 2>/dev/null); \
+	if [ -z "$$pids" ]; then \
+		printf '\033[36m══ perf-serve\033[0m  not running\n'; \
+		exit 0; \
+	fi; \
+	for p in $$pids; do \
+		srv=$$(pgrep -a -P "$$p" -f 'http\.server' 2>/dev/null | head -1); \
+		[ -n "$$srv" ] || continue; \
+		port=$$(echo "$$srv" | sed -n 's/.*http\.server \([0-9]*\).*/\1/p'); \
+		bind=$$(echo "$$srv" | sed -n 's/.*--bind \([^ ]*\).*/\1/p'); \
+		up=$$(ps -o etime= -p "$$p" 2>/dev/null | tr -d ' '); \
+		case "$$bind" in \
+			0.0.0.0|"") host=$$(hostname -I 2>/dev/null | awk '{print $$1}'); \
+				where="http://$$host:$$port/  \033[33mLAN-visible\033[0m" ;; \
+			*) where="http://$$bind:$$port/" ;; \
+		esac; \
+		printf '\033[36m══ perf-serve\033[0m  %b  pid %s  up %s\n' \
+			"$$where" "$$p" "$$up"; \
+	done
 
 perf-runs: ## List collected performance runs, newest last
 	@found=$$(ls -1d /var/tmp/rocm-perf/*/ 2>/dev/null); \
