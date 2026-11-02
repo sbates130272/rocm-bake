@@ -182,7 +182,7 @@ services:
     shm_size: ${SHM_SIZE:-16g}
 
   vllm:
-    image: ${REGISTRY:-snoc-strix.fold-leaffish.ts.net:8080}/rocm-pytorch/vllm:${VLLM_TAG:-v0.32.0-10.1.0-full-gfx1201}
+    image: ${REGISTRY:-snoc-strix.fold-leaffish.ts.net:8080}/rocm-pytorch/vllm:${VLLM_TAG:-v0.33.0-10.1.0-full-gfx1201}
     # Same moving tag, same reason — see lmcache above.
     pull_policy: always
     <<: *rocm

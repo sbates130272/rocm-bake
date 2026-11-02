@@ -33,8 +33,8 @@ triton-wheel:3.9.0-10.1.0-full
 aiter-wheel:2.15.0-10.1.0-full-gfx950
 cupy-wheel:v14.2.0-10.1.0-full-gfx950
 nixl-wheel:v1.5.2-10.1.0-full-gfx950
-vllm:v0.32.0-10.1.0-full-gfx950
-vllm-wheel:v0.32.0-10.1.0-full-gfx950
+vllm:v0.33.0-10.1.0-full-gfx950
+vllm-wheel:v0.33.0-10.1.0-full-gfx950
 lmcache:v0.5.6-10.1.0-full-gfx950
 lmcache-wheel:v0.5.6-10.1.0-full-gfx950
 ```

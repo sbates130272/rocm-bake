@@ -129,7 +129,7 @@ RUN set -eu; \
 # ─── Builder ─────────────────────────────────────────────────────
 FROM deps AS builder
 
-ARG VLLM_REF=v0.32.0
+ARG VLLM_REF=v0.33.0
 ARG SCCACHE_WEBDAV_ENDPOINT=http://snoc-strix.fold-leaffish.ts.net:8081
 # Key namespace within the shared store, and a unix socket rather than a
 # TCP port — the builders run with --driver-opt network=host, so a fixed
@@ -138,10 +138,23 @@ ARG SCCACHE_WEBDAV_ENDPOINT=http://snoc-strix.fold-leaffish.ts.net:8081
 ARG SCCACHE_WEBDAV_KEY_PREFIX=rocm-pytorch
 # Empty means "derive from the node"; set it to pin a job count.
 ARG MAX_JOBS=
-# Memory budget per compile job, used to derive MAX_JOBS. Shared
-# convention with Dockerfile.pytorch; 2GB is measured for cc1plus.
-ARG MEM_PER_JOB_GB=2
-# vLLM v0.32 builds a Rust extension (vllm/vllm-rs) as part of setup.py.
+# Memory budget per compile job, used to derive MAX_JOBS. The shared
+# convention with Dockerfile.pytorch is 2GB, measured for cc1plus; this
+# build uses 1GB, and the difference is deliberate.
+#
+# Until v0.33 the number did not matter here. csrc/rocm/attention.cu was
+# a single translation unit holding the whole critical path, so the
+# build was one compile on one core no matter what was derived. v0.33
+# splits it into twelve, and the ninja graph now wants about 16 slots
+# for ~140s — a job count derived too low re-serializes into waves and
+# gives back most of what the split returned.
+#
+# 1GB is what these compiles actually take: a 32-job gfx1201 run peaked
+# at 24GB across ~46 processes, about 0.75GB each. One outlier did reach
+# 7GB resident on its own, which is the reason this is 1 and not lower —
+# the cap at nproc and the single-outlier headroom both still apply.
+ARG MEM_PER_JOB_GB=1
+# vLLM builds a Rust extension (vllm/vllm-rs) as part of setup.py.
 # The channel tracks the repo's rust-toolchain.toml.
 ARG RUST_VERSION=1.95
 
@@ -150,11 +163,11 @@ LABEL org.opencontainers.image.description="vLLM ${VLLM_REF} for ROCm ${ROCM_VER
 
 # SCCACHE_IDLE_TIMEOUT=0 — never, rather than sccache's default 600s.
 #
-# This build is one long pole: 50 ninja edges, 48 of which finish in
-# 139s, and then csrc/rocm/attention.hip.o alone runs for 1115s of a
-# 1324s build. While that single compile holds the critical path no new
-# requests reach the local sccache server, it passes its idle timeout
-# and exits, and the next client finds it gone:
+# Under v0.32 this build was one long pole: 50 ninja edges, 48 of which
+# finished in 139s, and then csrc/rocm/attention.hip.o alone ran for
+# 1115s of a 1324s build. While that single compile held the critical
+# path no new requests reached the local sccache server, it passed its
+# idle timeout and exited, and the next client found it gone:
 #
 #   sccache: warning: The server looks like it shut down unexpectedly,
 #   compiling locally instead
@@ -164,9 +177,37 @@ LABEL org.opencontainers.image.description="vLLM ${VLLM_REF} for ROCm ${ROCM_VER
 # nothing was cached, but because it had spawned a fresh server to ask.
 # Not memory: the node held 106GB+ free throughout.
 #
-# Only this build is long-poled enough to hit it. PyTorch's 2772
-# objects keep their server busy continuously, which is why the same
-# default has never caused trouble there.
+# v0.33 splits that file and no TU now reaches the 600s default: the
+# longest cold compile measured is csrc/rocm/skinny_gemms_int4.hip.o at
+# 304s on gfx1201, and 151s on gfx950 where that file is behind
+# __HIP__GFX1X__ and compiles to a stub. So this no longer fixes a
+# reproduced failure — it keeps one TU's growth from quietly
+# reintroducing it, which is how the gfx1201 case arrived in the first
+# place (that file was 119.6s under v0.32).
+#
+# Only this build has ever been long-poled enough to hit it. PyTorch's
+# 2772 objects keep their server busy continuously, which is why the
+# same default has never caused trouble there.
+#
+# RUSTC_WRAPPER is a separate lever from the CMAKE_*_COMPILER_LAUNCHER
+# above: setup.py builds vllm/vllm-rs, and sccache saw zero rustc calls
+# without it — its stats carried no Rust lines at all.
+# Worth about 50s of a rebuild (the cargo release profile reported
+# 51.64s on run 20261102T183000Z, against 26s for the whole HIP phase
+# once that was cached), so a tenth of what the idle-timeout fix
+# returned, not a second one of it.
+#
+# CARGO_INCREMENTAL=0 because sccache declines to cache incremental
+# compilation. The release profile already disables it, so this states
+# the requirement rather than changing behaviour — and keeps a profile
+# change upstream from silently turning the caching back off.
+#
+# CC/CXX are deliberately NOT wrapped. Crates with a build.rs compile
+# their C through cc-rs, which reads CC, so those stay uncached — but
+# CMake reads CC too, and setting it to "sccache cc" here would stack a
+# launcher on top of the CMAKE_*_COMPILER_LAUNCHER already set above.
+# The HIP path is the expensive one and it is covered; this is not
+# worth risking it for.
 ENV SCCACHE_WEBDAV_ENDPOINT=${SCCACHE_WEBDAV_ENDPOINT} \
     SCCACHE_SERVER_UDS=/tmp/sccache.sock \
     SCCACHE_WEBDAV_KEY_PREFIX=${SCCACHE_WEBDAV_KEY_PREFIX} \
@@ -176,6 +217,8 @@ ENV SCCACHE_WEBDAV_ENDPOINT=${SCCACHE_WEBDAV_ENDPOINT} \
     CMAKE_C_COMPILER_LAUNCHER=sccache \
     CMAKE_CXX_COMPILER_LAUNCHER=sccache \
     CMAKE_HIP_COMPILER_LAUNCHER=sccache \
+    RUSTC_WRAPPER=/usr/local/bin/sccache \
+    CARGO_INCREMENTAL=0 \
     CARGO_HOME=/opt/cargo \
     RUSTUP_HOME=/opt/rustup \
     PATH=/opt/cargo/bin:${PATH}
@@ -307,7 +350,7 @@ RUN ls -la /wheels/
 # the wheel by an order of magnitude.
 FROM deps AS final
 
-ARG VLLM_REF=v0.32.0
+ARG VLLM_REF=v0.33.0
 ARG PYTORCH_ROCM_ARCH
 ARG ROCM_VERSION
 
