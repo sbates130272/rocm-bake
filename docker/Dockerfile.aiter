@@ -157,6 +157,72 @@ RUN git clone --depth 1 --branch ${AITER_REF} --recurse-submodules \
 
 WORKDIR /opt/aiter
 
+# Composable Kernel does not compile for gfx1250 at the commit AITER
+# v0.1.28 pins (96afae1d). ck_tile::amd_tdm_store carries a stray brace
+# that closes the function inside its own #if, so the brace after the
+# #endif becomes extraneous and the file dies at its namespace
+# terminator:
+#
+#   ck_tile/core/arch/amd_buffer_addressing.hpp:3154:1:
+#     error: extraneous closing brace ('}')
+#   8 warnings and 1 error generated when compiling for gfx1250.
+#
+# Only gfx1250 and gfx1251 ever see it. config.hpp gates the branch on
+#
+#   #if(defined(__gfx125__))
+#   #define CK_TILE_ENABLE_TDM_FEATURE 1
+#
+# and every other architecture takes the #else, where the single brace
+# after #endif closes the function correctly. That is why gfx950 and
+# gfx1201 build this header clean and gfx1250 cannot.
+#
+# Two conditions have to hold at once, which is why this is not a
+# widely-hit bug: __gfx125__, and AITER's own
+# -DCK_TILE_USE_BUFFER_ADDRESSING_BUILTIN=0, which selects this file
+# over the builtins variant. The whole file is inside
+# `#if !CK_TILE_USE_BUFFER_ADDRESSING_BUILTIN`, so at the default the
+# broken function is not compiled at all.
+#
+# The sibling amd_buffer_addressing_builtins.hpp has the same function
+# with the brace in the right place, so the two copies drifted by one
+# edit rather than the guard being subtly wrong. amd_tdm_load, directly
+# above the broken function in the same file, is also correct — that is
+# the shape being restored here.
+#
+# Anchored on the store builtin so it cannot touch amd_tdm_load or the
+# builtins variant, and conditional on the defect still being present
+# so that bumping AITER_REF past a fixed CK makes this a no-op rather
+# than a silent corruption. It fails loudly if the file is neither
+# broken in the expected way nor already correct, because a third shape
+# means this patch no longer understands the file it is editing.
+#
+# v0.1.28 is the newest AITER tag as of 2026-11-02; there is no ref to
+# bump to that avoids this. Upstream issue still to be filed.
+# Written to a file rather than passed to `python3 -c`: the check needs
+# real if/else, which semicolon-chaining cannot express, and hadolint
+# cannot parse a `RUN cmd <<'EOF'` heredoc — see the same note in
+# Dockerfile.vllm.
+ARG CK_HDR=3rdparty/composable_kernel/include/ck_tile/core/arch/amd_buffer_addressing.hpp
+
+RUN printf '%s\n' \
+    'import re, sys' \
+    'p = sys.argv[1]' \
+    's = open(p).read()' \
+    'store = r"__builtin_amdgcn_tensor_store_from_lds\((?:[^;]*?)\);\n"' \
+    'bad = re.compile("(" + store + ")\\}\\n(#else)", re.S)' \
+    'n = len(bad.findall(s))' \
+    'ok = re.search(store + "#else", s, re.S) is not None' \
+    'if n == 0 and ok:' \
+    '    print("CK gfx1250 brace: already correct upstream, nothing to patch")' \
+    '    sys.exit(0)' \
+    'if n != 1:' \
+    '    sys.exit("CK gfx1250 brace: %s matches neither shape; re-check this patch" % p)' \
+    'open(p, "w").write(bad.sub(r"\1\2", s))' \
+    'print("CK gfx1250 brace: patched", p)' \
+    > /tmp/ck-gfx1250-brace.py && \
+    python3 -I /tmp/ck-gfx1250-brace.py "${CK_HDR}" && \
+    rm /tmp/ck-gfx1250-brace.py
+
 # AITER's setup.py runs .github/scripts/install_triton.sh, which
 # uninstalls whatever triton is present and installs one from AMD's
 # index. That index publishes nothing newer than ROCm 7.2, so against
