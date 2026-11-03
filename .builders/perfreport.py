@@ -50,6 +50,13 @@ try:
 except Exception as _exc:                           # noqa: BLE001
     print(f"perfreport: cannot read the fleet manifest: {_exc}",
           file=sys.stderr)
+
+# Used only when SERIES is empty, i.e. the manifest could not be read.
+# Colour then identifies nothing in particular — there are no node
+# names to follow — but the report still renders, which is the point:
+# the manifest is how a chart is coloured, not whether it exists.
+FALLBACK_PALETTE = ("#2a78d6", "#eb6834", "#2f9e52", "#9456c9",
+                    "#c9a227", "#4aa3a3")
 # Deliberately NOT from SERIES. Colour identifies a builder everywhere
 # else on this chart, and SERIES holds exactly three entries — one per
 # node — so every pick from it is some builder's colour. Taking "the
@@ -785,6 +792,12 @@ def interactive_chart(path, title, sub, metrics, targets,
         return False
 
     def colour_for(name, i):
+        # SERIES is empty when the manifest could not be read — no
+        # PyYAML, usually. That is already reported at import, and a
+        # report in fallback colours beats a ZeroDivisionError on top
+        # of a message that says what is wrong.
+        if not SERIES:
+            return FALLBACK_PALETTE[i % len(FALLBACK_PALETTE)]
         slot = list(SERIES).index(name) if name in SERIES else i
         return list(SERIES.values())[slot % len(SERIES)][0]
 

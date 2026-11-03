@@ -244,6 +244,13 @@ jobs:
         with:
           python-version: "3.14"
 
+      # perfreport takes its per-node chart colours from the fleet
+      # manifest through fleet.py, which needs PyYAML. Without it the
+      # report still renders, in fallback colours — but this job is
+      # here to exercise the real path, not the degraded one.
+      - name: PyYAML, for the fleet manifest
+        run: pip install pyyaml
+
       # ruff and py_compile prove perfreport parses; nothing proved it
       # renders. Every chart bug this tool has had — lines drawn as
       # filled areas, white-on-white labels, spans overdrawing each
