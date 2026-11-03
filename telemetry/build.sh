@@ -24,7 +24,32 @@ set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BAKE_FILE="${BAKE_FILE:-${REPO_ROOT}/rocm-bake.hcl}"
-TEXTFILE_DIR="${TEXTFILE_DIR:-/var/lib/node_exporter/textfile_collector}"
+# Debian's path, not upstream's. The package is
+# prometheus-node-exporter and it reads /var/lib/prometheus/node-exporter;
+# upstream's own binary defaults to
+# /var/lib/node_exporter/textfile_collector, which is what this used to
+# point at. That directory exists on snoc-strix, is root-owned, and is
+# empty — so every build since this was written emitted metrics into
+# the fallback and Prometheus never saw one. The fallback line below
+# said so each time and read as routine.
+#
+# Both are checked, first writable wins, because the fleet is not
+# guaranteed to be one distro.
+TEXTFILE_DIR="${TEXTFILE_DIR:-}"
+if [ -z "${TEXTFILE_DIR}" ]; then
+    # Existence selects, writability only gates. Picking the first
+    # *writable* directory is the obvious thing and it is wrong: on
+    # snoc-strix the upstream path is writable and the exporter reads
+    # the Debian one, so "first writable" would have written where
+    # nothing looks and reported success.
+    for _d in /var/lib/prometheus/node-exporter \
+              /var/lib/node_exporter/textfile_collector; do
+        [ -d "${_d}" ] && { TEXTFILE_DIR="${_d}"; break; }
+    done
+    # Nothing writable: name the Debian path, so the message below
+    # points at the one worth fixing rather than at upstream's.
+    TEXTFILE_DIR="${TEXTFILE_DIR:-/var/lib/prometheus/node-exporter}"
+fi
 FALLBACK_DIR="${REPO_ROOT}/telemetry/out"
 METRIC_FILE="rocm_pytorch_build.prom"
 
@@ -184,7 +209,10 @@ OUT_DIR="${TEXTFILE_DIR}"
 if ! { [ -d "${OUT_DIR}" ] && [ -w "${OUT_DIR}" ]; }; then
     OUT_DIR="${FALLBACK_DIR}"
     mkdir -p "${OUT_DIR}"
-    echo "   ${TEXTFILE_DIR} not writable, using ${OUT_DIR}"
+    echo "   WARNING: ${TEXTFILE_DIR} is not writable." >&2
+    echo "   Metrics went to ${OUT_DIR} and Prometheus will NOT see" >&2
+    echo "   them. Fix with: sudo chgrp \$(id -gn) ${TEXTFILE_DIR}" >&2
+    echo "                   sudo chmod g+w ${TEXTFILE_DIR}" >&2
 fi
 
 TMP_FILE="$(mktemp "${OUT_DIR}/.${METRIC_FILE}.XXXXXX")"

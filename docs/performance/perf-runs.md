@@ -70,29 +70,31 @@ registry under `PUBLISHED_INPUTS=1`.
 
 `make perf-plan` reports what it *would* bootstrap and builds nothing.
 
-### A cold run on an architecture with nothing published
+### A cold run publishes into a namespace of its own
 
-`perf-cold` passes `--no-push`, which `balance.sh` turns into building
-`build-x` instead of `push-x`. Under `PUBLISHED_INPUTS=1` every input
-is still resolved as a registry ref, so a target built during a cold
-run is invisible to the target that needs it. On a card built before
-this is harmless; on a fresh one `pytorch` would wait for
-`pytorch-wheel` to build cold, for hours, and then fail at step 1
-resolving a ref that build never pushed.
+`perf-cold` used to pass `--no-push` while `balance.sh` set
+`PUBLISHED_INPUTS=1` — which it must, because `target:` contexts only
+resolve within one builder and this schedules across three. Together
+those meant every target resolved its inputs from whatever was
+published *previously*, and nothing the run built reached the stage
+that needed it. It measured each target built cold against the last
+run's images, which is a real number but not the full cold build this
+page claimed.
 
-The bootstrap made that reachable — it satisfies `rocm-runtime` and
-`pytorch-base`, which used to be what stopped the run in one second —
-so `perf-cold` now checks the rest up front and refuses:
+It pushes now, into `${REGISTRY_NAME}-coldrun`. `REGISTRY_NAME` is the
+one lever that moves everything: every tag and every `PUB_*` ref in
+`rocm-bake.hcl` is `${REGISTRY}/${REGISTRY_NAME}/…`, so switching it
+relocates images, caches and the refs that resolve them in one step,
+and the live namespace is never written to.
 
-```text
-[perf] cold run cannot complete on gfx1100
-[perf]   needed by the run and not published: cupy-wheel pytorch-wheel
-         pytorch aiter-wheel nixl-wheel lmcache-wheel
-[perf]   Publish them once first:
-[perf]     make perf-warm PERF_ARCH=gfx1100
-```
+A fresh namespace holds nothing, so the run really does build the
+whole stack from nothing — including `pytorch-src`, `rocm-runtime` and
+`pytorch-base`, which the bootstrap builds into it first. That is what
+cold was always meant to mean, and it is why the first cold run on an
+architecture is long.
 
-Run `perf-warm` once for a new card, then `perf-cold` works.
+Override the namespace with `PERF_COLD_NAMESPACE=` if you want two
+cold runs kept apart.
 
 Anything else that hits a missing input — `balance.sh` directly, a
 wheel build — still fails the preflight, which now prints the commands
