@@ -22,10 +22,13 @@ Checks:
      rather than keeping a hand-written copy of it.
   6. Every target they can be asked for has a build-* Makefile rule,
      via the same mk_name mapping bench.sh uses.
-  7. target-costs covers every wheel and every default node, so no
-     target is scheduled as though it were free.
+  7. target-costs covers every wheel, so no target is scheduled as
+     though it were free.
   8. versioncheck.py's wheel_repo names are real artifacts, i.e. they
      are in bake's `wheels` group.
+  9. Every manifest loads, every build node in one has a link speed,
+     and the default manifest agrees with rocm-bake.hcl about where
+     the registry and the compiler cache are.
 """
 import importlib.util
 import re
@@ -216,13 +219,13 @@ def check_costs():
         fail("costs", f"`cache` lines for targets not in bake's wheels "
                       f"group: {sorted(extra)}")
 
-    hit = re.search(r'NODES="\$\{NODES:-([^}]*)\}"', read(".builders/balance.sh"))
-    nodes = set(hit.group(1).split()) if hit else set()
-    missing = nodes - seen["netmb"]
-    if missing:
-        fail("costs", f"no `netmb` line for {sorted(missing)}; their exports "
-                      f"would be costed as free and cache-heavy targets "
-                      f"would pile onto whichever is slowest")
+    # The per-node `netmb` rows moved to the manifests; target-costs
+    # must not carry them any more, or there would be two answers and
+    # awk would take whichever file it was pointed at.
+    if seen["netmb"]:
+        fail("costs", f"target-costs still has netmb rows for "
+                      f"{sorted(seen['netmb'])}; each node's upload "
+                      f"throughput is `link_mbps:` in the fleet manifest now")
 
 
 # ── 8. BUILDKIT_BUILD_NAME uniqueness ─────────────────────────────
@@ -356,6 +359,66 @@ def check_version_wheel_repos():
              f"    The group has: {', '.join(sorted(wheels))}")
 
 
+# ── 9. the manifests ↔ everything that reads them ────────────────
+def check_manifests():
+    """Every committed manifest must load, and say enough to schedule.
+
+    fleet.py validates structure on load — a node with no host, a
+    capability that is a typo, a registry pointed at a node that does
+    not host one. What it cannot judge is whether a manifest is
+    *useful*, which is what this adds: a build node with no
+    `link_mbps:` is costed as having an infinitely fast link, so
+    balance.sh charges its cache export nothing and a 6 GB export can
+    land on the slowest wire in the fleet. That is precisely the
+    regression the netmb term was added to fix, and it would be
+    silent.
+
+    Also: the default manifest and rocm-bake.hcl must agree on where
+    the registry and the compiler cache are. The Makefile takes those
+    from the manifest and exports them, so a bare `docker buildx bake`
+    driven without make is the one caller left reading the hcl
+    defaults — and it would quietly publish somewhere else.
+    """
+    fleet = load("fleet", ".builders/fleet.py")
+    manifests = sorted((ROOT / "manifests").glob("*.yml"))
+    if not manifests:
+        return fail("manifests", "no manifests/*.yml")
+
+    for path in manifests:
+        try:
+            data = fleet.load(str(path))
+        except fleet.FleetError as exc:
+            fail("manifests", f"{path.name} does not load: {exc}")
+            continue
+        for name in fleet.nodes(data, "build"):
+            node = fleet.node_map(data)[name]
+            if "link_mbps" not in node:
+                fail("manifests",
+                     f"{path.name}: build node {name!r} has no link_mbps; "
+                     f"its cache exports would be costed as free")
+
+    bake = read("rocm-bake.hcl")
+
+    def bake_default(var):
+        m = re.search(rf'variable\s+"{var}"\s*\{{\s*default\s*=\s*"([^"]*)"',
+                      bake)
+        return m.group(1) if m else None
+
+    default = fleet.load(fleet.DEFAULT_FLEET)
+    pairs = [
+        ("REGISTRY", fleet.registry(default)),
+        ("SCCACHE_WEBDAV_HOST", fleet.cache_host(default)),
+        ("SCCACHE_WEBDAV_PORT", str(default["cache"]["port"])),
+    ]
+    for var, want in pairs:
+        got = bake_default(var)
+        if got != want:
+            fail("manifests",
+                 f"rocm-bake.hcl's {var} default is {got!r} but "
+                 f"manifests/{fleet.DEFAULT_FLEET}.yml says {want!r}; a bake "
+                 f"run without make would use the first")
+
+
 def main():
     report = load("perfreport", ".builders/perfreport.py")
     sample = load("perfsample", ".builders/perfsample.py")
@@ -366,6 +429,7 @@ def main():
     check_build_names()
     check_costs()
     check_version_wheel_repos()
+    check_manifests()
 
     if FAIL:
         print("contract violations:", file=sys.stderr)
@@ -374,7 +438,8 @@ def main():
         return 1
     print("contracts ok: nginx log_format, balance placement, sample "
           "shape, perf stages, build-* rules, build-record names, "
-          "target-costs and versioncheck's wheel repos all agree")
+          "target-costs, the fleet manifests and versioncheck's wheel "
+          "repos all agree")
     return 0
 
 

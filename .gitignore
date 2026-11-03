@@ -13,6 +13,11 @@ zot/zot-credentials.json
 # Buildx builder cache
 .docker/
 
+# buildkitd.toml rendered per node from the fleet manifest by
+# builder-create.sh. Generated, and only kept so a later run can tell
+# whether the config baked into an existing builder is still current.
+.builders/generated/
+
 # OS files
 *.swp
 *.swo

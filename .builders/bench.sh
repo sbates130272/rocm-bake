@@ -48,7 +48,28 @@ RESULTS="${BENCH_DIR}/results.jsonl"
 LOGS="${BENCH_DIR}/logs"
 mkdir -p "${LOGS}"
 
-BUILDER="${BUILDER:-snoc-think}"
+# The fleet manifest, read once: three recipes below need to run a
+# command on whichever node the build will land on, and the builder
+# name is not the machine name.
+fleet_var() { python3 -I .builders/fleet.py --make 2>/dev/null | sed -n "s/^$1=//p"; }
+
+BUILDER="${BUILDER:-$(fleet_var FLEET_BENCH_NODE)}"
+BUILDER_ENDPOINT="$(python3 -I .builders/fleet.py --endpoint "${BUILDER}" 2>/dev/null)"
+
+# Run a command on the node $BUILDER names: here if it is the local
+# node, over ssh otherwise. This was three copies of the same
+# `[ "$BUILDER" = snoc-strix ]` test with a `${BUILDER/snoc-think/snoc-thinkstation}`
+# substitution beside it — a mapping that only ever covered the one
+# node whose builder and machine names differ, and silently ssh'd to a
+# nonexistent host for any other.
+node_sh() {
+    if [ "${BUILDER_ENDPOINT}" = "local" ]; then
+        bash -c "$1"
+    else
+        timeout 10 ssh -n -o BatchMode=yes "${BUILDER_ENDPOINT#ssh://}" "$1" \
+            2>/dev/null
+    fi
+}
 TARGETS_DEFAULT="pytorch-base triton-wheel pytorch"
 
 # The arch every run in this invocation is measured at, recorded with
@@ -97,27 +118,12 @@ busy() {
 
 # One-minute load average on the node that will run the build.
 node_load() {
-    if [ "${BUILDER}" = "snoc-strix" ]; then
-        cut -d' ' -f1 /proc/loadavg
-    else
-        timeout 10 ssh -n -o BatchMode=yes \
-            "${BUILDER/snoc-think/snoc-thinkstation}" \
-            "cut -d' ' -f1 /proc/loadavg" 2>/dev/null
-    fi
+    node_sh "cut -d' ' -f1 /proc/loadavg"
 }
 
 # MemAvailable on the node that will run the build, in whole GB.
-# Same local-or-ssh split as the load sampling below: snoc-strix is
-# this host, everything else is remote.
 node_mem_avail_gb() {
-    if [ "${BUILDER}" = "snoc-strix" ]; then
-        awk '/^MemAvailable:/ {printf "%d", $2/1048576}' /proc/meminfo
-    else
-        timeout 10 ssh -n -o BatchMode=yes \
-            "${BUILDER/snoc-think/snoc-thinkstation}" \
-            "awk '/^MemAvailable:/ {printf \"%d\", \$2/1048576}' /proc/meminfo" \
-            2>/dev/null
-    fi
+    node_sh "awk '/^MemAvailable:/ {printf \"%d\", \$2/1048576}' /proc/meminfo"
 }
 
 # ── frozen: evict the pull-through copy of the base image ────────
@@ -249,12 +255,7 @@ bench_run() {
     # the node's load so a contaminated run is visible in the results
     # rather than quietly wrong.
     local load
-    if [ "${BUILDER}" = "snoc-strix" ]; then  # this host
-        load=$(cut -d' ' -f1 /proc/loadavg)
-    else
-        load=$(timeout 10 ssh -n -o BatchMode=yes "${BUILDER/snoc-think/snoc-thinkstation}" \
-               "cut -d' ' -f1 /proc/loadavg" 2>/dev/null)
-    fi
+    load=$(node_load)
 
     # Wait for memory to settle before starting.
     #

@@ -26,6 +26,7 @@ Usage: perfreport.py [RUN_DIR] [--out report.md]
 """
 import argparse
 import html
+import importlib.util
 import json
 import re
 import subprocess
@@ -35,14 +36,20 @@ from pathlib import Path
 
 PERF_DIR = Path("/var/tmp/rocm-perf")
 
-# Slots 1-3 of the validated categorical palette, light and dark. Keyed
-# by builder so a target that moves between nodes keeps the node's
-# colour — colour follows the entity, never its rank.
-SERIES = {
-    "snoc-strix":  ("#2a78d6", "#3987e5"),
-    "snoc-think":  ("#eb6834", "#d95926"),
-    "snoc-gaming": ("#1baf7a", "#199e70"),
-}
+# Keyed by builder so a target that moves between nodes keeps the
+# node's colour — colour follows the entity, never its rank. The
+# assignment is the fleet manifest's: a node may name its own pair, and
+# the rest come from fleet.PALETTE in manifest order.
+SERIES = {}
+try:
+    _spec = importlib.util.spec_from_file_location(
+        "fleet", Path(__file__).resolve().parent / "fleet.py")
+    _fleet = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_fleet)
+    SERIES = _fleet.series(_fleet.load())
+except Exception as _exc:                           # noqa: BLE001
+    print(f"perfreport: cannot read the fleet manifest: {_exc}",
+          file=sys.stderr)
 # Deliberately NOT from SERIES. Colour identifies a builder everywhere
 # else on this chart, and SERIES holds exactly three entries — one per
 # node — so every pick from it is some builder's colour. Taking "the

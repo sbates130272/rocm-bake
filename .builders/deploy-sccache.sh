@@ -19,7 +19,9 @@ set -euo pipefail
 MACHINE="${1:-strix}"
 VERSION="${2:-0.19.0}"
 CACHE_SIZE="${3:-200G}"   # retained for the usage string; unused with WebDAV
-SCCACHE_WEBDAV_ENDPOINT="${SCCACHE_WEBDAV_ENDPOINT:-http://snoc-strix.fold-leaffish.ts.net:8081}"
+_fleet() { python3 -I "$(dirname "${BASH_SOURCE[0]}")/fleet.py" --make 2>/dev/null \
+    | sed -n "s/^$1=//p"; }
+SCCACHE_WEBDAV_ENDPOINT="${SCCACHE_WEBDAV_ENDPOINT:-http://$(_fleet FLEET_CACHE_HOST):$(_fleet FLEET_CACHE_PORT)}"
 # sccache's own default. Port 9000 is taken by lemond/tailscaled on Strix.
 SERVER_PORT="${4:-4226}"
 TARGET_DIR="/usr/local/bin"

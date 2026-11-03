@@ -18,8 +18,15 @@
 
 set -euo pipefail
 
-PORT="${1:-8081}"
-DATA_DIR=/var/cache/sccache-webdav
+# Port and storage path from the fleet manifest, so the builders and
+# this deployer cannot disagree about where the store is. An argument
+# still wins, for a one-off on a nonstandard port.
+_fleet() { python3 -I "$(dirname "${BASH_SOURCE[0]}")/fleet.py" --make 2>/dev/null \
+    | sed -n "s/^$1=//p"; }
+PORT="${1:-$(_fleet FLEET_CACHE_PORT)}"
+PORT="${PORT:-8081}"
+DATA_DIR="${DATA_DIR:-$(_fleet FLEET_CACHE_DIR)}"
+DATA_DIR="${DATA_DIR:-/var/cache/sccache-webdav}"
 SITE=/etc/nginx/sites-available/sccache-webdav
 
 echo "=== sccache WebDAV store deployer ==="
@@ -35,12 +42,34 @@ echo "📦 Installing nginx with the DAV modules..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get install -y -qq nginx-extras > /dev/null
 
-TAILNET_IP=$(tailscale ip -4 2>/dev/null | head -1)
-if [ -z "${TAILNET_IP}" ]; then
-    echo "❌ No tailnet address; the other build nodes could not reach this."
-    exit 1
-fi
-echo "🔗 Binding to 127.0.0.1 and ${TAILNET_IP}"
+# Which address nginx binds, from the manifest's `cache.bind:`.
+#
+#   tailscale  the node's tailnet address (the default, and what the
+#              SNOC fleet uses — it keeps the store off every other
+#              interface including the public one)
+#   private    the host's primary address, for a fleet whose nodes
+#              share a private network instead of a tailnet
+#   <address>  that address, verbatim
+BIND_MODE="${BIND_MODE:-$(_fleet FLEET_CACHE_BIND)}"
+BIND_MODE="${BIND_MODE:-tailscale}"
+case "${BIND_MODE}" in
+    tailscale)
+        TAILNET_IP=$(tailscale ip -4 2>/dev/null | head -1)
+        if [ -z "${TAILNET_IP}" ]; then
+            echo "❌ No tailnet address; the other build nodes could not reach this."
+            echo "   Set cache.bind: private in the manifest for a fleet that"
+            echo "   shares a private network instead."
+            exit 1
+        fi ;;
+    private)
+        TAILNET_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+        if [ -z "${TAILNET_IP}" ]; then
+            echo "❌ No private address to bind."
+            exit 1
+        fi ;;
+    *)  TAILNET_IP="${BIND_MODE}" ;;
+esac
+echo "🔗 Binding to 127.0.0.1 and ${TAILNET_IP} (${BIND_MODE})"
 
 install -d -o www-data -g www-data -m 755 "${DATA_DIR}"
 
@@ -60,12 +89,24 @@ EOF
 sysctl -q -p /etc/sysctl.d/99-sccache-webdav.conf
 
 install -d -m 755 /etc/systemd/system/nginx.service.d
-cat > /etc/systemd/system/nginx.service.d/10-tailscale.conf << 'EOF'
+if [ "${BIND_MODE}" = tailscale ]; then
+    cat > /etc/systemd/system/nginx.service.d/10-tailscale.conf << 'EOF'
 # Managed by .builders/deploy-webdav.sh
 [Unit]
 After=tailscaled.service network-online.target
 Wants=network-online.target
 EOF
+else
+    # Nothing to wait for but the network itself. The drop-in is still
+    # written rather than left behind from a previous bind mode, which
+    # would order nginx after a tailscaled that is never going to start.
+    cat > /etc/systemd/system/nginx.service.d/10-tailscale.conf << 'EOF'
+# Managed by .builders/deploy-webdav.sh
+[Unit]
+After=network-online.target
+Wants=network-online.target
+EOF
+fi
 systemctl daemon-reload
 
 cat > "${SITE}" << EOF

@@ -1,0 +1,99 @@
+# Buildkit daemon configuration — TEMPLATE.
+#
+# Do not pass this file to `docker buildx create`. It is rendered per
+# node from the fleet manifest:
+#
+#   .builders/fleet.py --buildkitd <node>        # to stdout
+#   .builders/builder-create.sh <node>           # renders and creates
+#
+# The rendered copies land in .builders/generated/ and are not tracked;
+# the Ansible buildkit role writes the same content to
+# /etc/buildkit/buildkitd.toml for a node running standalone buildkitd.
+#
+# Placeholders are NODE, FLEET, ARCH, PLATFORM, DNS, REGISTRIES,
+# MAX_PARALLELISM and GC_KEEP_STORAGE, each wrapped in @ signs.
+#
+# Deliberately not written out in that form here: substitution is a
+# plain string replace over the whole file, comments included, so a
+# comment that spelled out the DNS and registry placeholders grew a
+# second copy of both blocks, and buildkitd rejected the result as
+# "duplicated tables".
+#
+# fleet.py parses what it renders and fails on anything that is not
+# valid TOML, or that still contains a placeholder.
+#
+# Everything below was learned on the SNOC fleet and is not specific to
+# it; only the values are.
+#
+# The config is baked in at create time — an existing builder does not
+# pick up edits. Recreate it: docker buildx rm @NODE@.
+#
+# network=host is not optional. Docker strips loopback nameservers when
+# it writes a container's resolv.conf, so a bridged builder falls back to
+# the upstream resolver and cannot resolve *.ts.net — the registry below
+# then fails with "no such host" mid-build. Sharing the host netns gives
+# the builder the host's resolver, MagicDNS included.
+#
+# Only keys buildkitd actually understands belong here. Unknown keys are
+# not inert: a containerd worker pointed at a bad address takes the whole
+# daemon down in a 60-second restart loop.
+
+# RUN steps do NOT inherit the builder container's resolver — buildkit
+# writes its own /etc/resolv.conf for the build sandbox, defaulting to
+# 8.8.8.8. Without this block a build step cannot resolve any tailnet
+# name, so both the registry and the shared sccache store fail from
+# inside a build even though the node itself resolves them fine.
+# The public resolver second is load-bearing, not belt-and-braces: a
+# tailnet with no global nameservers SERVFAILs on anything outside it.
+# With MagicDNS alone a build step resolves tailnet names and nothing
+# else — apt, pip and the pytorch clone all fail. The resolver falls
+# through to the next entry on SERVFAIL, so tailnet names come from
+# MagicDNS and the rest from upstream.
+@DNS@
+[worker.oci]
+  enabled = true
+  platforms = ["linux/amd64"]
+  # Concurrent build STEPS, not cores. It caps how many vertices of the
+  # graph run at once; a single RUN step still uses as many threads as
+  # the command inside it wants. The PyTorch compile is one step, so this
+  # does not limit it at all — it saturated 32 cores on snoc-think with
+  # this set to 10. CPU is capped per builder with --driver-opt
+  # (cpuset-cpus / cpu-quota), and threads within a build with MAX_JOBS.
+  max-parallelism = @MAX_PARALLELISM@
+  gc = true
+  gckeepstorage = "@GC_KEEP_STORAGE@"
+
+# Descriptive only. buildx node selection ignores labels, so these are
+# for whoever reads `docker buildx inspect` wondering what they are
+# looking at.
+[worker.oci.labels]
+  "io.rocm-bake.fleet" = "@FLEET@"
+  "io.rocm-bake.node" = "@NODE@"
+  "io.rocm-bake.platform" = "@PLATFORM@"
+  "io.rocm-bake.arch" = "@ARCH@"
+
+# The docker-container driver runs the OCI worker only. Enabling the
+# containerd worker here points it at buildkitd's own socket and crashes
+# the daemon on startup.
+[worker.containerd]
+  enabled = false
+
+# The fleet's own registry serves plain HTTP, so buildkit needs
+# http = true or every pull and every cache export fails on the TLS
+# handshake. The upstreams that follow are mirrored through it rather
+# than egressed for every layer.
+@REGISTRIES@
+# No [grpc] debugAddress here on purpose. With network=host a fixed debug
+# port is bound on the host, so a second builder on the same machine
+# dies with "address already in use". Set it per-builder with
+# --driver-opt if you need the metrics.
+
+# Not expressible here, despite earlier attempts in this file:
+#   - Host mounts (/opt/rocm, /dev/kfd, /dev/dri, /var/cache/sccache).
+#     buildkitd.toml has no `mount` key. Build steps get host paths via
+#     `RUN --mount=` in the Dockerfile; device access during a build
+#     needs an entitlement, and compiling for a GPU arch does not need
+#     the card.
+#   - Memory/CPU ceilings. Those are container limits — set them on the
+#     builder container (docker update / --driver-opt) or in the
+#     buildkitd.service unit for standalone mode.

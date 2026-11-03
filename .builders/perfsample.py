@@ -25,22 +25,38 @@ Usage:
 Stops on SIGTERM/SIGINT, flushing what it has.
 """
 import argparse
+import importlib.util
 import json
 import signal
 import sys
 import time
 import urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
 
-# Mapped to the builder names the rest of the repo uses. node_exporter
-# answers on the host, but `snoc-think` is a buildx builder name and
-# `snoc-thinkstation` is the host it runs on — the same split bench.sh
-# works around when it samples load.
-DEFAULT_NODES = {
-    "snoc-strix": "snoc-strix.fold-leaffish.ts.net",
-    "snoc-think": "snoc-thinkstation",
-    "snoc-gaming": "snoc-gaming",
-}
+
+def _fleet():
+    """Load fleet.py by path. This file is run with -I from a shell, so
+    there is no package to import it from, and the same trick is what
+    placement.py uses to reach perfreport.py."""
+    here = Path(__file__).resolve().parent
+    spec = importlib.util.spec_from_file_location("fleet", here / "fleet.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# builder name -> the host its node_exporter answers on. Every node the
+# manifest marks `metrics`. The two names differ: `snoc-think` is a
+# buildx builder and `snoc-thinkstation` is the machine it runs on —
+# the same split bench.sh works around when it samples load.
+try:
+    _f = _fleet()
+    DEFAULT_NODES = _f.default_nodes(_f.load())
+except Exception as exc:                            # noqa: BLE001
+    print(f"perfsample: cannot read the fleet manifest: {exc}",
+          file=sys.stderr)
+    DEFAULT_NODES = {}
 
 # Only the series the report actually plots. Scraping is cheap but
 # parsing a full exporter payload every few seconds across three nodes

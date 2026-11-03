@@ -61,7 +61,16 @@ export PUBLISHED_INPUTS=1
 # (perfrun.sh passes its own stamp) wins.
 export RUN_ID="${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$(git rev-parse --short HEAD 2>/dev/null || echo nogit)}"
 
-NODES="${NODES:-snoc-think snoc-strix snoc-gaming}"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Every build node in the fleet manifest. Ranking happens below from
+# live load, so manifest order does not matter here — what matters is
+# that adding a node to the fleet does not also mean editing this file.
+NODES="${NODES:-$(python3 -I "${HERE}/fleet.py" --nodes --capability build)}"
+if [ -z "${NODES// /}" ]; then
+    echo "balance: the fleet manifest lists no build nodes" >&2
+    exit 1
+fi
 MIN_MEM_GB="${MIN_MEM_GB:-8}"
 
 # What to build. The ORDER is deliberately not here.
@@ -81,7 +90,6 @@ MIN_MEM_GB="${MIN_MEM_GB:-8}"
 #
 # Override to build a subset; the order still takes care of itself:
 #   TARGETS="pytorch-wheel triton-wheel" .builders/balance.sh
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGETS="${TARGETS:-$(python3 -I "${HERE}/depgraph.py" --group default)}"
 if [ -z "${TARGETS// /}" ]; then
     echo "balance: no targets to build" >&2
@@ -205,6 +213,17 @@ make_target() {
 # lands on the real lower bound, which is that longest job.
 COSTS_FILE="${COSTS_FILE:-.builders/target-costs}"
 
+# The per-node `netmb` rows used to live in target-costs beside the
+# per-target ones. They describe the fleet, not a target — the build
+# and cache figures are the same wherever they run — so they come from
+# the manifest now, rendered into the same row format and read by the
+# same awk. Written once here rather than shelling out per lookup:
+# cost_of is called for every (target, node) pair of every scheduling
+# round.
+NETMB_FILE="$(mktemp -t balance-netmb.XXXXXX)"
+python3 -I "${HERE}/fleet.py" --netmb > "${NETMB_FILE}" 2>/dev/null || true
+trap 'rm -f "${NETMB_FILE}"' EXIT
+
 # Cost of running <target> on <node>, in seconds: the build, plus the
 # time to push its cache over that node's link.
 #
@@ -222,7 +241,7 @@ cost_of() {
     cache=$(awk -v t="$t" '$1 == "cache" && $2 == t {print $3; exit}' \
             "${COSTS_FILE}" 2>/dev/null)
     net=$(awk -v n="$node" '$1 == "netmb" && $2 == n {print $3; exit}' \
-          "${COSTS_FILE}" 2>/dev/null)
+          "${NETMB_FILE}" 2>/dev/null)
     # No figure for this node means no reason to penalise it; fall back
     # to the build term rather than inventing a link speed.
     [ -n "${cache}" ] && [ -n "${net}" ] || { echo "${build}"; return; }

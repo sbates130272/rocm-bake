@@ -33,7 +33,13 @@
 #   GPU_HOST=other PORT=8001 ./serve-test.sh
 set -uo pipefail
 
-GPU_HOST="${GPU_HOST:-snoc-thinkstation}"
+# The node the fleet manifest marks `gpu_node:`; see serve-logs.sh.
+GPU_HOST="${GPU_HOST:-$(python3 -I "$(dirname "${BASH_SOURCE[0]}")/fleet.py" \
+    --make 2>/dev/null | sed -n 's/^FLEET_GPU_HOST=//p')}"
+if [ -z "${GPU_HOST}" ]; then
+    echo "serve-test: this fleet declares no gpu node; set GPU_HOST=<host>" >&2
+    exit 1
+fi
 PORT="${PORT:-8000}"
 BASE="http://${GPU_HOST}:${PORT}"
 MODEL="${SERVE_MODEL:-}"

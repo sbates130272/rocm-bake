@@ -1,0 +1,128 @@
+---
+# The SNOC fleet — three machines on one tailnet.
+#
+# This file is the only place a node name, address or link speed is
+# written down. The Makefile, balance.sh, perfsample.py, perfreport.py,
+# builder-health.py and the Ansible inventory all read it through
+# .builders/fleet.py; nothing else parses YAML.
+#
+# Select a manifest with FLEET=<name> (this one is the default) or
+# FLEET_MANIFEST=/path/to/file.yml. `make list-nodes` prints what is in
+# effect.
+
+name: snoc
+
+# Appended to short names by MagicDNS, and given to buildkitd as a
+# search domain so a build step can resolve `snoc-strix`.
+domain: fold-leaffish.ts.net
+
+# The builder a bare `make build-*` uses, and the sentinel that means
+# "let balance.sh choose". The pool is not a buildx builder — see the
+# POOL_BUILDER comment in the Makefile.
+default_builder: snoc-strix
+pool_builder: snoc-pool
+
+# Where `make bench` runs unless told otherwise. Deliberately not the
+# default builder: bench.sh measures one target in isolation, and the
+# node hosting the registry and the compiler cache is the one least
+# able to be idle.
+bench_node: snoc-think
+
+# Where `make gpu-test` and the serving stack land. Must name a node
+# that declares the `gpu` capability; nothing here cross-compiles for
+# the card it happens to have.
+gpu_node: snoc-think
+
+registry:
+  node: snoc-strix
+  port: 8080
+  # Zot runs as a bare-metal systemd service deployed outside this
+  # repository. The Ansible registry role verifies it and refuses to
+  # install a second one unless this is true.
+  managed: false
+  # Upstreams Zot mirrors on demand, written into each node's
+  # buildkitd.toml so a layer pull does not egress.
+  mirrors:
+    - docker.io
+    - ghcr.io
+    - quay.io
+
+cache:
+  node: snoc-strix
+  port: 8081
+  dir: /var/cache/sccache-webdav
+  # nginx binds the node's tailnet address rather than 0.0.0.0, to keep
+  # the store off any public interface.
+  bind: tailscale
+
+network:
+  # The tailnet must never go through the corporate proxy.
+  no_proxy:
+    - localhost
+    - 127.0.0.1
+    - "::1"
+    - .ts.net
+    - .local
+    - 10.0.0.0/8
+    - 100.64.0.0/10
+  # buildkitd writes its own resolv.conf for the build sandbox. MagicDNS
+  # first for tailnet names, then public resolvers, because this tailnet
+  # has no global nameservers and SERVFAILs on anything outside it.
+  nameservers:
+    - 100.100.100.100
+    - 64.59.135.135
+    - 8.8.8.8
+
+buildkit:
+  # Concurrent build STEPS, not cores. A single RUN still uses as many
+  # threads as the command inside it wants.
+  max_parallelism: 10
+  gc_keep_storage: 100GB
+  step_log_max_size: 104857600
+  step_log_max_speed: 10485760
+
+# `arch` is the card the node has; the `gpu` capability is whether we
+# are willing to run GPU tests on it. They are not the same claim —
+# snoc-gaming has a gfx1201 and does not get GPU work.
+#
+# Capabilities: build (takes bake targets), gpu (runs gpu-test and the
+# serving stack), registry (hosts Zot), cache (hosts the WebDAV
+# compiler-cache store), metrics (node_exporter on :9100, sampled by
+# perf-run).
+nodes:
+  - name: snoc-strix
+    # The address the node answers on. For a local node this is still
+    # written out: perfsample scrapes it over the tailnet.
+    host: snoc-strix.fold-leaffish.ts.net
+    connection: local
+    arch: gfx1151
+    platform: strix-halo
+    capabilities: [build, gpu, registry, cache, metrics]
+    # Upload throughput to the compiler-cache store, MB/s. balance.sh
+    # charges a target's cache export against this; the fleet's links
+    # differ by a factor of 25 and scheduling that ignores them sends
+    # the largest export down the slowest wire. Strix hosts the store,
+    # so its "upload" is a local write capped by disk.
+    link_mbps: 3000
+    colour: ["#2a78d6", "#3987e5"]
+
+  - name: snoc-think
+    # The builder is named snoc-think; the machine is
+    # snoc-thinkstation. There is no snoc-think on the tailnet.
+    host: snoc-thinkstation
+    connection: ssh
+    arch: gfx1201
+    platform: thinkstation
+    capabilities: [build, gpu, metrics]
+    link_mbps: 90
+    colour: ["#eb6834", "#d95926"]
+
+  - name: snoc-gaming
+    host: snoc-gaming
+    connection: ssh
+    arch: gfx1201
+    platform: gaming
+    capabilities: [build, metrics]
+    # WSL2 over WiFi.
+    link_mbps: 3.7
+    colour: ["#1baf7a", "#199e70"]
