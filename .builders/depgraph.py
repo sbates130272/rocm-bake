@@ -34,12 +34,6 @@ Several modes, because the scheduler needs several different answers:
                a failure. perfrun.sh builds these before it measures,
                so a new architecture does not need a manual bootstrap.
 
-Both checks normally assume a requested target will publish what its
-dependents need, and so skip it. --assume-no-push removes that
-assumption, for a caller that will build these targets and push none of
-them. Under PUBLISHED_INPUTS=1 every input is a registry ref, so such a
-run cannot hand anything to its own dependents and needs every ref
-checked, including the ones it is about to build.
 
   --group      The members of a bake group. So that callers naming a
                set of targets — the Makefile, perfrun.sh — do not keep
@@ -188,19 +182,12 @@ def needed(doc):
     return out
 
 
-def missing_refs(targets, publishes=True):
+def missing_refs(targets):
     """{ref: (set of requesting targets, owning target or None)}.
 
     The images `targets` resolve from the registry that the registry
     does not have, minus the ones this run publishes itself.
 
-    `publishes=False` drops that "minus": the caller is telling us it
-    will build these targets and push none of them, so a target cannot
-    satisfy its own dependents and every ref has to be checked. That is
-    the cold perf run — balance.sh rewrites `push-x` to `build-x` under
-    --no-push, while PUBLISHED_INPUTS=1 still resolves each input as a
-    registry ref, so a target built in-run is invisible to the one that
-    needs it.
 
     The owner is resolved against the *whole* graph, not against the
     requested set. Resolving it against the requested set is what the
@@ -228,7 +215,7 @@ def missing_refs(targets, publishes=True):
             # Produced by something this run will build and push, so it
             # is the scheduler's job to order it, not the registry's to
             # already have it.
-            if publishes and mine.get(ref) in wanted:
+            if mine.get(ref) in wanted:
                 continue
             if not exists(ref):
                 missing.setdefault(ref, set()).add(name)
@@ -262,12 +249,6 @@ def exists(ref):
 
 
 def main(argv):
-    # Order-independent, and stripped before the target list is read:
-    # callers build that list by interpolation and would otherwise have
-    # to care where the flag lands among the targets.
-    publishes = "--assume-no-push" not in argv
-    argv = [a for a in argv if a != "--assume-no-push"]
-
     if len(argv) < 2 or argv[0] not in ("--deps", "--preflight", "--group",
                                         "--dockerfiles",
                                         "--missing-targets"):
@@ -310,7 +291,7 @@ def main(argv):
                 print(name, path)
         return 0
 
-    found = missing_refs(targets, publishes=publishes)
+    found = missing_refs(targets)
     if found is None:
         print("depgraph: bake --print failed under PUBLISHED_INPUTS",
               file=sys.stderr)

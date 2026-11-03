@@ -64,8 +64,8 @@ while [ $# -gt 0 ]; do
 done
 [ -z "${ARCH}" ] && ARCH=$(make -s --eval='__a:;@printf "%s" "$(PYTORCH_ROCM_ARCH)"' __a 2>/dev/null)
 
-DRY_PUSH_FLAG="--no-push"
-[ "${MODE}" = warm ] && DRY_PUSH_FLAG=""
+# Both modes push now; see the namespace note below for why cold can.
+DRY_PUSH_FLAG=""
 
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 RUN_DIR="${PERF_DIR:-/var/tmp/rocm-perf}/${STAMP}"
@@ -101,6 +101,10 @@ SCCACHE_LOG="${SCCACHE_LOG_FILE:-/var/log/nginx/sccache.log}"
 # target starts when its own inputs are published and not before.
 PERF_TARGETS="${PERF_TARGETS:-$(python3 -I "$(dirname "${BASH_SOURCE[0]}")/depgraph.py" --group wheels) pytorch}"
 
+# Defined before its first use, which it was not: the namespace
+# block below logs, and sat above this line.
+log() { printf '[perf %(%H:%M:%S)T] %s\n' -1 "$*"; }
+
 # A prefix of this run's own, deleted afterwards. Identical reasoning to
 # bench.sh: the store is shared with the fleet and with the sibling
 # project, so a cold run that wrote into the live prefix would evict
@@ -115,7 +119,37 @@ else
     PREFIX="perf-${STAMP}"
 fi
 
-log() { printf '[perf %(%H:%M:%S)T] %s\n' -1 "$*"; }
+# And a registry namespace of its own, for the same reason and with a
+# larger consequence.
+#
+# A cold run used to pass --no-push while balance.sh set
+# PUBLISHED_INPUTS=1 — which it must, because `target:` contexts only
+# resolve within one builder and this schedules across three. Those two
+# together mean every target resolved its inputs from whatever was
+# published *previously* and nothing the run built was visible to the
+# next stage. So `perf-cold` measured each target built cold against
+# the last run's images: a coherent number, but not the "full cold
+# build" and "build from nothing" the docs promise.
+#
+# Pushing into a namespace of its own gives the handoff back without
+# putting cold-built images where anything else will pull them.
+# REGISTRY_NAME is the one lever that does it: every PUB_* ref and
+# every tag in rocm-bake.hcl is "${REGISTRY}/${REGISTRY_NAME}/...",
+# with no exceptions, so switching it moves images, caches and the refs
+# that resolve them together. The Makefile takes it from the
+# environment.
+#
+# A fresh namespace holds nothing, so the run really does build the
+# whole stack from nothing — which is what cold was always supposed to
+# mean, and what makes the result comparable to the claim.
+if [ "${MODE}" = warm ]; then
+    COLD_NS=""
+else
+    COLD_NS="${PERF_COLD_NAMESPACE:-$(make -s --eval='__n:;@printf "%s" "$(REGISTRY_NAME)"' __n 2>/dev/null)-coldrun}"
+    export REGISTRY_NAME="${COLD_NS}"
+    log "namespace ${COLD_NS}  (cold images stay out of the live one)"
+fi
+
 
 log "arch      ${ARCH}  mode=${MODE}"
 
@@ -149,30 +183,6 @@ BOOTSTRAP=$(PYTORCH_ROCM_ARCH="${ARCH}" python3 -I \
 # are satisfied and the run walks past the only thing that was
 # stopping it. So check the rest explicitly, and refuse here, where
 # the message can say what to do about it.
-UNBUILDABLE=""
-if [ "${MODE}" != warm ]; then
-    NEED=$(PYTORCH_ROCM_ARCH="${ARCH}" python3 -I \
-        "$(dirname "${BASH_SOURCE[0]}")/depgraph.py" \
-        --missing-targets --assume-no-push ${PERF_TARGETS} 2>/dev/null)
-    for t in ${NEED}; do
-        case " ${BOOTSTRAP} " in
-            *" ${t} "*) ;;
-            *) UNBUILDABLE="${UNBUILDABLE}${UNBUILDABLE:+ }${t}" ;;
-        esac
-    done
-fi
-
-# Reported by both paths, refused by only one: perf-plan's contract is
-# to show placement and build nothing, so it says this and still plans.
-cold_verdict() {
-    log "cold run cannot complete on ${ARCH}"
-    log "  needed by the run and not published: ${UNBUILDABLE}"
-    log "  a cold run builds them but pushes nothing, so the targets"
-    log "  that consume them would fail after building for hours."
-    log "  Publish them once first:"
-    log "    make perf-warm PERF_ARCH=${ARCH}"
-}
-
 if [ "${DRY}" = 1 ]; then
     log "dry run: showing placement only"
     # Planned together with the bootstrap, not without it. Planning
@@ -181,16 +191,10 @@ if [ "${DRY}" = 1 ]; then
     # ended in "refusing to schedule" one line after announcing it
     # would bootstrap them.
     [ -n "${BOOTSTRAP}" ] && log "would bootstrap first: ${BOOTSTRAP}"
-    [ -n "${UNBUILDABLE}" ] && cold_verdict
     PUBLISHED_INPUTS=1 PYTORCH_ROCM_ARCH="${ARCH}" \
     TARGETS="${BOOTSTRAP} ${PERF_TARGETS}" \
         ./.builders/balance.sh --dry-run ${DRY_PUSH_FLAG}
     exit $?
-fi
-
-if [ -n "${UNBUILDABLE}" ]; then
-    cold_verdict
-    exit 1
 fi
 
 # Built before the run directory exists, so none of it lands in the
@@ -352,7 +356,10 @@ if [ "${MODE}" = warm ]; then
     log "building (warm: caches on, pushing, shared sccache)"
 else
     EXTRA="--set *.cache-to= --no-cache --progress=rawjson"
-    PUSH_FLAG="--no-push"
+    # Pushes, into the namespace set above. A cold run that does not
+    # push cannot hand a target to the one that needs it, because
+    # PUBLISHED_INPUTS=1 resolves every input as a registry ref.
+    PUSH_FLAG=""
     log "building (cold: no layer cache, isolated sccache, no push)"
 fi
 
