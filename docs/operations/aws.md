@@ -180,6 +180,58 @@ layer cache: BuildKit's `type=registry` cache export works against ECR,
 but the two-tier arch-scoped `*-cache` repository scheme this repo uses
 would need revisiting against ECR's repository and lifecycle policies.
 
+## Runners, and why Lambda is not the builder
+
+An AWS fleet that only exists while CI is running is the obvious next
+thought, and the obvious implementation — a Lambda that runs the job —
+does not work. The limits are hard, and every one of them is breached
+by a wide margin:
+
+| Lambda limit | | A `pytorch-wheel` build |
+| --- | --- | --- |
+| 900 s per invocation | vs | hours |
+| 10,240 MB memory | vs | 4 GiB per core across 48+ cores |
+| 10,240 MB `/tmp` | vs | tens of GB of sources and objects |
+| no Docker daemon | vs | BuildKit needs one |
+
+The 15-minute ceiling cannot be raised by request. Lambda Managed
+Instances reach 90 minutes for asynchronous and event-source
+invocations, which is still an order of magnitude short, and the
+memory, storage and daemon problems remain regardless.
+
+What Lambda *is* right for here is the control plane. The pattern is:
+
+1. A webhook delivers `workflow_job` with `action: queued` to API
+   Gateway.
+2. A Lambda reads the job's labels, and if they match the fleet it
+   calls `RunInstances` against a launch template whose AMI already
+   has Docker, the runner and this repository's dependencies baked in.
+3. Userdata registers the runner with `--ephemeral`, so it accepts
+   exactly one job.
+4. On `workflow_job` `completed`, a second Lambda terminates the
+   instance; a scheduled sweep catches instances whose job never
+   arrived.
+
+Lambda orchestrates, EC2 builds, and nothing is running between
+pushes. The economics are good — the cost section above is per build
+hour, and a scale-to-zero fleet pays only for those.
+
+This repository does not implement it, and should not. The pattern has
+a mature implementation in
+[`philips-labs/terraform-aws-github-runner`](https://github.com/philips-labs/terraform-aws-github-runner),
+which already handles the parts that are tedious rather than
+interesting: the GitHub App credential rotation, spot interruption,
+the sweep for orphaned instances, scale-down of idle pools, and the
+webhook's signature verification. A homegrown version would be a worse
+one, and it would be the fleet's control plane.
+
+Two things carry over from the on-premises runners either way, and
+both are covered in [Self-hosted runners](runners.md): the labels are
+a contract that `check-contracts.py` enforces, and fork pull requests
+must never reach a self-hosted runner. The second is more acute on
+AWS, not less — an ephemeral instance still holds an instance profile
+and sits inside the VPC with the registry and the cache.
+
 ## Bringing it up
 
 1. Launch four instances in one AZ and one cluster placement group,

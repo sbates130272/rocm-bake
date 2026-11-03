@@ -43,6 +43,8 @@ systemd service owned outside this repository.
 | `list-nodes` | Which manifest is in effect, and the nodes it declares |
 | `fleet-apply` | Bring every node to the state the manifest claims (Ansible) |
 | `fleet-check` | Read-only acceptance test: can each node do its job? |
+| `fleet-runners` | Register/refresh the self-hosted Actions runners |
+| `runner-status` | What GitHub thinks the fleet's runners are doing |
 | `builder-setup` | A buildx builder for every build node in the manifest |
 | `builder-<node>` | One of them — `builder-snoc-think`, say |
 | `builder-pool` | Every build node as one buildx builder (little used — see below) |

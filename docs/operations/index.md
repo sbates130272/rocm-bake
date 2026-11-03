@@ -18,6 +18,7 @@ else is diagnosis.
 
 ```bash
 make fleet-check      # the whole fleet, against what the manifest claims
+make runner-status    # are the self-hosted CI runners online?
 make zot-check        # registry active and answering
 make cache-check      # every node can reach the compiler cache
 make builder-health   # which builders can take work
@@ -43,9 +44,14 @@ reports `running`, `inactive` or `error` per node.
 
 ## Continuous integration
 
-Four workflows, all on GitHub-hosted runners. None of them builds a real
-image — the images need this fleet — so CI validates structure and
-agreement rather than output.
+Four workflows, almost all on GitHub-hosted runners. None of them
+builds a real image — the images need this fleet — so CI validates
+structure and agreement rather than output.
+
+The exception is the `fleet` job, which runs BuildKit's Dockerfile
+checks on a [self-hosted runner](runners.md) because resolving each
+target's base image needs the tailnet registry. It never runs for a
+pull request from a fork.
 
 **`CI — Dockerfile & bake validation`** runs on pull requests and pushes
 to `main`, path-filtered to the build files. It enumerates the bake
