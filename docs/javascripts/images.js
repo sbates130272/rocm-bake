@@ -87,6 +87,38 @@
     el.innerHTML = html;
   }
 
+  // No shared/own split here, deliberately. A wheel image is a scratch
+  // image holding one .whl and nothing else, so every layer is its own
+  // and the two columns would read `0.00` and the total on every row —
+  // three columns saying one thing. The run images above are the case
+  // the split exists for.
+  function renderWheels(el, data) {
+    const rows = data.wheels || [];
+    if (!rows.length) {
+      note(el, "No wheel sizes have been published yet.");
+      return;
+    }
+    let html =
+      "<table><thead><tr><th>wheel</th><th>tag</th><th>arch</th>" +
+      "<th>size</th><th>pushed</th></tr></thead><tbody>";
+    for (const r of rows) {
+      html +=
+        "<tr><td><code>" +
+        r.repo +
+        "</code></td><td><code>" +
+        r.tag +
+        "</code></td><td><code>" +
+        (r.arch || "–") +
+        "</code></td><td><strong>" +
+        gb(r.bytes) +
+        "</strong></td><td>" +
+        (r.pushed || "–").replace("T", " ").slice(0, 16) +
+        "</td></tr>";
+    }
+    html += "</tbody></table>";
+    el.innerHTML = html;
+  }
+
   function renderSplit(canvas, data) {
     const rows = (data.images || []).filter((r) => r.bytes > 0);
     if (!rows.length || typeof Chart === "undefined") return false;
@@ -222,8 +254,9 @@
     const splitEl = document.getElementById("images-split");
     const histEl = document.getElementById("images-history");
     const cacheEl = document.getElementById("images-caches");
+    const wheelEl = document.getElementById("images-wheels");
     const stampEl = document.getElementById("images-generated");
-    if (!tableEl && !splitEl && !histEl && !cacheEl) return;
+    if (!tableEl && !splitEl && !histEl && !cacheEl && !wheelEl) return;
 
     const data = await load();
     if (!data) {
@@ -234,6 +267,7 @@
       if (splitEl) splitEl.parentElement.remove();
       if (histEl) histEl.parentElement.remove();
       if (cacheEl) cacheEl.remove();
+      if (wheelEl) wheelEl.remove();
       return;
     }
 
@@ -245,6 +279,7 @@
     if (tableEl) renderTable(tableEl, data);
     if (splitEl && !renderSplit(splitEl, data)) splitEl.parentElement.remove();
     if (histEl && !renderHistory(histEl, data)) histEl.parentElement.remove();
+    if (wheelEl) renderWheels(wheelEl, data);
     if (cacheEl) renderCaches(cacheEl, data);
   }
 
