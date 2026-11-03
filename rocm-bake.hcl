@@ -281,6 +281,11 @@ variable "PUBLISHED_INPUTS" {
 PUB_BASE    = "${REGISTRY}/${REGISTRY_NAME}/base:${ROCM_VERSION}-${PYTHON_VERSION}-${ARCH_TAG}"
 PUB_ROCM    = "${REGISTRY}/${REGISTRY_NAME}/rocm-runtime:${ROCM_VERSION}-${ARCH_TAG}"
 PUB_PYTORCH = "${REGISTRY}/${REGISTRY_NAME}/pytorch:${PYTORCH_VERSION}-${ROCM_VERSION}-${ARCH_TAG}"
+# No ARCH_TAG and no ROCM_VERSION, deliberately: v2.15.0's source is
+# the same bytes whatever it will be compiled against, so one copy
+# serves every architecture and every ROCm. GIT_REF is in the tag
+# because it changes which commit was checked out.
+PUB_SRC     = "${REGISTRY}/${REGISTRY_NAME}/pytorch-src:${PYTORCH_VERSION}${GIT_REF != "" ? "-g${GIT_REF}" : ""}"
 PYTORCH_CACHE_TO = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/pytorch-cache:latest${CACHE_ARCH}${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=true,ignore-error=true"]
 
 PUB_PYTORCH_WHEEL = "${REGISTRY}/${REGISTRY_NAME}/pytorch-wheel:${PYTORCH_VERSION}-${ROCM_VERSION}-${ARCH_TAG}"
@@ -518,7 +523,7 @@ variable "REQUIRE_SCCACHE" {
 # belongs back in this list once a GPU node is available.
 group "default" {
   targets = [
-    "rocm-runtime", "pytorch-base", "pytorch",
+    "rocm-runtime", "pytorch-src", "pytorch-base", "pytorch",
     "pytorch-wheel", "triton-wheel", "aiter-wheel",
     "cupy-wheel", "nixl-wheel", "vllm", "vllm-wheel",
     "lmcache", "lmcache-wheel",
@@ -592,6 +597,49 @@ target "rocm-runtime" {
     ROCM_VERSION        = ROCM_VERSION
     PYTORCH_ROCM_ARCH   = PYTORCH_ROCM_ARCH
     ROCM_PRUNE_PROFILE  = ROCM_PRUNE_PROFILE
+  }
+
+  attest = NO_PROVENANCE
+
+  output = ["type=image,compression=zstd"]
+}
+
+# ─── PyTorch source ──────────────────────────────────────────────
+# The clone, once, as an artifact. Keyed on PYTORCH_VERSION and
+# GIT_REF alone — see docker/Dockerfile.pytorch-src for why, and for
+# what it cost to have the clone sitting on top of the base image
+# instead.
+#
+# No arch in the tag and no arch in the cache ref, because there is
+# nothing architecture-specific in a source tree. One build serves the
+# whole fleet.
+target "pytorch-src" {
+  dockerfile = "docker/Dockerfile.pytorch-src"
+  tags = compact([
+    PUB_SRC,
+    "${REGISTRY}/${REGISTRY_NAME}/pytorch-src:latest",
+  ])
+  labels = merge(BASE_LABELS, {
+    "org.opencontainers.image.title"       = "pytorch-src"
+    "org.opencontainers.image.description" = "PyTorch ${PYTORCH_VERSION} source tree"
+    "org.opencontainers.image.version"     = PYTORCH_VERSION
+  })
+  platforms = ["linux/amd64"]
+
+  cache-from = [
+    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/pytorch-src-cache:latest,mode=max,registry.insecure=true",
+  ]
+  cache-to = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/pytorch-src-cache:latest${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=true,ignore-error=true"]
+
+  args = {
+    # noarch in the arch slot rather than omitting it: the name is a
+    # four-field contract that history.py splits on, and a
+    # three-field one loses its arch and run-id columns. There is
+    # genuinely no architecture here, and "noarch" says so.
+    BUILDKIT_BUILD_NAME = "rocm-pytorch-build/pytorch-src/noarch/${RUN_ID}"
+    SOURCE_DATE_EPOCH   = EPOCH_PYTORCH
+    PYTORCH_VERSION     = PYTORCH_VERSION
+    GIT_REF             = GIT_REF
   }
 
   attest = NO_PROVENANCE
@@ -693,11 +741,13 @@ target "pytorch-common" {
   contexts = USE_PUB ? {} : {
     triton-wheels = "target:triton-wheel"
     base-img      = "target:pytorch-base"
+    pytorch-src   = "target:pytorch-src"
   }
 
   args = {
     TRITON_WHEEL_IMAGE  = USE_PUB ? PUB_TRITON : "triton-wheels"
     BASE_IMAGE          = USE_PUB ? PUB_BASE : "base-img"
+    PYTORCH_SRC_IMAGE   = USE_PUB ? PUB_SRC : "pytorch-src"
     BUILDKIT_BUILD_NAME = "rocm-pytorch-build/pytorch/${PYTORCH_ROCM_ARCH}/${RUN_ID}"
     SOURCE_DATE_EPOCH   = EPOCH_PYTORCH
     ROCM_VERSION         = ROCM_VERSION

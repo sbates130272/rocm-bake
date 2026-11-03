@@ -73,6 +73,13 @@ build lmcache-wheel     66
 #   lmcache       1m45s/1m49s/1m42s observed across three nodes.
 #   pytorch-base  5s/6s observed. Small, but a row of 6 beats a
 #                 fallback of 1 that means "unknown".
+#   pytorch-src   1260 = a measured 1204s clone plus ~56s of apt and
+#                 export, from the 2026-11-03 gfx1201 build. Almost
+#                 entirely network: it fetches PyTorch and every
+#                 submodule, and compiles nothing. Place it anywhere
+#                 with bandwidth, not anywhere with cores — and note
+#                 it is built once per PYTORCH_VERSION, so most runs
+#                 never schedule it at all.
 #   rocm-runtime  NOT YET MEASURED. 300 is a placeholder, chosen high
 #                 rather than low: the target purges 260 packages out
 #                 of a 20 GB tree and then copies the 4.4 GB that
@@ -89,6 +96,7 @@ build lmcache-wheel     66
 build pytorch         2336
 build vllm            1409
 build rocm-runtime     300
+build pytorch-src     1260
 build lmcache          105
 build pytorch-base       6
 
