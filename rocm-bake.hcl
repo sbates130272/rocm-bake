@@ -348,7 +348,40 @@ IS_RDNA = (
   ARCH_RDNA_TEST != replace(ARCH_RDNA_TEST, "gfx12", "")
 )
 
-PREBUILD_LEVEL = PREBUILD_KERNELS != "" ? PREBUILD_KERNELS : (IS_RDNA ? "0" : "2")
+# gfx125x reaches level 0 by a different road than RDNA does, and for a
+# reason that should expire. The argument above — that these are
+# MI450-class parts, so the prebuild is exactly what they want — still
+# holds. AITER v0.1.28 simply cannot deliver it: against ROCm 10.1 the
+# prebuild fails module after module on gfx1250, measured on run
+# 20261102T214151Z and again directly:
+#
+#   module_activation                           (CK brace, patched in
+#                                                Dockerfile.aiter)
+#   module_gemm_a8w8_blockscale_cktile
+#   module_gemm_a4w4_blockscale
+#   module_gemm_a8w8_blockscale_bpreshuffle_cktile
+#   module_deepgemm
+#   module_gemm_a8w8_bpreshuffle_cktile
+#   module_moe_sorting_opus
+#   module_moe_opus
+#   module_iq2r_moe
+#   module_moe_mxfp4_aux
+#
+# ROCm/aiter#6767 is the upstream inventory of the same gaps, and
+# records that 18 of 21 modules build on gfx942 and fail only on
+# gfx1250. This is enablement in progress, not something to patch
+# around one file at a time — the CK brace fix cleared the first module
+# and the build then walked straight into the next nine.
+#
+# So gfx125x takes level 0 until AITER can build for it, on the
+# reasoning the gfx1201 note already makes three lines up: a wheel that
+# exists beats a faster first inference that never happens. The
+# modules are still reachable, because AITER JIT-compiles on first use;
+# the ones listed above will fail there instead, if anything calls
+# them. Revert this the moment a newer AITER_REF builds them.
+IS_GFX125 = PYTORCH_ROCM_ARCH != replace(PYTORCH_ROCM_ARCH, "gfx125", "")
+
+PREBUILD_LEVEL = PREBUILD_KERNELS != "" ? PREBUILD_KERNELS : ((IS_RDNA || IS_GFX125) ? "0" : "2")
 
 # RDNA4 specifically, where IS_RDNA is RDNA3-or-4. Same gfx125x strip:
 # gfx1250 is gfx12-numbered and is not RDNA, so it must not pull in a

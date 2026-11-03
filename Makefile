@@ -1369,8 +1369,9 @@ compose_default = $(shell sed -n 's/.*$${$(1):-\([^}]*\)}.*/\1/p' $(COMPOSE_FILE
 # leaving the default to apply.
 COMPOSE_VARS = $(foreach v,TRANSFER_MODE KV_TIER VLLM_DEV_MODE HSA_IPC_LEGACY \
                            L1_SIZE_GB CHUNK_SIZE MAX_MODEL_LEN GPU_UTIL \
-                           KV_STORE HF_CACHE, \
-                 $(if $($(v)),$(v)=$($(v))))
+                           KV_STORE HF_CACHE VLLM_EXTRA_ARGS \
+                           TORCH_BLAS_PREFER_HIPBLASLT, \
+                 $(if $($(v)),$(v)='$($(v))'))
 
 COMPOSE        = DOCKER_HOST=ssh://$(GPU_HOST) RENDER_GID=$(GPU_RENDER_GID) \
                  VLLM_BIND=$(VLLM_BIND) MODEL=$(SERVE_MODEL) \
@@ -1428,8 +1429,23 @@ SERVE_LOG_ARGS ?=
 # Extra flags for serve-test, e.g. SERVE_TEST_ARGS='--baseline'
 SERVE_TEST_ARGS ?=
 
+# Down before up, and both services rather than vllm alone.
+#
+# vllm joins lmcache's IPC namespace (`ipc: service:lmcache`), so the
+# two are not independent: `up -d vllm` recreates only vllm and leaves
+# lmcache running, which means a fresh engine attaches to a namespace a
+# previous, half-initialised engine already lived in. Across a run of
+# failed starts — a bad flag, an OOM, an unsupported arch — lmcache
+# accumulates whatever those left behind, and the next attempt inherits
+# it. That turns a clean failure into one that depends on what was
+# tried before it.
+#
+# `down` is cheap next to loading a model, and it is the only way to be
+# sure a result is attributable to the configuration under test rather
+# than to the one before it.
 serve-vllm: ## Serve vLLM alone on GPU_HOST, no KV offload (the baseline)
 	@echo "serving $(SERVE_MODEL) on $(GPU_HOST) — vLLM only"
+	@$(COMPOSE) down --remove-orphans 2>/dev/null || true
 	@$(COMPOSE) up -d --wait lmcache 2>/dev/null || true
 	@KV_OFFLOAD=0 $(COMPOSE) up -d vllm
 	@$(MAKE_BIN) --no-print-directory serve-wait
