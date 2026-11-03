@@ -1,17 +1,19 @@
 # Self-hosted Actions runners
 
-Most of this repository's CI runs on GitHub-hosted runners and should
-stay there. A handful of checks cannot: they resolve their base image
-from the fleet's Zot over the tailnet, and a GitHub-hosted runner gets
+Every one of this repository's CI jobs runs on a GitHub-hosted runner
+today, and no node registers a self-hosted one. This page describes
+the machinery for when one does.
 
-```text
-failed to do request: Head "https://snoc-strix...:8080/v2/...":
-dial tcp: lookup snoc-strix.fold-leaffish.ts.net: no such host
-```
+**SNOC deliberately registers none.** Those machines are driven by
+hand — `make push-all`, `make perf-run` — and a GitHub Actions job
+executing on them is not wanted: the runner user is in the `docker`
+group, which is a short path to root, and the nodes hold the registry,
+the compiler cache and the tailnet. `manifests/snoc.yml` declares no
+`runner` capability and no `runner:` block, so `runner_nodes` is empty
+and every play and check over it matches nothing.
 
-Those checks were deleted rather than skipped when CI moved off the
-fleet. The `fleet` job in `ci.yml` is where they live now, and this
-page is how the runner it targets gets registered.
+The intended home is the AWS profile, where a runner is a rented
+instance rather than a desk.
 
 ## What a runner is, here
 
@@ -19,18 +21,22 @@ One more thing a node can be declared to be:
 
 ```yaml
 nodes:
-  - name: snoc-strix
-    capabilities: [build, gpu, registry, cache, metrics, runner]
+  - name: aws-build-1
+    capabilities: [build, metrics, runner]
 ```
+
+plus a `runner:` block naming the repository. `fleet.py` hard-fails if
+a node claims the capability without one — a runner registered against
+nothing takes no jobs, and the jobs meant for it queue rather than
+error.
 
 `ansible/roles/github_runner` then installs the runner, registers it
 and runs it as a systemd service. It is grouped, configured and checked
 exactly like every other capability — `runner_nodes` is a group the
 same way `cache_nodes` is.
 
-The node is deliberately the one that hosts the registry and the cache.
-A runner is only useful here if it can reach both, and that node
-reaches them over loopback.
+A runner is only useful on a node that can reach the registry and the
+compiler cache, which on any profile means a node inside the fleet.
 
 ## Labels
 
@@ -41,8 +47,9 @@ the single definition:
 self-hosted, rocm-bake, <fleet>, build, gpu, <arch>
 ```
 
-so `snoc-strix` registers as `self-hosted, rocm-bake, snoc, build, gpu,
-gfx1151`.
+so a node on the `aws` fleet registers `self-hosted, rocm-bake, aws,
+build`, and the fleet name is what keeps a job aimed at one profile
+from landing on another.
 
 `check-contracts.py` asserts that every `runs-on: [self-hosted, …]` in
 `.github/workflows/` asks only for labels some runner node registers.
@@ -51,28 +58,46 @@ does not fail. GitHub queues it, and keeps queueing it, until the
 workflow times out hours later and reports as a slow run. Nothing else
 would have told you the label was a typo.
 
-## Fork pull requests do not run here
+## Fork pull requests, and why an `if:` is not the boundary
 
 A self-hosted runner executes whatever the workflow tells it to, on a
-machine with the tailnet, the registry and the compiler cache in reach.
-A pull request from a fork is code from someone outside the repository.
-Running one on the fleet is remote code execution on the build
-machines, and no amount of review-before-approve makes it safe, because
-the approval gate is per-PR and the attack is a later push to the same
-branch.
+machine with the registry and the compiler cache in reach. A pull
+request from a fork is code from outside the repository. Running one
+on the fleet is remote code execution on the build machines.
 
-So the `fleet` job carries:
+The obvious guard is a job-level condition:
 
 ```yaml
-if: >-
-  github.event_name != 'pull_request' ||
-  github.event.pull_request.head.repo.full_name == github.repository
+# NOT sufficient on its own
+if: github.event.pull_request.head.repo.full_name == github.repository
 ```
 
-Fork PRs skip it and still get every GitHub-hosted job, including
-hadolint over all nine Dockerfiles. This is also why it is a separate
-job rather than more steps inside `targets` — the boundary is a job
-boundary, where it can be read at a glance.
+That is worth having, and it is not a boundary. `ci.yml` triggers on
+`pull_request`, not `pull_request_target`, so the workflow file that
+runs for a fork PR is **the fork's copy** — and `.github/workflows/**`
+is inside that file's own `paths:` filter. A fork can therefore edit
+the condition out in the same pull request that exploits it. The gate
+protects against accident, not intent.
+
+This repository is public, which makes the distinction load-bearing.
+The controls that actually hold are outside the workflow file:
+
+1. **Require approval for all outside collaborators**, not just
+   first-time contributors — Settings → Actions → "Approval for
+   running fork pull request workflows". The default lets a second PR
+   from the same author run unapproved.
+2. **Scope the runner's labels** so that only the jobs meant for it can
+   land on it. A fleet-wide `self-hosted` is not a target; `[self-hosted,
+   rocm-bake, aws]` is.
+3. **Prefer scheduled and dispatch triggers** for anything self-hosted.
+   A nightly on `schedule:` runs the default branch's workflow file,
+   which no fork can rewrite. This is the reason the Dockerfile checks
+   belong in the nightly rather than in the PR gate.
+
+GitHub's own guidance is blunter: do not use self-hosted runners on
+public repositories. Treat anything registered here as a machine that
+may at some point run a stranger's code, and size its blast radius
+accordingly.
 
 ## The GitHub App
 
@@ -125,15 +150,20 @@ standard library.
 
 ## Registering
 
+On a profile whose manifest declares `runner` nodes — not `snoc`:
+
 ```bash
-make fleet-runners ANSIBLE_FLAGS=--check   # what would change
-make fleet-runners
-make runner-status                         # what GitHub thinks
-make fleet-check                           # the service, node-side
+FLEET=aws make fleet-runners ANSIBLE_FLAGS=--check   # what would change
+FLEET=aws make fleet-runners
+FLEET=aws make runner-status                         # what GitHub thinks
+FLEET=aws make fleet-check                           # the service, node-side
 ```
 
-Then turn the job on. It is dormant until a repository variable says
-otherwise:
+On `snoc` these are no-ops: `runner_nodes` is empty, the play matches
+nothing, and `make runner-status` says so.
+
+Then turn the consuming job on. Any self-hosted job should be dormant
+until a repository variable says otherwise:
 
 ```bash
 gh variable set FLEET_RUNNERS --body true
@@ -141,9 +171,9 @@ gh variable set FLEET_RUNNERS --body true
 
 This exists because of the queueing behaviour above. With no runner
 registered — the state this repository is in by default, and the state
-it returns to whenever the fleet is down for a while — an ungated job
-would make every push to `main` hang until the workflow timed out.
-Unset it when taking the fleet offline for any length of time:
+it returns to whenever the fleet is down — an ungated job would make
+every triggering push hang until the workflow timed out. Unset it when
+taking the fleet offline for any length of time:
 
 ```bash
 gh variable delete FLEET_RUNNERS

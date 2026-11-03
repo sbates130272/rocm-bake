@@ -33,20 +33,12 @@ bench_node: snoc-think
 # the card it happens to have.
 gpu_node: snoc-think
 
-# Self-hosted Actions runners, on the nodes that declare `runner`.
-#
-# They exist for the CI jobs that cannot work anywhere else: the
-# `docker build` checks pull their base image from the Zot below, over
-# the tailnet, which a GitHub-hosted runner cannot resolve.
-#
-# A GitHub App mints the registration token, rather than a PAT, so
-# nothing long-lived is stored and the permission is scoped to
-# Administration on this one repository. The App's id, installation id
-# and key path are not here: they are a credential rather than fleet
-# topology, and gh-app-token.py reads them from the control host's
-# environment. See docs/operations/runners.md.
-runner:
-  repo: sbates130272/rocm-bake
+# No `runner:` block, and no node here declares the `runner`
+# capability. SNOC is driven by hand — `make push-all`, `make
+# perf-run` — and a GitHub Actions job executing on these machines is
+# not wanted. The capability, the Ansible role and gh-app-token.py all
+# exist and are exercised by the AWS profile; see
+# docs/operations/runners.md.
 
 registry:
   node: snoc-strix
@@ -112,7 +104,7 @@ nodes:
     connection: local
     arch: gfx1151
     platform: strix-halo
-    capabilities: [build, gpu, registry, cache, metrics, runner]
+    capabilities: [build, gpu, registry, cache, metrics]
     # Upload throughput to the compiler-cache store, MB/s. balance.sh
     # charges a target's cache export against this; the fleet's links
     # differ by a factor of 25 and scheduling that ignores them sends

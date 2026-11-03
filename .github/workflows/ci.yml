@@ -115,67 +115,17 @@ jobs:
           done
 
       # Three `docker build` steps used to sit here and were removed:
-      # they pulled their base image from the tailnet Zot, which a
-      # GitHub-hosted runner cannot resolve. The `fleet` job below is
-      # where that check lives now.
-
-  # What the removed steps were trying to do, on a runner that can
-  # actually do it. `--call=check` resolves each target's base image —
-  # which is the step that needs the tailnet registry — and runs
-  # BuildKit's own Dockerfile checks against the real args from
-  # rocm-bake.hcl. It builds nothing, so it costs seconds rather than
-  # hours, and it covers all nine Dockerfiles rather than the three
-  # that had hand-written steps.
-  #
-  # SECURITY: this job runs on the build fleet, which can reach the
-  # tailnet, the registry and the compiler cache. A pull request from a
-  # fork must never run here — it would be arbitrary code execution on
-  # those machines. The `if` below is that boundary, and it is the
-  # reason this is a separate job rather than more steps in `targets`.
-  # Fork PRs still get every GitHub-hosted job, including hadolint.
-  # FLEET_RUNNERS is a repository variable, and this job is dormant
-  # until it is set to "true". That is not belt-and-braces: a job whose
-  # labels no runner carries is not an error, it queues — so with the
-  # fleet offline or no runner yet registered, every push to main would
-  # sit here until the workflow timed out. Set it once the runner is
-  # up (`make runner-status` to confirm), and unset it when taking the
-  # fleet down for any length of time:
-  #
-  #   gh variable set FLEET_RUNNERS --body true
-  #   gh variable delete FLEET_RUNNERS
-  fleet:
-    name: Dockerfile checks on the fleet
-    needs: enumerate
-    if: >-
-      vars.FLEET_RUNNERS == 'true' &&
-      (github.event_name != 'pull_request' ||
-       github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: [self-hosted, rocm-bake]
-    # The checks build nothing, so this is minutes of work at most. A
-    # bound here means a wedged runner fails the job rather than
-    # holding the workflow for its full six hours.
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        target: ${{ fromJson(needs.enumerate.outputs.targets) }}
-    steps:
-      - uses: actions/checkout@v4
-
-      # No setup-buildx-action: the fleet's builders are already
-      # configured by ansible/roles/buildkit and point at the shared
-      # cache. Creating a throwaway one here would miss the registry
-      # mirrors and the [dns] block that make the base image
-      # resolvable in the first place.
-      - name: Which builder and which fleet
-        run: |
-          docker buildx inspect --bootstrap | head -20
-          python3 -I .builders/fleet.py --table
-
-      - name: Dockerfile checks for ${{ matrix.target }}
-        run: |
-          docker buildx bake -f rocm-bake.hcl --call=check \
-            "${{ matrix.target }}"
+      # they pull their base image from the tailnet Zot, which a
+      # GitHub-hosted runner cannot resolve. `docker buildx bake
+      # --call=check` is what should replace them — it resolves each
+      # target's base image and runs BuildKit's own checks against the
+      # real args, in seconds rather than hours.
+      #
+      # It needs a runner that can reach the registry, and there is
+      # none: SNOC is driven by hand and deliberately registers no
+      # runner, and the AWS profile's runners do not exist yet. This
+      # comes back as part of the nightly, on `runs-on: [self-hosted,
+      # aws]`, not as a per-PR check — see docs/operations/runners.md.
 
   wheelindex:
     name: Per-arch pip index

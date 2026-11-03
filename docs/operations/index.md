@@ -48,10 +48,9 @@ Four workflows, almost all on GitHub-hosted runners. None of them
 builds a real image — the images need this fleet — so CI validates
 structure and agreement rather than output.
 
-The exception is the `fleet` job, which runs BuildKit's Dockerfile
-checks on a [self-hosted runner](runners.md) because resolving each
-target's base image needs the tailnet registry. It never runs for a
-pull request from a fork.
+No job runs on the fleet. SNOC is driven by hand and registers no
+[self-hosted runner](runners.md) — the machinery exists for the AWS
+profile, which is where a scheduled build will run.
 
 **`CI — Dockerfile & bake validation`** runs on pull requests and pushes
 to `main`, path-filtered to the build files. It enumerates the bake

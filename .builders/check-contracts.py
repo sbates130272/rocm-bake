@@ -470,7 +470,12 @@ def check_runner_labels():
 
     wf = ROOT / ".github" / "workflows"
     for path in sorted(wf.glob("*.yml")):
-        src = path.read_text()
+        # Comment lines are dropped first. These files explain, at
+        # length, the runners they are not using — and a `runs-on:`
+        # quoted inside that prose is not a job, so matching it would
+        # make the check fire on its own documentation.
+        src = "\n".join(ln for ln in path.read_text().split("\n")
+                        if not ln.lstrip().startswith("#"))
         for m in re.finditer(r"runs-on:\s*\[([^\]]*)\]", src):
             labels = [x.strip().strip("'\"") for x in m.group(1).split(",")]
             if "self-hosted" not in labels:
