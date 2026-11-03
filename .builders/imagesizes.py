@@ -24,6 +24,7 @@ Usage:
                 [--caches R...] [--layers] [--json PATH]
 """
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -42,16 +43,72 @@ def gb(n):
     return f"{n / 1e9:.2f} GB"
 
 
-def newest_tag(registry, namespace, repo, tags):
-    """The tag most recently pushed, preferring artifact tags.
+def tag_arch(tag):
+    """The GPU architecture a tag is for, or None if it names none.
+
+    parse_tag() is the right reader for a wheel tag and cannot read
+    every tag here. It expects `<version>-<rocm>-<arch>`, and `base`
+    publishes `<rocm>-<python>-<arch>` — 10.1.0-full-3.14-gfx1201 —
+    which puts a second version where the arch should be and does not
+    match. So `base` has never parsed as an artifact tag, and the
+    `artifacts or tags` fallback below quietly sized whatever it had
+    pushed most recently instead: a *dirty* build, in the table that
+    prompted this.
+
+    Widening wheelhouse.TAG_RE would be the wrong fix — wheelindex.py
+    and the pip index depend on its groups, and this needs one of them.
+    `gfxNNNN` appears in exactly one place in every tag this repo
+    publishes, so look for it directly and leave the regex alone.
+    """
+    parsed = parse_tag(tag)
+    if parsed:
+        return parsed[2]
+    m = re.search(r"-(gfx[0-9a-z_]+?)(?:-g[0-9a-f]+(?:-dirty)?)?$", tag)
+    return m.group(1) if m else None
+
+
+def newest_tag(registry, namespace, repo, tags, arch=None):
+    """The tag most recently pushed for `arch`, preferring artifact tags.
 
     `latest` is excluded when anything else is available: it aliases
     whichever build ran last, so sizing it tells you nothing about
     *which* build, and the arch is exactly what you want in the table.
+
+    `arch` narrows the pool to one GPU, and the shared/own split below
+    is meaningless without it. Picking per repo by push time alone put
+    six architectures in one table — rocm-runtime gfx1201 beside base
+    on a dirty arch-less tag, pytorch gfx950, vllm gfx1250 — and
+    mark_shared() then compared layers across all of them. That is why
+    rocm-runtime reported `shared 0.00 GB`: the gfx1201 base that
+    carries its layer was not the base being sized.
+
+    noarch survives the filter: triton publishes one architecture-
+    independent wheel, and it is genuinely shared by every image here.
     """
     info = zot_tag_info(registry, namespace, repo)
-    artifacts = [t for t in tags if parse_tag(t)]
-    pool = artifacts or tags
+    if arch:
+        # Anything naming this GPU, plus the genuinely arch-independent
+        # tags — triton publishes one noarch wheel that every image
+        # here really does share.
+        pool = [t for t in tags
+                if tag_arch(t) == arch
+                or (parse_tag(t) and parse_tag(t)[2] == "noarch")]
+    else:
+        # The `or tags` fallback is for an unfiltered call only. Under
+        # a filter it would reach for `latest` — an alias to whichever
+        # arch built last — and reintroduce exactly the mixing the
+        # filter exists to stop. "Not published for this arch" is the
+        # honest answer, and the caller drops the row.
+        pool = [t for t in tags if parse_tag(t)] or tags
+
+    # A dirty build is a build from an uncommitted tree. It is a real
+    # image and worth keeping reachable, but it should never be the one
+    # a size table reports while a clean build of the same thing
+    # exists — that is how `base` came to be represented by
+    # 10.1.0-full-3.14-gab7317e-dirty.
+    clean = [t for t in pool if not t.endswith("-dirty")]
+    pool = clean or pool
+
     pool = sorted(pool, key=lambda t: info.get(t, (0, ""))[1] or "",
                   reverse=True)
     if not pool:
@@ -60,14 +117,14 @@ def newest_tag(registry, namespace, repo, tags):
     return tag, (info.get(tag, (None, None))[1])
 
 
-def image_entry(registry, namespace, repo):
+def image_entry(registry, namespace, repo, arch=None):
     """Size one repository's newest image, or None if it has none."""
     base = f"http://{registry}/v2/{namespace}/{repo}"
     try:
         tags = fetch(f"{base}/tags/list")["tags"] or []
     except Exception:
         return None
-    tag, pushed = newest_tag(registry, namespace, repo, tags)
+    tag, pushed = newest_tag(registry, namespace, repo, tags, arch)
     if not tag:
         return None
     try:
@@ -180,7 +237,7 @@ def main(argv):
     # Only the first two bare words are positional; the rest belong to
     # whichever --flag list they follow.
     consumed = set()
-    for flag in ("--images", "--wheels", "--caches", "--json"):
+    for flag in ("--images", "--wheels", "--caches", "--json", "--arch"):
         consumed.update(split_args(argv, flag))
     positional = [a for a in positional if a not in consumed]
     if len(positional) < 2:
@@ -188,9 +245,14 @@ def main(argv):
         return 2
     registry, namespace = positional[0], positional[1]
 
-    images = [e for e in (image_entry(registry, namespace, r)
+    # One architecture per table, because shared/own is only meaningful
+    # within one. The Makefile always passes it; a bare call without it
+    # keeps the old cross-arch behaviour rather than guessing.
+    arch = (split_args(argv, "--arch") or [None])[0]
+
+    images = [e for e in (image_entry(registry, namespace, r, arch)
                           for r in split_args(argv, "--images")) if e]
-    wheels = [e for e in (image_entry(registry, namespace, r)
+    wheels = [e for e in (image_entry(registry, namespace, r, arch)
                           for r in split_args(argv, "--wheels")) if e]
     caches = [e for e in (cache_entry(registry, namespace, r)
                           for r in split_args(argv, "--caches")) if e]

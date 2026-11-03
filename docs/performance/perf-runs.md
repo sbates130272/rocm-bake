@@ -6,7 +6,7 @@ that explains where the time went.
 
 ## Three harnesses, three questions
 
-| | `bench.sh` | `make perf-run` | `make perf-build` |
+| | `bench.sh` | `make perf-cold` | `make perf-warm` |
 | --- | --- | --- | --- |
 | runs targets | one at a time | across the fleet at once | across the fleet at once |
 | caches | isolated | cold: none | both, as normal |
@@ -20,7 +20,7 @@ that explains where the time went.
     share the sccache store and the registry — both of which live on
     Strix, which is also a build node.
 
-`perf-build` is the same instrumentation on an ordinary build: layer
+`perf-warm` is the same instrumentation on an ordinary build: layer
 cache and sccache both live, results pushed, the fleet's real sccache
 prefix. It is the one to use when the question is about the build you
 actually run rather than about a build from nothing — and the two
@@ -31,8 +31,8 @@ almost entirely export rather than compute.
 
 ```bash
 make perf-plan                      # placement only, builds nothing
-make perf-run PERF_ARCH=gfx1201     # cold: no caches, hours
-make perf-build PERF_ARCH=gfx1201   # normal: caches on, pushes
+make perf-cold PERF_ARCH=gfx1201    # cold: no caches, hours
+make perf-warm PERF_ARCH=gfx1201    # warm: caches on, pushes
 make perf-report                    # markdown + SVG from the newest run
 make perf-serve                     # live chart on :8090
 make perf-runs                      # list collected runs
@@ -41,6 +41,48 @@ make perf-runs                      # list collected runs
 Cold here means `--no-cache` **and** an sccache prefix of its own — the
 same isolation `bench.sh` uses. A cold run must not evict the fleet's
 working cache, and it must not be allowed to hit it either.
+
+### The first run for an architecture
+
+Both harnesses measure wheels, and neither builds the images
+underneath them. That cost nothing while `base` was published once and
+served every architecture; now that it is arch-scoped and
+[`rocm-runtime`](../reference/image-sizes.md) exists, the first run for
+a new card finds two images missing and the preflight refuses to
+schedule.
+
+They now bootstrap themselves. Before the measured run,
+`depgraph.py --missing-targets` asks which targets would produce the
+images the registry does not have, and those are built and pushed
+first:
+
+```text
+[perf 07:49:06] bootstrap rocm-runtime pytorch-base (not published for gfx1201; warm, pushed)
+```
+
+That step is **warm and pushed even under `perf-cold`**, and it happens
+before the run directory exists, so none of it is sampled or reported.
+Cold is a claim about the wheels being measured, not about their
+inputs — a cold run that also pruned the 20 GB ROCm SDK from scratch
+would spend most of its hours on a target nobody asked it to measure.
+It must push because the measured run resolves its inputs from the
+registry under `PUBLISHED_INPUTS=1`.
+
+`make perf-plan` reports what it *would* bootstrap and builds nothing.
+
+Anything else that hits a missing input — `balance.sh` directly, a
+wheel build — still fails the preflight, which now prints the commands
+that fix it:
+
+```text
+depgraph: to publish them, run:
+  make push-rocm-runtime PYTORCH_ROCM_ARCH=gfx1201
+  make push-base PYTORCH_ROCM_ARCH=gfx1201
+```
+
+In dependency order, and carrying the architecture — without it
+`make push-base` rebuilds the default arch and leaves the one that
+failed still missing.
 
 !!! warning "`perf-serve` binds every interface"
     Not just the tailnet, because the usual viewer is a laptop on the
@@ -129,9 +171,9 @@ cost is not small:
 A harness measuring a build from nothing must not also time its own
 uploads.
 
-### In normal mode the export is the point
+### In warm mode the export is the point
 
-`make perf-build` reports the upload rather than suppressing it.
+`make perf-warm` reports the upload rather than suppressing it.
 `perftrace.py` keeps BuildKit's `HTTP PUT`/`POST` spans alongside the
 step spans, so the chart bands them as `upload` and the hover names the
 blob and its size.
@@ -227,7 +269,7 @@ because the fallback for a missing entry is to cost it at one second.
 These are cold-build costs. On a warm build every `build` term
 collapses towards zero while the `cache` terms stay:
 
-> In one `perf-build` run `pytorch-wheel` was a cache hit and freed its
+> In one `perf-warm` run `pytorch-wheel` was a cache hit and freed its
 > node after 55 s, leaving the WiFi node's four small targets — 2.8 GB
 > between them — as the critical path of a 26-minute run.
 

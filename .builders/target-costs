@@ -19,7 +19,7 @@
 #
 # The bytes come from a *normal* run on purpose. The first version of
 # this table took them from a cold run's Zot log, which counts the
-# cache export but not the image push, because perf-run passes
+# cache export but not the image push, because perf-cold passes
 # --no-push. That under-counted aiter-wheel by 4.3x - 338MB against a
 # real 1450MB - and the scheduler put it on the WiFi node, where its
 # export alone ran 8m24s against a 2m39s build. Gaming's four targets
@@ -79,7 +79,7 @@ build lmcache-wheel     66
 #                 survives into a fresh layer, which is a lot of I/O
 #                 and no compilation. Placed too cheap it would land on
 #                 snoc-gaming behind WiFi, and every other target waits
-#                 on it. Re-measure with `make perf-build`.
+#                 on it. Re-measure with `make perf-warm`.
 build pytorch         2336
 build vllm            1409
 build rocm-runtime     300
@@ -93,7 +93,7 @@ build pytorch-base       6
 # on build + cache/netmb, so until it is re-measured the scheduler
 # keeps triton-wheel off nodes it can now afford — snoc-gaming most of
 # all, where 829MB is ~224s of upload that no longer happens.
-# Re-measure with `make perf-build` then `make perf-report`, taking the
+# Re-measure with `make perf-warm` then `make perf-report`, taking the
 # transfer bytes from the HTTP spans as the header describes.
 cache triton-wheel    6695603582
 cache vllm-wheel      2954089155

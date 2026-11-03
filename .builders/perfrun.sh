@@ -32,7 +32,7 @@
 # registry, both on Strix, which is also a build node. For isolated
 # per-wheel numbers use bench.sh cold, which serialises on purpose.
 #
-# Usage: ./perfrun.sh [--dry-run] [--arch gfx1201]
+# Usage: ./perfrun.sh [--dry-run] [--warm] [--arch gfx1201]
 
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
@@ -41,12 +41,12 @@ ARCH="${PYTORCH_ROCM_ARCH:-}"
 DRY=0
 # cold: --no-cache, an sccache prefix of its own, no push, cache-to
 #   cleared. Measures what a build costs from nothing.
-# normal: caches on, pushes, writes the shared sccache store. An
+# warm: caches on, pushes, writes the shared sccache store. An
 #   ordinary build that happens to be instrumented - the same five
 #   streams, the same report, the same live chart.
 MODE="${PERF_MODE:-cold}"
-# Resolved after argument parsing, not here: --normal sets MODE in the
-# loop below, so deciding this now made `--normal --dry-run` plan a
+# Resolved after argument parsing, not here: --warm sets MODE in the
+# loop below, so deciding this now made `--warm --dry-run` plan a
 # cold run's placement.
 # while/shift, not `for a in "$@"`. A shift inside a for-loop does not
 # advance the loop variable — the list was captured when the loop
@@ -55,7 +55,7 @@ MODE="${PERF_MODE:-cold}"
 while [ $# -gt 0 ]; do
     case "$1" in
         --dry-run) DRY=1 ;;
-        --normal)  MODE=normal ;;
+        --warm)    MODE=warm ;;
         --arch)    shift; ARCH="${1:-}" ;;
         --arch=*)  ARCH="${1#--arch=}" ;;
         *)         echo "unknown argument: $1" >&2; exit 2 ;;
@@ -65,7 +65,7 @@ done
 [ -z "${ARCH}" ] && ARCH=$(make -s --eval='__a:;@printf "%s" "$(PYTORCH_ROCM_ARCH)"' __a 2>/dev/null)
 
 DRY_PUSH_FLAG="--no-push"
-[ "${MODE}" = normal ] && DRY_PUSH_FLAG=""
+[ "${MODE}" = warm ] && DRY_PUSH_FLAG=""
 
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 RUN_DIR="${PERF_DIR:-/var/tmp/rocm-perf}/${STAMP}"
@@ -92,7 +92,7 @@ SCCACHE_LOG="${SCCACHE_LOG_FILE:-/var/log/nginx/sccache.log}"
 # out measured the cheap half of a build and, on an arch nobody had
 # built before, scheduled wheels against an image that did not exist.
 #
-# Including it is close to free on a normal run: the layer cache
+# Including it is close to free on a warm run: the layer cache
 # serves it in seconds. On a cold run it genuinely rebuilds, which is
 # what cold means.
 #
@@ -106,10 +106,10 @@ PERF_TARGETS="${PERF_TARGETS:-$(python3 -I "$(dirname "${BASH_SOURCE[0]}")/depgr
 # project, so a cold run that wrote into the live prefix would evict
 # objects other builds depend on, and one that read from it would not
 # be cold.
-# A normal build must use the fleet's real compiler cache, not a
+# A warm build must use the fleet's real compiler cache, not a
 # throwaway prefix: the point of it is to populate and benefit from
 # what everything else shares.
-if [ "${MODE}" = normal ]; then
+if [ "${MODE}" = warm ]; then
     PREFIX=""
 else
     PREFIX="perf-${STAMP}"
@@ -118,12 +118,104 @@ fi
 log() { printf '[perf %(%H:%M:%S)T] %s\n' -1 "$*"; }
 
 log "arch      ${ARCH}  mode=${MODE}"
+
+# What this run needs from the registry and the registry does not have.
+#
+# These targets measure wheels, and have never built the images under
+# them: `base` was published once and served every architecture, so a
+# new arch cost nothing. Arch-scoping `base` ended that, and
+# `rocm-runtime` is new, so the first run for an architecture now finds
+# two images missing and balance.sh refuses to schedule — correctly,
+# but a preflight failure is a poor way to learn that a bootstrap step
+# exists.
+BOOTSTRAP=$(PYTORCH_ROCM_ARCH="${ARCH}" python3 -I \
+    "$(dirname "${BASH_SOURCE[0]}")/depgraph.py" \
+    --missing-targets ${PERF_TARGETS} 2>/dev/null)
+
+# A cold run publishes nothing, and that is not survivable on an
+# architecture with nothing published already.
+#
+# balance.sh rewrites `push-x` to `build-x` under --no-push, while
+# PUBLISHED_INPUTS=1 still resolves every input as a registry ref — so
+# a target built during a cold run is invisible to the target that
+# needs it. On an arch that has been built before this is harmless:
+# the refs resolve to what is already published. On a fresh one it is
+# fatal, and fatal LATE — `pytorch` would wait for `pytorch-wheel` to
+# build cold, for hours, and then fail at step 1 resolving a ref that
+# build never pushed.
+#
+# The bootstrap made this reachable. Before it, a fresh arch stopped
+# at the preflight in one second on base/rocm-runtime; now those two
+# are satisfied and the run walks past the only thing that was
+# stopping it. So check the rest explicitly, and refuse here, where
+# the message can say what to do about it.
+UNBUILDABLE=""
+if [ "${MODE}" != warm ]; then
+    NEED=$(PYTORCH_ROCM_ARCH="${ARCH}" python3 -I \
+        "$(dirname "${BASH_SOURCE[0]}")/depgraph.py" \
+        --missing-targets --assume-no-push ${PERF_TARGETS} 2>/dev/null)
+    for t in ${NEED}; do
+        case " ${BOOTSTRAP} " in
+            *" ${t} "*) ;;
+            *) UNBUILDABLE="${UNBUILDABLE}${UNBUILDABLE:+ }${t}" ;;
+        esac
+    done
+fi
+
+# Reported by both paths, refused by only one: perf-plan's contract is
+# to show placement and build nothing, so it says this and still plans.
+cold_verdict() {
+    log "cold run cannot complete on ${ARCH}"
+    log "  needed by the run and not published: ${UNBUILDABLE}"
+    log "  a cold run builds them but pushes nothing, so the targets"
+    log "  that consume them would fail after building for hours."
+    log "  Publish them once first:"
+    log "    make perf-warm PERF_ARCH=${ARCH}"
+}
+
 if [ "${DRY}" = 1 ]; then
     log "dry run: showing placement only"
+    # Planned together with the bootstrap, not without it. Planning
+    # the measured targets alone means the preflight reports the very
+    # images the real run would have built for itself, so a dry run
+    # ended in "refusing to schedule" one line after announcing it
+    # would bootstrap them.
+    [ -n "${BOOTSTRAP}" ] && log "would bootstrap first: ${BOOTSTRAP}"
+    [ -n "${UNBUILDABLE}" ] && cold_verdict
     PUBLISHED_INPUTS=1 PYTORCH_ROCM_ARCH="${ARCH}" \
-    TARGETS="${PERF_TARGETS}" \
+    TARGETS="${BOOTSTRAP} ${PERF_TARGETS}" \
         ./.builders/balance.sh --dry-run ${DRY_PUSH_FLAG}
-    exit 0
+    exit $?
+fi
+
+if [ -n "${UNBUILDABLE}" ]; then
+    cold_verdict
+    exit 1
+fi
+
+# Built before the run directory exists, so none of it lands in the
+# measurement: the sampler has not started, no rawjson stream is being
+# captured, and the report describes the wheels it was asked about and
+# not the base image underneath them.
+#
+# Warm and pushing even when MODE=cold. Cold is a claim about the
+# wheels being measured, not about their inputs — a cold run that also
+# pruned the 20 GB ROCm SDK from scratch would spend most of its hours
+# on a target nobody asked it to measure. And it must push: the
+# measured run resolves its inputs from the registry under
+# PUBLISHED_INPUTS=1, so an unpushed bootstrap leaves it exactly as
+# stuck as no bootstrap at all.
+if [ -n "${BOOTSTRAP}" ]; then
+    log "bootstrap ${BOOTSTRAP} (not published for ${ARCH}; warm, pushed)"
+    if ! TELEMETRY=0 \
+        PUBLISHED_INPUTS=1 \
+        PYTORCH_ROCM_ARCH="${ARCH}" \
+        TARGETS="${BOOTSTRAP}" \
+            ./.builders/balance.sh; then
+        log "bootstrap failed; not starting the measured run"
+        exit 1
+    fi
+    log "bootstrap complete"
 fi
 
 mkdir -p "${RUN_DIR}"
@@ -251,13 +343,13 @@ START=$(date +%s)
 # its headline duration, was uploading mode=max cache nobody asked
 # for, which made every per-target number useless as a build time.
 #
-# In normal mode none of that applies: the export is the point, the
+# In warm mode none of that applies: the export is the point, the
 # layer cache is the point, and the shared sccache prefix is the
 # point. The only thing carried over is the instrumentation.
-if [ "${MODE}" = normal ]; then
+if [ "${MODE}" = warm ]; then
     EXTRA="--progress=rawjson"        # both caches live, cache-to kept
     PUSH_FLAG=""                      # publish, like any ordinary build
-    log "building (normal: caches on, pushing, shared sccache)"
+    log "building (warm: caches on, pushing, shared sccache)"
 else
     EXTRA="--set *.cache-to= --no-cache --progress=rawjson"
     PUSH_FLAG="--no-push"

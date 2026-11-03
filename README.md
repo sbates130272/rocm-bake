@@ -133,11 +133,11 @@ make bench BENCH_SCENARIO=cold BUILDER=snoc-think
 make bench-report
 ```
 
-A second harness answers a different question — `make perf-run` builds
+A second harness answers a different question — `make perf-cold` builds
 every wheel across the whole fleet at once, with CPU, compiler-cache and
 registry traffic sampled throughout, and `make perf-report` renders it
 as markdown plus SVG and interactive charts. `bench.sh` gives isolated
-per-target cost; `perf-run` gives throughput under contention. Do not
+per-target cost; `perf-cold` gives throughput under contention. Do not
 quote one as if it were the other.
 
 Measured results, why `warm` is an assertion rather than a number, and

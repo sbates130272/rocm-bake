@@ -64,7 +64,7 @@ v0.33 still pins to 1.95; `setup.py` builds `vllm/vllm-rs`.
 | `USE_FLASH_ATTENTION` | `ON` | |
 | `USE_ROCM_CK_SDPA_GFX12` | `""` | RDNA4 Composable Kernel SDPA, new in PyTorch 2.15 and `OFF` upstream. `ON` takes effect only on a gfx12 RDNA4 target; anywhere else it stays `OFF` |
 | `MAX_JOBS` | `""` | Empty derives it per node from `MemAvailable` |
-| `PREBUILD_KERNELS` | `""` | Empty derives it from the architecture: 0 on RDNA, 2 on CDNA |
+| `PREBUILD_KERNELS` | `""` | Empty means 0, on every architecture. Level 2 builds no wheel at all on `gfx1201` or `gfx125x` |
 
 See [Multiple GFX targets](../architecture/multi-arch.md) for why the
 architecture decides the prebuild level, and why `gfx125x` is a special

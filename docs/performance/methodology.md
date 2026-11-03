@@ -213,8 +213,9 @@ cache had converged. No average over that means anything.
 
 Architecture is the same mistake in a different coordinate. vLLM's
 kernel prebuild is about 50 minutes on `gfx950` and hours on `gfx1201`,
-and AITER drops to `PREBUILD_KERNELS=0` on RDNA entirely — so cold on one
-architecture divided by hot on another is not a ratio either.
+and AITER's own prebuild is `PREBUILD_KERNELS=0` on every architecture
+— so cold on one architecture divided by hot on another is not a ratio
+either.
 
 The harness resolves the architecture through make rather than
 defaulting to a literal, so it is exactly what a real build would use

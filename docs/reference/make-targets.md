@@ -122,7 +122,7 @@ measurement stopped at the first wheel that had no build-only target.
 `fetch-cupy-wheel`, `fetch-nixl-wheel`, `fetch-vllm-wheel` and
 `fetch-lmcache-wheel` pull a published wheel artifact into `./dist`.
 
-`cold-build` builds `COLD_TARGET` (default `pytorch`) with neither
+`build-cold` builds `COLD_TARGET` (default `pytorch`) with neither
 layer cache nor compiler-cache hits.
 
 !!! note "`build-all` refuses `BUILDER=snoc-pool`"
@@ -180,17 +180,23 @@ See [Performance](../performance/index.md).
 | Target | |
 | --- | --- |
 | `perf-plan` | Which builder each wheel would land on; builds nothing |
-| `perf-run` | Cold parallel build of every wheel, fully instrumented |
-| `perf-build` | The same instrumentation on a *normal* build — caches on, pushes |
+| `perf-cold` | Cold parallel build of every wheel, fully instrumented |
+| `perf-warm` | The same instrumentation on a *warm* build — caches on, pushes |
 | `perf-report` | Render the newest run as markdown plus SVG charts |
 | `perf-serve` | Serve the newest run's interactive chart on `:8090` |
 | `perf-runs` | List collected runs, newest last |
 
 A different question from `bench`: the fleet flat out rather than one
-target in isolation. `perf-run` is a build from nothing; `perf-build`
+target in isolation. `perf-cold` is a build from nothing; `perf-warm`
 is the build you actually run, where the cost is almost entirely export
 rather than compute. See
 [Instrumented fleet runs](../performance/perf-runs.md).
+
+Both build and push whatever the registry is missing before they
+measure — on a new architecture that is `rocm-runtime` and
+`pytorch-base` — so neither needs a manual bootstrap. That step is
+warm and unsampled even under `perf-cold`; `perf-plan` reports it and
+builds nothing.
 
 `PERF_ARCH` selects the architecture, `PERF_TARGETS` overrides what is
 built (default: bake's `wheels` group plus `pytorch`; ordering comes
