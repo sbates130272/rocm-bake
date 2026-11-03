@@ -60,30 +60,34 @@ The detection has to special-case `gfx125x`:
 
 ```hcl
 ARCH_RDNA_TEST = replace(PYTORCH_ROCM_ARCH, "gfx125", "")
-IS_RDNA = (
-  ARCH_RDNA_TEST != replace(ARCH_RDNA_TEST, "gfx11", "") ||
-  ARCH_RDNA_TEST != replace(ARCH_RDNA_TEST, "gfx12", "")
-)
-PREBUILD_LEVEL = PREBUILD_KERNELS != "" ? PREBUILD_KERNELS : (IS_RDNA ? "0" : "2")
+IS_RDNA4       = ARCH_RDNA_TEST != replace(ARCH_RDNA_TEST, "gfx12", "")
 ```
 
 `gfx1250` and `gfx1251` are `gfx12`-numbered but are MI450-class
 datacenter parts, not RDNA: upstream LLVM gates
 `amdgpu-sched-strategy=coexec` on `gfx1250` and `gfx950` together, and
-gives `gfx1250` tensor instructions no RDNA part has. Left to the bare
-`gfx12` test they would read as RDNA and silently drop the kernel
-prebuild to level 0 — turning off, on the one architecture that most
-wants it, an optimisation that exists for exactly this class of card.
+gives `gfx1250` tensor instructions no RDNA part has. A bare `gfx12`
+test reads them as RDNA and applies RDNA-only settings to a datacenter
+card, which is why the strip comes first.
 
-Set `PREBUILD_KERNELS` to pin a level for every target.
+AITER's kernel prebuild no longer derives from any of this. It is
+level 0 on every architecture, because build time is the binding
+constraint on this fleet and the prebuild buys first-inference latency
+rather than capability — AITER JIT-compiles on first use either way.
+`PREBUILD_KERNELS` pins a level for a build; note that level 2
+produces **no wheel at all** on `gfx1201` and `gfx125x`, so a global
+pin is only safe on CDNA. See the variable in `rocm-bake.hcl` for the
+module-by-module detail.
 
 ## The layer cache is scoped by architecture
 
 Covered in [Caching](caching.md#scoped-by-architecture). Short version:
 `CACHE_ARCH` keeps each architecture's registry cache separate, because
 before it existed alternating architectures cost two cold builds every
-time. `pytorch-base` and `triton-wheel` stay on the shared ref
-deliberately — neither compiles device code.
+time. `triton-wheel` stays on the shared ref deliberately — it compiles
+no device code. `pytorch-base` does not: it builds FROM `rocm-runtime`,
+whose kernel libraries are for one card, so both its tag and its cache
+ref are arch-scoped now.
 
 ## Per-architecture pip index
 

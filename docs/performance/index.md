@@ -6,7 +6,7 @@ Two harnesses, answering different questions.
 conditions, an isolated compiler cache. It answers *what does this
 target cost*, and its numbers are comparable run to run.
 
-**[Instrumented fleet runs](perf-runs.md)** is `make perf-run`: every
+**[Instrumented fleet runs](perf-runs.md)** is `make perf-cold`: every
 wheel at once, across all three nodes, with CPU, cache and registry
 traffic sampled throughout. It answers *what does a full cold build
 look like*, and its numbers are throughput under contention.
@@ -69,7 +69,7 @@ the run under its own `SCCACHE_WEBDAV_KEY_PREFIX`.
 
 ```bash
 make bench BENCH_SCENARIO=cold
-make cold-build COLD_TARGET=pytorch   # the same conditions, outside the harness
+make build-cold COLD_TARGET=pytorch   # the same conditions, outside the harness
 ```
 
 ### warm
@@ -110,9 +110,9 @@ Medians, keyed by target, builder, **architecture** and job count. Both
 architecture and job count are in the key because both are dominant
 variables rather than nuisance ones: the same cold PyTorch is 6892 s at
 5 jobs and 2342 s at 32, and vLLM's kernel prebuild is about 50 minutes
-on `gfx950` against hours on `gfx1201` — AITER drops to
-`PREBUILD_KERNELS=0` on RDNA entirely. Cold on one architecture over hot
-on another is not a ratio. See [Methodology](methodology.md).
+on `gfx950` against hours on `gfx1201` — and AITER's own prebuild is
+`PREBUILD_KERNELS=0` on every architecture. Cold on one architecture
+over hot on another is not a ratio. See [Methodology](methodology.md).
 
 `PYTORCH_ROCM_ARCH=gfx1201 make bench BENCH_SCENARIO=cold` measures that
 architecture; the harness resolves the value through make, so it is

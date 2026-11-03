@@ -71,7 +71,7 @@ MIN_MEM_GB="${MIN_MEM_GB:-8}"
 # already states exactly — every target's `contexts` block — and the
 # two could drift without anything saying so. They also could not
 # express "wait for your own inputs" to a caller that overrode them: a
-# gfx1250 perf-build scheduled vllm-wheel when no gfx1250 pytorch image
+# gfx1250 perf-warm scheduled vllm-wheel when no gfx1250 pytorch image
 # existed, and it died resolving that base image at step 1 of 7, 0s in,
 # taking the rest of its node's queue with it.
 #

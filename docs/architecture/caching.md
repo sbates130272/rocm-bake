@@ -37,6 +37,7 @@ them.
 
 | Target | Cache repository |
 | --- | --- |
+| `rocm-runtime` | `rocm-runtime-cache` |
 | `pytorch-base` | `base-cache` |
 | `pytorch`, `pytorch-wheel` | `pytorch-cache` |
 | `triton-wheel` | `triton-wheel-cache` |
@@ -71,10 +72,22 @@ cold and did the same back — so alternating architectures cost two cold
 builds, every time. `CACHE_ARCH` scopes those refs now, and
 `arches-*` is safe to repeat.
 
-`pytorch-base` and `triton-wheel` stay on the shared, unscoped ref
-deliberately. Neither takes `PYTORCH_ROCM_ARCH`, Triton is a compiler
-that publishes one noarch wheel, and both are built once for the whole
-fleet.
+`triton-wheel` stays on the shared, unscoped ref deliberately: Triton
+is a compiler that publishes one noarch wheel, and it is built once for
+the whole fleet.
+
+`pytorch-base` used to be in that sentence and no longer is. It builds
+FROM `rocm-runtime`, which carries kernel libraries for one card only,
+so the apt and pip layers on top are architecture-independent while
+what is underneath them is not — one arch reading another's cache would
+take the wrong kernel libraries as a hit. Its tag and its cache ref
+both carry `ARCH_TAG` now.
+
+!!! warning "The unqualified `base` tag is no longer written"
+    `base:${ROCM_VERSION}-${PYTHON_VERSION}` was published once for the
+    whole fleet and is now `...-${ARCH_TAG}`. Anything pinning the old
+    form keeps resolving to the last image written under it, which gets
+    staler from here. See [Build targets](../reference/build-targets.md).
 
 Arch-sensitive targets currently read a third ref as well: the old
 unscoped `latest`, kept transitionally so the pre-`CACHE_ARCH` cache is

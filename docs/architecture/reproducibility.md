@@ -52,8 +52,9 @@ SDE_PYTORCH=1700000001 make build-pytorch
 make build-pytorch BAKE_EXTRA='--set pytorch.args.SOURCE_DATE_EPOCH=…'
 ```
 
-`SDE_BASE`, `SDE_PYTORCH`, `SDE_TRITON`, `SDE_AITER`, `SDE_RUNTIME`,
-`SDE_NIXL`, `SDE_VLLM`, `SDE_LMCACHE` and `SDE_CUPY` all default to
+`SDE_ROCM`, `SDE_BASE`, `SDE_PYTORCH`, `SDE_TRITON`, `SDE_AITER`,
+`SDE_RUNTIME`, `SDE_NIXL`, `SDE_VLLM`, `SDE_LMCACHE` and `SDE_CUPY`
+all default to
 empty, meaning "use `SDE_EPOCH`". They are read by bake from the
 environment, so `SDE_PYTORCH=… make …` works and
 `make … SDE_PYTORCH=…` does not.

@@ -36,10 +36,11 @@ ARG ROCM_VERSION=10.1.0-full
 ENV ROCM_PATH=/opt/rocm \
     PYTORCH_ROCM_ARCH=${PYTORCH_ROCM_ARCH}
 
-COPY --from=tritonwheels /wheels/ /opt/wheels/triton/
-COPY --from=nixlwheels   /wheels/ /opt/wheels/nixl/
-COPY --from=cupywheels   /wheels/ /opt/wheels/cupy/
-
+# Mounted, not copied: a COPY is a layer, so wheels copied in and
+# installed stay in the image for good — and `deps` is the base of both
+# the runtime image and the builder. The wheels stay recoverable from
+# triton-wheel, nixl-wheel and cupy-wheel.
+#
 # --no-deps on triton: upstream triton has no ROCm 10.1 build, and
 # letting pip resolve it as a transitive dependency would shadow ours.
 #
@@ -49,9 +50,12 @@ COPY --from=cupywheels   /wheels/ /opt/wheels/cupy/
 # here provides the same top-level `nixl` module.
 # cupy --no-deps: it wants numpy, which is already installed here, and
 # letting pip resolve would reconsider it against our pins.
-RUN pip install --no-cache-dir --no-deps /opt/wheels/triton/*.whl && \
-    pip install --no-cache-dir /opt/wheels/nixl/*.whl && \
-    pip install --no-cache-dir --no-deps /opt/wheels/cupy/*.whl && \
+RUN --mount=type=bind,from=tritonwheels,source=/wheels,target=/w/triton \
+    --mount=type=bind,from=nixlwheels,source=/wheels,target=/w/nixl \
+    --mount=type=bind,from=cupywheels,source=/wheels,target=/w/cupy \
+    pip install --no-cache-dir --no-deps /w/triton/*.whl && \
+    pip install --no-cache-dir /w/nixl/*.whl && \
+    pip install --no-cache-dir --no-deps /w/cupy/*.whl && \
     python -c "import triton; print('triton', triton.__version__)" && \
     python -c "from nixl._api import nixl_agent; print('nixl ok')" && \
     python -c "import cupy; print('cupy', cupy.__version__)"
@@ -222,7 +226,6 @@ ARG ROCM_VERSION
 LABEL org.opencontainers.image.source="https://github.com/LMCache/LMCache"
 LABEL org.opencontainers.image.description="LMCache ${LMCACHE_REF} multi-process runtime for ROCm ${ROCM_VERSION}, ${PYTORCH_ROCM_ARCH}"
 
-COPY --from=builder /wheels/ /opt/wheels/lmcache/
 COPY --from=builder /wheels-build.log /wheels-arch.txt /var/log/lmcache-build/
 COPY --from=builder /opt/lmcache/requirements/ /opt/lmcache-requirements/
 
@@ -236,10 +239,13 @@ COPY --from=builder /opt/lmcache/requirements/ /opt/lmcache-requirements/
 # --no-deps on the wheel itself, with the patched requirements installed
 # first: pip would otherwise re-resolve install_requires and reintroduce
 # the CUDA-only entries stripped during the build.
-RUN pip install --no-cache-dir -r /opt/lmcache-requirements/common.txt && \
+# The wheel is mounted rather than copied: lmcache-wheel publishes it,
+# so a copy here only weighed down every pull of the runtime image.
+RUN --mount=type=bind,from=builder,source=/wheels,target=/w/lmcache \
+    pip install --no-cache-dir -r /opt/lmcache-requirements/common.txt && \
     pip install --no-cache-dir -r /opt/lmcache-requirements/rocm_core.txt && \
     pip install --no-cache-dir --no-deps --ignore-requires-python \
-        /opt/wheels/lmcache/*.whl && \
+        /w/lmcache/*.whl && \
     python -c "import lmcache; from lmcache import cuda_ops; print('LMCache', lmcache.__version__)" && \
     python -c "import torch; assert torch.version.hip, 'torch lost its HIP build'"
 

@@ -360,21 +360,39 @@ LABEL org.opencontainers.image.description="PyTorch ${PYTORCH_VERSION} for ${PYT
 # thing tying `final` to `builder`.
 COPY --from=torchwheels /build.log /sccache-stats.txt /var/log/pytorch-build/
 
-# Destination is a directory, not a glob. `COPY src/*.whl dest/*.whl`
-# treats the destination literally, so the wheel did not land where the
-# install step looked for it.
-COPY --from=torchwheels /wheels/ /opt/pytorch/dist/
-
-# The torch install must be able to fail the build. Previously the
-# trailing `|| true` covered this whole chain, so when the glob did not
-# expand and pip errored with "Invalid wheel filename ... '*'", the
-# image was published without PyTorch in it.
-RUN pip install --no-cache-dir /opt/pytorch/dist/*.whl \
+# A bind mount, not a COPY. This used to `COPY --from=torchwheels` into
+# /opt/pytorch/dist, install from there and `rm -rf /opt/pytorch` a few
+# lines down — and a COPY is a layer, so the delete reclaimed nothing
+# and every pull of this image paid for a 0.40 GB torch wheel it could
+# not use. Mounted, the wheel exists only for the duration of the RUN
+# and never becomes a layer at all.
+#
+# Nothing is lost by that: `pytorch-wheel` publishes the same wheel as
+# its own scratch image, which is where the artifact is meant to be
+# recovered from, and `make fetch-torch-wheel` already reads it there.
+#
+# The torch install must be able to fail the build. Previously a
+# trailing `|| true` covered this chain, so when the glob did not expand
+# and pip errored with "Invalid wheel filename ... '*'", the image was
+# published without PyTorch in it.
+RUN --mount=type=bind,from=torchwheels,source=/wheels,target=/wheels \
+    pip install --no-cache-dir /wheels/*.whl \
     && python -c "import torch; print('installed torch', torch.__version__)"
 
-# The extras are genuinely optional, so they alone get the tolerance.
-RUN pip install --no-cache-dir torchaudio torchdata torchvision \
-    2>&1 | tee /var/log/pytorch-build/install.log || true
+# torchaudio, torchdata and torchvision are deliberately NOT installed.
+#
+# PyPI publishes them as CUDA builds, and they are the only thing in
+# this image that is. torchvision's extension fails to load against a
+# ROCm torch, which is not a latent problem — it is why serving has to
+# swap in a CPU torchvision at container start, and why
+# Dockerfile.vllm cannot import vLLM's own LMCache connector in a
+# verification step (transformers' image_utils imports torchvision at
+# module scope).
+#
+# So this step shipped several hundred MB of unusable code, and did it
+# under `|| true`, which is what kept the breakage quiet. Restore it —
+# or better, a `torchvision-wheel` target — once there is a torchvision
+# built against our torch.
 
 # Triton, from our own wheel rather than PyPI. A source-built torch
 # wheel declares no triton dependency — upstream's published ROCm
@@ -386,13 +404,14 @@ RUN pip install --no-cache-dir torchaudio torchdata torchvision \
 #
 # --no-deps: the wheel's own dependencies are already satisfied, and
 # letting pip resolve them here risks pulling a CUDA torch from PyPI.
-COPY --from=tritonwheels /wheels/ /tmp/triton-wheels/
-RUN pip install --no-cache-dir --no-deps /tmp/triton-wheels/*.whl \
-    && rm -rf /tmp/triton-wheels \
+#
+# Mounted rather than copied, for the reason above: the COPY this
+# replaces left a 0.45 GB triton wheel in the image, and the `rm -rf`
+# that followed it in the same RUN deleted a path in a layer that had
+# already been committed.
+RUN --mount=type=bind,from=tritonwheels,source=/wheels,target=/triton-wheels \
+    pip install --no-cache-dir --no-deps /triton-wheels/*.whl \
     && python -c "import triton; print('installed triton', triton.__version__)"
-
-# Clean build artifacts
-RUN rm -rf /opt/pytorch
 
 # ROCm runtime config
 ENV ROCM_PATH=/opt/rocm

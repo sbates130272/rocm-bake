@@ -5,7 +5,19 @@
 ARG ROCM_VERSION=10.1.0-full
 ARG PYTHON_VERSION=3.14
 
-FROM rocm/dev-ubuntu-26.04:${ROCM_VERSION} AS base
+# Our pruned ROCm, not AMD's dev-ubuntu-26.04 tag directly.
+#
+# That tag is one 8.67 GB layer holding kernel libraries for every
+# architecture AMD supports, and it sat at the bottom of every image
+# this repo published — 71-95% of each of them. Dockerfile.rocm-runtime
+# cuts it to the architecture being built for and flattens the result;
+# measured, 20.53 GB installed becomes 4.4 GB.
+#
+# The bake `rocm-runtime` target supplies this as a named context. The
+# default is a published ref so a plain `docker build` on this file
+# still works.
+ARG ROCM_BASE_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/rocm-runtime:latest
+FROM ${ROCM_BASE_IMAGE} AS base
 
 # Re-declare inside the stage. ARGs before the first FROM live in the
 # global scope only, so without these every ${PYTHON_VERSION} below
