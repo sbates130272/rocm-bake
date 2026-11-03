@@ -96,6 +96,7 @@ the sibling project's builds.
 
 | Build (no push) | Push | Target |
 | --- | --- | --- |
+| `build-pytorch-src` | `push-pytorch-src` | `pytorch-src` |
 | `build-rocm-runtime` | `push-rocm-runtime` | `rocm-runtime` |
 | `build-base` | `push-base` | `pytorch-base` |
 | `build-pytorch` | `push-pytorch` | `pytorch` |

@@ -10,6 +10,13 @@
 ARG TRITON_WHEEL_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/triton-wheel:latest
 ARG BASE_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/base:10.1.0-full-3.14
 ARG TORCH_WHEEL_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/pytorch-wheel:latest
+# Up here with the others, and not beside its own FROM, for the
+# reason the comment above states: an ARG used in a FROM has to be
+# declared before the FIRST FROM, or it is scoped to whichever
+# stage precedes it and expands to nothing. Declared next to its
+# own stage it produced `base name (${PYTORCH_SRC_IMAGE}) should
+# not be blank`, which is the third file in this repo to learn it.
+ARG PYTORCH_SRC_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/pytorch-src:latest
 
 # Our ROCm 10.1 triton, installed into the shipped image below.
 FROM ${TRITON_WHEEL_IMAGE} AS tritonwheels
@@ -20,6 +27,11 @@ FROM ${TRITON_WHEEL_IMAGE} AS tritonwheels
 # it — which is what stops the compile step running twice. The bake
 # `pytorch` target supplies this as a context on `pytorch-wheel`.
 FROM ${TORCH_WHEEL_IMAGE} AS torchwheels
+
+# Named context, supplied by bake's `pytorch-src` target or by its
+# published ref under PUBLISHED_INPUTS. The default keeps a bare
+# `docker build` on this file working.
+FROM ${PYTORCH_SRC_IMAGE} AS pytorchsrc
 
 FROM ${BASE_IMAGE} AS builder
 
@@ -83,17 +95,20 @@ LABEL org.opencontainers.image.description="PyTorch ${PYTORCH_VERSION} ROCm ${RO
 # reaches nothing in the submodules, which are the cost. It would also
 # leave a clone with no refs, and PyTorch's version machinery reads git
 # metadata.
-ARG GIT_JOBS=8
-RUN git clone --depth 1 --branch v${PYTORCH_VERSION} --recurse-submodules \
-    --shallow-submodules --jobs ${GIT_JOBS} \
-    https://github.com/pytorch/pytorch.git /opt/pytorch \
-    && cd /opt/pytorch \
-    && if [ -n "${GIT_REF}" ]; then \
-       git fetch --depth 1 origin ${GIT_REF} && git checkout ${GIT_REF} \
-       && git submodule sync \
-       && git submodule update --init --recursive --depth 1 \
-              --jobs ${GIT_JOBS}; \
-    fi
+# The clone moved to Dockerfile.pytorch-src, and everything above is
+# kept as the record of why its flags are what they are.
+#
+# It was here, on top of ${BASE_IMAGE}, so a change to ROCm or to the
+# prune invalidated an 8-minute network fetch that had nothing to do
+# with either. The comment above already said this layer is normally a
+# cache hit — true, and it stopped being true three times on
+# 2026-11-03 while the pruned base was being rebuilt.
+#
+# COPY rather than a bind mount, unlike the wheels: the build writes
+# into this tree (setup.py, the HIPify pass, CMake's build directory),
+# so it has to be a real copy in the builder. It costs a layer in a
+# stage that is never published.
+COPY --from=pytorchsrc /opt/pytorch /opt/pytorch
 
 WORKDIR /opt/pytorch
 

@@ -234,6 +234,7 @@ BAKE_PRINT = docker buildx bake -f rocm-bake.hcl
         layer-summary \
         list-vars \
         build-rocm-runtime push-rocm-runtime \
+        build-pytorch-src push-pytorch-src \
         build-base build-pytorch build-runtime build-all \
         push-base push-pytorch push-runtime push-all \
         clean clean-cache test \
@@ -821,6 +822,24 @@ builder-health: ## Show which builders can take work (buildx node status)
 #
 #   $(1) bake target ("" = the default group)
 #   $(2) extra flags (--push)
+#   $(3) non-empty to resolve inputs from the registry
+#
+# $(3) is for a rule that names ONE target. Its dependencies are not
+# being built here, so taking them from the registry is both correct
+# and what the caller meant: `make push-runtime` rebuilt rocm-runtime,
+# base and pytorch from scratch — including a 482s PyTorch clone — to
+# produce an image whose inputs were published that morning.
+#
+# It must NOT be set for a rule that bakes a GROUP. Group members feed
+# each other through `target:` contexts, PUBLISHED_INPUTS collapses
+# those to registry refs, and bake resolves every ref before it pushes
+# anything — so a sibling built in the same invocation is not there
+# yet. push-serving, push-all and push-wheels build the graph on one
+# builder precisely because of that, and they stay as they are.
+#
+# PUBLISHED_INPUTS is read from the environment by rocm-bake.hcl
+# rather than passed with --set, because it selects which `contexts`
+# block a target gets, not an arg value.
 define bake
 @echo $$$$ >> $(BUILD_PIDFILE); \
 b="$(BUILDER)"; \
@@ -828,6 +847,9 @@ if [ "$$b" = "$(POOL_BUILDER)" ]; then \
 	b=$$(.builders/balance.sh --best); \
 	echo "balance: $(POOL_BUILDER) -> $$b"; \
 fi; \
+$(if $(3),PUBLISHED_INPUTS=1 PYTORCH_ROCM_ARCH=$(PYTORCH_ROCM_ARCH) \
+	python3 -I .builders/depgraph.py --preflight $(1) || exit 1; \
+	PUBLISHED_INPUTS=1) \
 $(BAKE) \
 	--builder "$$b" \
 	--set "*.args.REGISTRY=$(REGISTRY)" \
@@ -843,11 +865,25 @@ endef
 
 # The ROCm SDK cut down to one architecture and flattened. Everything
 # else builds FROM this; see docs/reference/image-sizes.md.
+# PyTorch's source tree, fetched once. Keyed on PYTORCH_VERSION and
+# GIT_REF alone, so this is rebuilt when the version moves and at no
+# other time — not when ROCm, Python, the prune or the architecture
+# change. See docker/Dockerfile.pytorch-src.
+#
+# Worth building on its own before a cold run: `pytorch`,
+# `pytorch-wheel` and `pytorch-test` all take this copy, and a cold
+# run cannot hand it to them itself.
+build-pytorch-src: builder-ensure ## Fetch the PyTorch source tree (no push)
+	$(call bake,pytorch-src)
+
+push-pytorch-src: builder-ensure ## * Fetch and publish the PyTorch source tree
+	$(call bake,pytorch-src,--push,pub)
+
 build-rocm-runtime: builder-ensure ## Build the pruned ROCm base image
 	$(call bake,rocm-runtime)
 
 push-rocm-runtime: builder-ensure ## * Build and push the pruned ROCm base
-	$(call bake,rocm-runtime,--push)
+	$(call bake,rocm-runtime,--push,pub)
 
 build-base: builder-ensure ## Build ROCm base image
 	$(call bake,pytorch-base)
@@ -907,13 +943,13 @@ build-cold: builder-ensure ## Fully cold build (no layer or compiler cache). COL
 ##@ Push
 
 push-base: builder-ensure ## * Build and push base image
-	$(call bake,pytorch-base,--push)
+	$(call bake,pytorch-base,--push,pub)
 
 push-pytorch: builder-ensure ## * Build and push PyTorch
-	$(call bake,pytorch,--push)
+	$(call bake,pytorch,--push,pub)
 
 push-runtime: builder-ensure ## Build and push runtime image
-	$(call bake,pytorch-run,--push)
+	$(call bake,pytorch-run,--push,pub)
 
 BALANCE_STREAM ?= 1
 
@@ -1271,7 +1307,7 @@ perf-publish: ## Publish a perf run onto gh-pages (PERF_RUN=, PUSH=1 to push)
 ##@ Wheels
 
 push-torch-wheel: builder-ensure ## * Build and push the torch wheel image to Zot
-	$(call bake,pytorch-wheel,--push)
+	$(call bake,pytorch-wheel,--push,pub)
 
 # The wheel lives in an image; this pulls it back onto local disk.
 fetch-torch-wheel: ## Fetch the torch wheel from Zot into ./dist
@@ -1282,7 +1318,7 @@ fetch-torch-wheel: ## Fetch the torch wheel from Zot into ./dist
 	@ls -la dist/wheels/
 
 push-triton-wheel: builder-ensure ## * Build and push the Triton wheel image
-	$(call bake,triton-wheel,--push)
+	$(call bake,triton-wheel,--push,pub)
 
 fetch-triton-wheel: ## Fetch the Triton wheel from Zot into ./dist
 	@mkdir -p dist
@@ -1292,7 +1328,7 @@ fetch-triton-wheel: ## Fetch the Triton wheel from Zot into ./dist
 	@ls -la dist/wheels/
 
 push-aiter-wheel: builder-ensure ## * Build and push the AITER wheel image to Zot
-	$(call bake,aiter-wheel,--push)
+	$(call bake,aiter-wheel,--push,pub)
 
 # The wheel lives in an image; this is how you get it onto local disk.
 fetch-aiter-wheel: ## Fetch the AITER wheel from Zot into ./dist
@@ -1306,7 +1342,7 @@ fetch-aiter-wheel: ## Fetch the AITER wheel from Zot into ./dist
 # module scope, and no published wheel matches ROCm 10.1 on cp314.
 # See Dockerfile.cupy.
 push-cupy-wheel: builder-ensure ## * Build and push the CuPy wheel image (ROCm source build)
-	$(call bake,cupy-wheel,--push)
+	$(call bake,cupy-wheel,--push,pub)
 
 build-cupy-wheel: builder-ensure ## Build the CuPy wheel image (no push)
 	$(call bake,cupy-wheel)
@@ -1328,7 +1364,7 @@ build-nixl-wheel: builder-ensure ## Build the NIXL wheel image (no push)
 	$(call bake,nixl-wheel)
 
 push-nixl-wheel: builder-ensure ## * Build and push the NIXL wheel image (NIXL + ROCm UCX)
-	$(call bake,nixl-wheel,--push)
+	$(call bake,nixl-wheel,--push,pub)
 
 fetch-nixl-wheel: ## Fetch the NIXL wheel from Zot into ./dist
 	@mkdir -p dist
@@ -1372,13 +1408,13 @@ build-vllm: builder-ensure ## Build the vLLM serving image (single builder)
 	$(call bake,vllm)
 
 push-vllm: builder-ensure ## * Build and push the vLLM serving image
-	$(call bake,vllm,--push)
+	$(call bake,vllm,--push,pub)
 
 build-vllm-wheel: builder-ensure ## Build the vLLM wheel image (no push)
 	$(call bake,vllm-wheel)
 
 push-vllm-wheel: builder-ensure ## * Build and push the vLLM wheel image
-	$(call bake,vllm-wheel,--push)
+	$(call bake,vllm-wheel,--push,pub)
 
 fetch-vllm-wheel: ## Fetch the vLLM wheel from Zot into ./dist
 	@mkdir -p dist
@@ -1391,13 +1427,13 @@ build-lmcache: builder-ensure ## Build the LMCache MP image (single builder)
 	$(call bake,lmcache)
 
 push-lmcache: builder-ensure ## * Build and push the LMCache multi-process image
-	$(call bake,lmcache,--push)
+	$(call bake,lmcache,--push,pub)
 
 build-lmcache-wheel: builder-ensure ## Build the LMCache wheel image (no push)
 	$(call bake,lmcache-wheel)
 
 push-lmcache-wheel: builder-ensure ## * Build and push the LMCache wheel image
-	$(call bake,lmcache-wheel,--push)
+	$(call bake,lmcache-wheel,--push,pub)
 
 fetch-lmcache-wheel: ## Fetch the LMCache wheel from Zot into ./dist
 	@mkdir -p dist
