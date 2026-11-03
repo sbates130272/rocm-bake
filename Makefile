@@ -253,7 +253,6 @@ BAKE_PRINT = docker buildx bake -f rocm-bake.hcl
 
 .PHONY: help zot-check zot-catalog zot-tags zot-wheels zot-wheelhouse zot-logs \
         builder-setup builder-pool list-nodes fleet-apply fleet-check \
-        fleet-runners runner-status \
         builder-status builder-logs builder-restart \
         build-status build-logs build-inspect builder-ensure watch \
         build-stop gpu-test \
@@ -517,32 +516,6 @@ fleet-check: ## Can every node do the job the manifest says it has?
 	@command -v ansible-playbook >/dev/null \
 		|| { echo "ansible-playbook not found: apt-get install ansible"; exit 1; }
 	@cd ansible && ansible-playbook check.yml $(ANSIBLE_FLAGS)
-
-# Rotating a runner is a thing you do on its own — a token expired, a
-# version moved, a node came back from a rebuild — and running the
-# whole of site.yml to do it would reconfigure Docker and the registry
-# on the way past. The App credentials are read here, on this machine,
-# and never reach a node; see docs/operations/runners.md.
-fleet-runners: ## Register/refresh the self-hosted Actions runners
-	@command -v ansible-playbook >/dev/null \
-		|| { echo "ansible-playbook not found: apt-get install ansible"; exit 1; }
-	@for v in ROCM_BAKE_RUNNER_APP_ID ROCM_BAKE_RUNNER_INSTALLATION_ID \
-	          ROCM_BAKE_RUNNER_KEY; do \
-		eval "val=\$$$$v"; \
-		[ -n "$$val" ] || { \
-			echo "$$v is not set — see docs/operations/runners.md"; \
-			exit 1; }; \
-	done
-	@cd ansible && ansible-playbook site.yml --tags runner $(ANSIBLE_FLAGS)
-
-runner-status: ## What GitHub thinks the fleet's runners are doing
-	@repo=$$(python3 -I .builders/fleet.py --json \
-		| python3 -I -c 'import json,sys; \
-		  print((json.load(sys.stdin).get("runner") or {}).get("repo",""))'); \
-	[ -n "$$repo" ] || { echo "this fleet declares no runner nodes"; exit 0; }; \
-	echo "$$repo"; \
-	gh api "repos/$$repo/actions/runners" \
-		--jq 'if .total_count == 0 then "  none registered — make fleet-runners" else (.runners[] | "  \(.name)  \(.status)  busy=\(.busy)  [\([.labels[].name] | join(","))]") end'
 
 ##@ Monitoring
 

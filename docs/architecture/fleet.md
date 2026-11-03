@@ -58,7 +58,6 @@ Capabilities are the vocabulary everything else speaks:
 | `registry` | hosts Zot |
 | `cache` | hosts the WebDAV compiler-cache store |
 | `metrics` | runs node_exporter on `:9100`, sampled during a perf run |
-| `runner` | hosts a [self-hosted Actions runner](../operations/runners.md) |
 
 `arch` versus the `gpu` capability is worth dwelling on, because the
 distinction is the one that makes a cloud fleet possible at all.
@@ -169,7 +168,6 @@ FLEET=aws make fleet-apply
 | `sccache_store` | `cache_nodes` | the nginx WebDAV store |
 | `node_exporter` | `metrics_nodes` | the exporter and its textfile collector |
 | `gpu` | `gpu_nodes` | `/dev/kfd`, the render gid |
-| `github_runner` | `runner_nodes` | the Actions runner, registered via a GitHub App |
 | `buildkit` | localhost | the buildx builders, created from here |
 
 Two deliberate restraints. The `registry` role refuses to start a Zot

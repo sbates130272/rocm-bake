@@ -47,19 +47,6 @@
   roles:
     - gpu
 
-# After docker: a runner's whole reason to be here is reaching the
-# daemon and the tailnet registry, so there is no point registering one
-# on a node that cannot yet do either. Tagged, because rotating a
-# runner is a thing you do on its own:
-#
-#   ansible-playbook site.yml --tags runner
-- name: Nodes that run CI jobs
-  hosts: runner_nodes
-  gather_facts: true
-  tags: [runner]
-  roles:
-    - github_runner
-
 # Last, and on this machine: the builders are created over the Docker
 # API of nodes the plays above have just configured, so the daemon
 # configuration and the compiler-cache store are already in place when

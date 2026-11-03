@@ -47,7 +47,7 @@ DEFAULT_FLEET = "snoc"
 # otherwise indistinguishable from a node that simply does not have
 # that role, and the failure surfaces much later as "no node with
 # capability gpu" on a fleet that plainly has one.
-CAPABILITIES = {"build", "gpu", "registry", "cache", "metrics", "runner"}
+CAPABILITIES = {"build", "gpu", "registry", "cache", "metrics"}
 
 # Ansible group per capability. Spelled out rather than pluralised: the
 # obvious `cap + "s"` gives "builds" and "registrys", which read as
@@ -58,23 +58,6 @@ GROUP_OF = {
     "registry": "registry_nodes",
     "cache": "cache_nodes",
     "metrics": "metrics_nodes",
-    "runner": "runner_nodes",
-}
-
-# The `runner:` block says which repository the runners serve and what
-# to install — fleet topology, which belongs in the manifest.
-#
-# It deliberately does not carry the GitHub App's id, installation id
-# or key path. Those are a credential, they differ per operator, and a
-# committed placeholder would be both a lie and something CI has to
-# pretend to validate. gh-app-token.py reads them from the environment
-# of the control host instead; see docs/operations/runners.md.
-RUNNER_KEYS = ("repo",)
-
-RUNNER_DEFAULTS = {
-    "version": "2.338.2",
-    "work_dir": "/var/lib/actions-runner",
-    "install_dir": "/opt/actions-runner",
 }
 
 REQUIRED_NODE_KEYS = ("name", "host")
@@ -215,23 +198,6 @@ def validate(data):
         if "build" not in by_name[value]["capabilities"]:
             bad(f"{key} {value!r} does not declare the 'build' capability")
 
-    # A node declared `runner` with no `runner:` block registers
-    # against nothing. The job it was meant to take then queues until
-    # the workflow times out, which reports as a slow runner rather
-    # than a missing one.
-    if [n for n in nodes if "runner" in n["capabilities"]]:
-        block = data.setdefault("runner", {})
-        if not isinstance(block, dict):
-            bad("`runner:` is not a mapping")
-        for key in RUNNER_KEYS:
-            if not block.get(key):
-                bad(f"a node declares the 'runner' capability, so "
-                    f"`runner:` needs `{key}:`")
-        if "/" not in str(block["repo"]):
-            bad(f"runner.repo {block['repo']!r} is not owner/name")
-        for key, value in RUNNER_DEFAULTS.items():
-            block.setdefault(key, value)
-
     data.setdefault("pool_builder", f"{data.get('name', 'fleet')}-pool")
     bk = data.setdefault("buildkit", {})
     for key, value in BUILDKIT_DEFAULTS.items():
@@ -262,26 +228,6 @@ def endpoint(fleet, name):
     """What `docker buildx create` should be given for this node."""
     n = node_map(fleet)[name]
     return "local" if n["connection"] == "local" else f"ssh://{n['host']}"
-
-
-def runner_labels(fleet, node):
-    """The labels this node's runner registers with.
-
-    A `runs-on:` list that names a label no runner carries does not
-    fail — the job sits queued until the workflow times out, which
-    reads as a slow fleet rather than a missing one. So this is the one
-    definition, check-contracts.py asserts the workflows stay inside
-    it, and the Ansible role passes it to `config.sh --labels`.
-
-    `self-hosted` is implicit for every self-hosted runner; it is
-    listed anyway because the workflows spell it and the contract check
-    compares the two lists literally.
-    """
-    out = ["self-hosted", "rocm-bake", fleet.get("name", "")]
-    out += [c for c in ("build", "gpu") if c in node["capabilities"]]
-    if node.get("arch"):
-        out.append(node["arch"])
-    return [x for x in dict.fromkeys(out) if x]
 
 
 def registry(fleet):
@@ -511,18 +457,6 @@ def inventory(fleet):
             "fleet_no_proxy": ",".join(fleet["network"].get("no_proxy", [])),
             "fleet_domain": fleet.get("domain", ""),
         }
-        # Absent on a fleet with no runner nodes, so the role's `when:`
-        # and check.yml both have something falsy to test rather than
-        # erroring on an undefined variable.
-        if "runner" in n["capabilities"]:
-            r = fleet["runner"]
-            meta[host].update({
-                "fleet_runner_repo": r["repo"],
-                "fleet_runner_version": r["version"],
-                "fleet_runner_work_dir": r["work_dir"],
-                "fleet_runner_install_dir": r["install_dir"],
-                "fleet_runner_labels": runner_labels(fleet, n),
-            })
     out = {g: v for g, v in groups.items() if v["hosts"]}
     out["_meta"] = {"hostvars": meta}
     return json.dumps(out, indent=2, sort_keys=True)

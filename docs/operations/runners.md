@@ -1,69 +1,76 @@
-# Self-hosted Actions runners
+# CI runners
 
-Every one of this repository's CI jobs runs on a GitHub-hosted runner
-today, and no node registers a self-hosted one. This page describes
-the machinery for when one does.
+Every pull-request check in this repository runs on a GitHub-hosted
+runner, and should. They are free for a public repository, they are
+fork-safe, and nothing they do needs the fleet.
 
-**SNOC deliberately registers none.** Those machines are driven by
-hand — `make push-all`, `make perf-run` — and a GitHub Actions job
-executing on them is not wanted: the runner user is in the `docker`
-group, which is a short path to root, and the nodes hold the registry,
-the compiler cache and the tailnet. `manifests/snoc.yml` declares no
-`runner` capability and no `runner:` block, so `runner_nodes` is empty
-and every play and check over it matches nothing.
+The nightly is different: it builds. That needs a Docker daemon, tens
+of GB of disk and hours of wall clock, which is a machine someone has
+to provide. This page is about that machine.
 
-The intended home is the AWS profile, where a runner is a rented
-instance rather than a desk.
+## SNOC is not it
 
-## What a runner is, here
+The fleet is driven by hand — `make push-all`, `make perf-run` — and
+registers no runner. `manifests/snoc.yml` declares no `runner`
+capability, because a GitHub Actions job executing on those machines
+is not wanted: they hold the registry, the compiler cache and the
+tailnet, and a runner process would be one `docker` group membership
+away from root on all three.
 
-One more thing a node can be declared to be:
+## AWS CodeBuild
+
+CodeBuild is a managed build service: you define a project, and AWS
+runs your commands in a container on hardware it administers, billed
+per build-minute. In EC2 compute mode it offers privileged mode (so
+BuildKit has a daemon), up to 72 vCPU and 824 GB of SSD, and build
+timeouts measured in hours.
+
+It can also act as a **GitHub Actions runner**. CodeBuild receives the
+`WORKFLOW_JOB_QUEUED` webhook, starts a build, registers an ephemeral
+runner for that one job, and terminates it afterwards. The workflow
+just names it:
 
 ```yaml
-nodes:
-  - name: aws-build-1
-    capabilities: [build, metrics, runner]
+runs-on:
+  - codebuild-<project>-${{ github.run_id }}-${{ github.run_attempt }}
+  - instance-size:2xlarge
 ```
 
-plus a `runner:` block naming the repository. `fleet.py` hard-fails if
-a node claims the capability without one — a runner registered against
-nothing takes no jobs, and the jobs meant for it queue rather than
-error.
+The trailing segments override the project's configured image and
+instance size per job, so one project serves every architecture in the
+matrix.
 
-`ansible/roles/github_runner` then installs the runner, registers it
-and runs it as a systemd service. It is grouped, configured and checked
-exactly like every other capability — `runner_nodes` is a group the
-same way `cache_nodes` is.
+!!! note "Offline runners are the steady state"
+    A CodeBuild runner exists for one job. GitHub shows it as
+    `Offline` the moment that job ends. An empty or all-offline runner
+    list is what a healthy configuration looks like here.
 
-A runner is only useful on a node that can reach the registry and the
-compiler cache, which on any profile means a node inside the fleet.
+### Why this rather than an EC2 fleet
 
-## Labels
+The alternative in [A fleet on AWS](aws.md) is a Lambda webhook
+handler, a launch template, a builder AMI kept in step with
+`ansible/roles/`, a GitHub App to mint registration tokens, and a
+sweep for instances whose job never arrived. CodeBuild is one project
+and a webhook, and AWS maintains the parts that rot.
 
-Set by [`fleet.runner_labels()`](../architecture/fleet.md), which is
-the single definition:
+### Why not Lambda compute
 
-```text
-self-hosted, rocm-bake, <fleet>, build, gpu, <arch>
-```
+CodeBuild offers a Lambda compute mode, and it cannot build this
+repository. AWS documents it as supporting no Docker builds or runs,
+no privileged mode, no caching, no EFS, nothing requiring root, no
+writes outside `/tmp`, and no runtime over 15 minutes. That is the
+same wall Lambda hits as a builder generally — persistent storage via
+EFS does not move it, because storage was never the binding
+constraint.
 
-so a node on the `aws` fleet registers `self-hosted, rocm-bake, aws,
-build`, and the fleet name is what keeps a job aimed at one profile
-from landing on another.
-
-`check-contracts.py` asserts that every `runs-on: [self-hosted, …]` in
-`.github/workflows/` asks only for labels some runner node registers.
-This matters more than it looks: a job whose labels nothing carries
-does not fail. GitHub queues it, and keeps queueing it, until the
-workflow times out hours later and reports as a slow run. Nothing else
-would have told you the label was a typo.
+EC2 compute mode, not Lambda compute mode.
 
 ## Fork pull requests, and why an `if:` is not the boundary
 
-A self-hosted runner executes whatever the workflow tells it to, on a
-machine with the registry and the compiler cache in reach. A pull
-request from a fork is code from outside the repository. Running one
-on the fleet is remote code execution on the build machines.
+A CodeBuild runner is a self-hosted runner as far as GitHub is
+concerned. It executes whatever the workflow tells it to, with the
+project's IAM role attached. A pull request from a fork is code from
+outside the repository.
 
 The obvious guard is a job-level condition:
 
@@ -75,8 +82,8 @@ if: github.event.pull_request.head.repo.full_name == github.repository
 That is worth having, and it is not a boundary. `ci.yml` triggers on
 `pull_request`, not `pull_request_target`, so the workflow file that
 runs for a fork PR is **the fork's copy** — and `.github/workflows/**`
-is inside that file's own `paths:` filter. A fork can therefore edit
-the condition out in the same pull request that exploits it. The gate
+is inside that file's own `paths:` filter. A fork can edit the
+condition out in the same pull request that exploits it. The gate
 protects against accident, not intent.
 
 This repository is public, which makes the distinction load-bearing.
@@ -86,136 +93,71 @@ The controls that actually hold are outside the workflow file:
    first-time contributors — Settings → Actions → "Approval for
    running fork pull request workflows". The default lets a second PR
    from the same author run unapproved.
-2. **Scope the runner's labels** so that only the jobs meant for it can
-   land on it. A fleet-wide `self-hosted` is not a target; `[self-hosted,
-   rocm-bake, aws]` is.
-3. **Prefer scheduled and dispatch triggers** for anything self-hosted.
-   A nightly on `schedule:` runs the default branch's workflow file,
-   which no fork can rewrite. This is the reason the Dockerfile checks
-   belong in the nightly rather than in the PR gate.
+2. **Filter the CodeBuild webhook.** The project's webhook filter is
+   an AWS-side control a fork cannot edit. Restrict it to the events
+   and refs you intend, and it holds regardless of what the fork's
+   workflow file says.
+3. **Prefer scheduled and dispatch triggers.** A nightly on
+   `schedule:` runs the default branch's workflow file, which no fork
+   can rewrite. This is why the Dockerfile checks belong in the
+   nightly rather than in the PR gate.
 
 GitHub's own guidance is blunter: do not use self-hosted runners on
-public repositories. Treat anything registered here as a machine that
-may at some point run a stranger's code, and size its blast radius
-accordingly.
+public repositories. Treat the CodeBuild project as a machine that may
+one day run a stranger's code, and scope its IAM role accordingly.
 
-## The GitHub App
+## Standing the project up
 
-A runner registers with a token that lasts one hour, so something has
-to mint one at apply time. The options were a classic PAT with `repo`
-scope living in a vars file forever, or an App. The App wins: its
-permission is scoped to Administration on this one repository, its key
-never leaves the control host, and every token derived from it expires.
+None of this is provisioned by the repository. Once, in the AWS
+account:
 
-Once, to create it:
-
-1. **Settings → Developer settings → GitHub Apps → New GitHub App.**
-   Name it something like `rocm-bake-fleet`. Uncheck Webhook → Active;
-   nothing here listens for events.
-2. Under **Repository permissions**, set **Administration** to
-   **Read & write**. Nothing else.
-3. Create it, then **Generate a private key**. A `.pem` downloads —
-   this is the only copy.
-4. **Install App** → select only `sbates130272/rocm-bake`.
-5. Note the **App ID** from the App's settings page, and the
-   installation id from the URL of the installation's settings page
-   (`.../installations/<id>`).
-
-Then on the control host — the machine you run `make` from, not a
-build node:
+1. **Create a CodeBuild project**, type *Runner project*, runner
+   provider *GitHub*, runner location *Repository*, pointed at
+   `sbates130272/rocm-bake`.
+2. **Environment**: EC2 compute, privileged mode **on** (BuildKit
+   needs a daemon), an image with Docker and `make`.
+3. **Webhook**: event type `WORKFLOW_JOB_QUEUED`. This is what makes
+   the project receive jobs at all.
+4. **Service role**: the build's identity. Scope it to the ECR
+   repositories and S3 cache bucket the nightly uses, and nothing
+   else. The build does not need, and should not have, write access to
+   this repository — the nightly's report is published by a separate
+   GitHub-hosted job.
+5. **Repository variables**, so the workflow needs no secrets:
 
 ```bash
-mkdir -p ~/.config/rocm-bake
-mv ~/Downloads/rocm-bake-fleet.*.private-key.pem \
-   ~/.config/rocm-bake/runner-app.pem
-chmod 600 ~/.config/rocm-bake/runner-app.pem
-
-# Put these with your other shell secrets, not in the repository.
-export ROCM_BAKE_RUNNER_APP_ID=<app id>
-export ROCM_BAKE_RUNNER_INSTALLATION_ID=<installation id>
-export ROCM_BAKE_RUNNER_KEY=~/.config/rocm-bake/runner-app.pem
+gh variable set CODEBUILD_PROJECT --body <project-name>
+gh variable set NIGHTLY_ENABLED   --body true
 ```
 
-Check the chain works before involving Ansible:
+`NIGHTLY_ENABLED` is the off switch. Unset it and the nightly's first
+job is skipped, so nothing queues against a project that is being
+rebuilt or an account that is being cleaned up.
 
-```bash
-python3 -I .builders/gh-app-token.py --registration-token
-```
+## What is still missing
 
-That prints a token and nothing else. It signs an RS256 JWT with
-`openssl`, exchanges it for a one-hour installation token, and
-exchanges that for the registration token — the three steps GitHub
-documents, in about sixty lines, with no dependency outside the
-standard library.
+There is no nightly workflow yet, and writing one needs two things
+this repository does not have.
 
-## Registering
+**A harness that runs on one machine.** `make perf-run` is a *fleet*
+harness: it drives `balance.sh` across nodes over ssh, and reads
+`journalctl -u zot`, `/var/log/nginx/sccache.log` and
+`/var/cache/sccache-webdav/` locally with `sudo`. A CodeBuild runner
+is one machine with none of those services, so `perf-run` there would
+try to ssh to instances that do not exist and publish a report with
+its registry and cache lanes empty.
 
-On a profile whose manifest declares `runner` nodes — not `snoc`:
+`bench.sh` is the better fit — it already has named `cold` and `warm`
+scenarios, runs targets serially with isolated caches, and resolves
+its builder through `fleet.py --endpoint`, so a manifest whose single
+node is `connection: local` makes it run entirely on the CodeBuild
+machine. That manifest does not exist yet.
 
-```bash
-FLEET=aws make fleet-runners ANSIBLE_FLAGS=--check   # what would change
-FLEET=aws make fleet-runners
-FLEET=aws make runner-status                         # what GitHub thinks
-FLEET=aws make fleet-check                           # the service, node-side
-```
+**Somewhere to put the layers and the objects.** A warm build is only
+warm if its caches survive the machine, and CodeBuild machines do not.
+That means the registry and the compiler cache move off the fleet —
+ECR and S3 are the obvious answers, and both are already listed above
+as the right moves on AWS, but neither is done.
 
-On `snoc` these are no-ops: `runner_nodes` is empty, the play matches
-nothing, and `make runner-status` says so.
-
-Then turn the consuming job on. Any self-hosted job should be dormant
-until a repository variable says otherwise:
-
-```bash
-gh variable set FLEET_RUNNERS --body true
-```
-
-This exists because of the queueing behaviour above. With no runner
-registered — the state this repository is in by default, and the state
-it returns to whenever the fleet is down — an ungated job would make
-every triggering push hang until the workflow timed out. Unset it when
-taking the fleet offline for any length of time:
-
-```bash
-gh variable delete FLEET_RUNNERS
-```
-
-`fleet-runners` is `site.yml --tags runner`. Running the whole of
-`site.yml` would work too, but it would reconfigure Docker, the
-registry and the cache store on the way past, which is not what
-"rotate a runner" should mean.
-
-The role is idempotent: it re-registers only when the node is not
-already registered under its own name, so a re-run on a healthy fleet
-changes nothing and will not drop a runner that is mid-job.
-
-## Upgrading the runner
-
-The runner self-updates in place when GitHub asks it to, so the pinned
-version is a floor. To move it, read the new checksum off the release
-and record both:
-
-```bash
-gh api repos/actions/runner/releases/latest --jq .tag_name
-gh api repos/actions/runner/releases/latest --jq .body \
-  | grep 'SHA linux-x64'
-```
-
-Version into `runner.version` in the manifest, checksum into
-`github_runner_sha256_by_version` in the role's defaults. The role
-refuses to run without a checksum for the version it was asked for:
-the tarball is unpacked by a user in the `docker` group, which is a
-short path to root on a build node.
-
-## Retiring a node
-
-Drop `runner` from its capabilities in the manifest, then remove the
-registration so GitHub stops scheduling to a machine that will not
-answer:
-
-```bash
-gh api -X DELETE repos/sbates130272/rocm-bake/actions/runners/<id>
-```
-
-`make runner-status` prints the ids. Removing the capability alone
-leaves the service running; the node keeps taking jobs until it is
-stopped.
+Until those two land, the nightly stays a design rather than a
+workflow.

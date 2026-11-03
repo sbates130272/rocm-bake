@@ -103,6 +103,6 @@ nav:
       - Build targets: reference/build-targets.md
   - Operations:
       - operations/index.md
-      - Self-hosted runners: operations/runners.md
+      - CI runners: operations/runners.md
       - A fleet on AWS: operations/aws.md
       - Troubleshooting: operations/troubleshooting.md

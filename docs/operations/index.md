@@ -18,7 +18,6 @@ else is diagnosis.
 
 ```bash
 make fleet-check      # the whole fleet, against what the manifest claims
-make runner-status    # are the self-hosted CI runners online?
 make zot-check        # registry active and answering
 make cache-check      # every node can reach the compiler cache
 make builder-health   # which builders can take work
@@ -44,13 +43,13 @@ reports `running`, `inactive` or `error` per node.
 
 ## Continuous integration
 
-Four workflows, almost all on GitHub-hosted runners. None of them
-builds a real image — the images need this fleet — so CI validates
-structure and agreement rather than output.
+Four workflows, all on GitHub-hosted runners. None of them builds a
+real image — the images need a build fleet — so CI validates structure
+and agreement rather than output.
 
-No job runs on the fleet. SNOC is driven by hand and registers no
-[self-hosted runner](runners.md) — the machinery exists for the AWS
-profile, which is where a scheduled build will run.
+No CI job runs on a build fleet. SNOC is driven by hand and registers
+no runner; the nightly that would build is designed but not built —
+see [CI runners](runners.md).
 
 **`CI — Dockerfile & bake validation`** runs on pull requests and pushes
 to `main`, path-filtered to the build files. It enumerates the bake

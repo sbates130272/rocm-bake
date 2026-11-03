@@ -199,38 +199,69 @@ Instances reach 90 minutes for asynchronous and event-source
 invocations, which is still an order of magnitude short, and the
 memory, storage and daemon problems remain regardless.
 
-What Lambda *is* right for here is the control plane. The pattern is:
+Persistent storage does not rescue it. Lambda can mount EFS, and the
+10 GB `/tmp` is not the real ceiling — but storage was never the
+binding constraint. The timeout, the memory and the absent daemon are,
+and none of them moves.
 
-1. A webhook delivers `workflow_job` with `action: queued` to API
-   Gateway.
-2. A Lambda reads the job's labels, and if they match the fleet it
-   calls `RunInstances` against a launch template whose AMI already
-   has Docker, the runner and this repository's dependencies baked in.
-3. Userdata registers the runner with `--ephemeral`, so it accepts
-   exactly one job.
-4. On `workflow_job` `completed`, a second Lambda terminates the
-   instance; a scheduled sweep catches instances whose job never
-   arrived.
+Two things that sound like escapes and are not: Lambda *layers* are
+not Docker layers (five maximum, 250 MB unzipped in total), and
+Lambda's container-image support means Lambda *running* an image, not
+*building* one.
 
-Lambda orchestrates, EC2 builds, and nothing is running between
-pushes. The economics are good — the cost section above is per build
-hour, and a scale-to-zero fleet pays only for those.
+### What runs the nightly instead
 
-This repository does not implement it, and should not. The pattern has
-a mature implementation in
-[`philips-labs/terraform-aws-github-runner`](https://github.com/philips-labs/terraform-aws-github-runner),
-which already handles the parts that are tedious rather than
-interesting: the GitHub App credential rotation, spot interruption,
-the sweep for orphaned instances, scale-down of idle pools, and the
-webhook's signature verification. A homegrown version would be a worse
-one, and it would be the fleet's control plane.
+The classic answer is a Lambda control plane: a `workflow_job` webhook
+to API Gateway, `RunInstances` against a launch template, an
+`--ephemeral` runner, a terminate on completion, and a sweep for
+instances whose job never arrived. That works, and
+[`philips-labs/terraform-aws-github-runner`](https://github.com/philips-labs/terraform-aws-github-runner)
+implements it properly.
 
-Two things carry over from the on-premises runners either way, and
-both are covered in [Self-hosted runners](runners.md): the labels are
-a contract that `check-contracts.py` enforces, and fork pull requests
-must never reach a self-hosted runner. The second is more acute on
-AWS, not less — an ephemeral instance still holds an instance profile
-and sits inside the VPC with the registry and the cache.
+This repository uses **CodeBuild** instead, which reaches the same
+place with far less to own — one project and a webhook, no Lambda, no
+launch template, and no builder AMI to keep in step with
+`ansible/roles/`. See [CI runners](runners.md) for the project, the
+`runs-on` label and the security boundary.
+
+The one trap worth repeating: CodeBuild also offers a **Lambda compute
+mode**, and it inherits every restriction in the table above — AWS
+documents it as supporting no Docker builds or runs, no privileged
+mode, no caching and nothing over 15 minutes. The nightly needs EC2
+compute mode.
+
+### Where the parallelism is, and is not
+
+A matrix can ask for as many CodeBuild machines as you like. The build
+graph can use about one of them.
+
+`balance.sh` resolves the targets into nine waves. Using the measured
+per-target figures in
+[`target-costs`](https://github.com/sbates130272/rocm-bake/blob/main/.builders/target-costs),
+the total work is 9089 s and the sum of the wave maxima is 8835 s — a
+parallelism headroom of roughly **1.03×**. The chain runs
+`pytorch-base` → `triton-wheel` → `pytorch-wheel` → `pytorch` → … →
+`vllm-wheel` → `vllm`, with two 2336 s targets in the middle of it.
+This is the same conclusion the cost table reaches from the other
+direction: a fourth builder buys nothing.
+
+Fanning targets out also costs. On one machine, `pytorch`'s inputs are
+already in the local BuildKit store when it starts; across machines
+that edge becomes a registry pull, and the cache rows in `target-costs`
+total ~17.6 GB per run.
+
+So the matrix axis is **architecture**, not target. `gfx950`,
+`gfx1201` and `gfx1250` share no edges and no ordering, and `arches-%`
+runs them sequentially today — so that is where splitting the work
+actually buys something.
+
+!!! note "Two caveats on those numbers"
+    They are measured on `snoc-think` (32 cores), not on CodeBuild —
+    absolute times will differ, the shape will not. And `pytorch-wheel`
+    and `pytorch` are both recorded at 2336 s, as are `vllm-wheel` and
+    `vllm` at 1409 s, which looks like one compile attributed to two
+    target names. If so the true critical path is shorter than 8835 s
+    and the graph is *more* serial, not less.
 
 ## Bringing it up
 
