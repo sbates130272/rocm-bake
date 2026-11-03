@@ -87,12 +87,27 @@ def newest_tag(registry, namespace, repo, tags, arch=None):
     """
     info = zot_tag_info(registry, namespace, repo)
     if arch:
-        # Anything naming this GPU, plus the genuinely arch-independent
-        # tags — triton publishes one noarch wheel that every image
-        # here really does share.
-        pool = [t for t in tags
-                if tag_arch(t) == arch
-                or (parse_tag(t) and parse_tag(t)[2] == "noarch")]
+        # This GPU's own tags first, and noarch only if it has none.
+        #
+        # Both were pooled together once, and a repo that used to
+        # publish unqualified tags then had its *legacy* tag shown in
+        # an arch-scoped table: `runtime` sat in a gfx1201 listing as
+        # `2.14.1-10.1.0-full`, noarch, 9.44 GB, from before the tag
+        # carried an architecture at all. It was not a gfx1201 image
+        # and it was not arch-independent; it was stale.
+        #
+        # The noarch fallback has to stay, because triton genuinely
+        # publishes one architecture-independent wheel that every
+        # image here shares. The two cases are indistinguishable from
+        # the tag alone — `3.9.0-10.1.0-full` and
+        # `2.14.1-10.1.0-full` parse identically — so preference is as
+        # far as this can go: once a repo has a tag for this GPU, that
+        # tag wins and the legacy one cannot resurface. A repo that
+        # has never been built for this architecture still falls back,
+        # and the `arch` column says `noarch` when it does.
+        own = [t for t in tags if tag_arch(t) == arch]
+        pool = own or [t for t in tags
+                       if parse_tag(t) and parse_tag(t)[2] == "noarch"]
     else:
         # The `or tags` fallback is for an unfiltered call only. Under
         # a filter it would reach for `latest` — an alias to whichever
@@ -268,9 +283,16 @@ def main(argv):
     if out:
         path = Path(out[0])
         now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        # Wheels are a point in the history too. They were measured,
+        # written to the top level, and then left out of here — so the
+        # "over time" chart could never plot them however the page
+        # asked, and a published wheel growing by a gigabyte was the
+        # one size change nothing on the site could show.
         point = {"generated": now,
                  "images": [{k: v for k, v in e.items() if k != "layers"}
                             for e in images],
+                 "wheels": [{k: v for k, v in e.items() if k != "layers"}
+                            for e in wheels],
                  "caches": caches}
         history = []
         if path.exists():

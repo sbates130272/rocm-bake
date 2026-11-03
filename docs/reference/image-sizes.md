@@ -39,6 +39,20 @@ image, which is the problem the rest of this page is about. It is now
 without moving `own` is a change to the base image, and a change that
 moves `own` is one of ours.
 
+## Wheels
+
+The `*-wheel` targets publish scratch images holding one `.whl` each.
+They are what `make fetch-torch-wheel` and the
+[pip index](../architecture/multi-arch.md#per-architecture-pip-index)
+read, and they are the reason the run images above can mount a wheel
+instead of copying it — the artifact stays recoverable without being
+carried in every pull.
+
+<div id="images-wheels"></div>
+
+No shared/own split here: a scratch image holding one file shares
+nothing, so both columns would read the same number on every row.
+
 ## Over time
 
 <div class="bench-chart" markdown="0">
