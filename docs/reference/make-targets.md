@@ -23,9 +23,16 @@ make list-vars     # every variable these targets read, with its value
 | `zot-wheels` | Published wheel artifacts, newest first — `ZOT_TAGS=0` for all |
 | `zot-wheelhouse` | The same with sizes, plus anything extracted into `./dist/wheels` |
 | `zot-logs` | Follow the registry's journal |
+| `image-sizes` | Published image sizes, split into shared and own layers — `LAYERS=1` for the breakdown |
+| `image-data` | Aggregate those into `dist/images/images.json` for the docs site |
+| `image-publish` | Commit that onto `gh-pages`; `PUSH=1` to push |
+| `zot-disk` | What the registry actually occupies, deduplicated — registry host only |
 
 Nothing here starts, stops or configures Zot. It is a bare-metal
 systemd service owned outside this repository.
+
+`image-sizes` and `zot-disk` answer different questions and disagree by
+a factor of two: see [Image sizes](image-sizes.md).
 
 ## Compiler cache
 
@@ -224,7 +231,7 @@ version in `rocm-bake.hcl`, run `make version-scrub`, commit both.
 | `bake-plan` | Print the resolved build plan as JSON |
 | `list-vars` | Every variable these targets read, with its value and source |
 | `clean` | Remove built images locally, for every architecture in `ARCHES` |
-| `clean-cache` | Remove cache images locally — the registry must be pruned separately |
+| `clean-cache` | Drop locally-pulled cache images; Zot garbage-collects its own store |
 | `setup` | `zot-check` then `builder-setup` |
 
 ## Variables worth knowing

@@ -144,6 +144,28 @@ variable "SDE_EPOCH" {
 # a bake driven directly — without the Makefile to supply values — got
 # BuildKit's wall-clock and lost reproducibility silently. The defaults
 # live here now precisely so that cannot happen.
+variable "SDE_ROCM"    { default = "" }
+
+# How hard docker/rocm-prune.sh cuts the ROCm SDK down.
+#
+#   keep-toolchain  hipcc, the ROCm headers and LLVM survive
+#   minimal         they do not
+#
+# keep-toolchain by default, and for every target, because one base
+# serves them all and the serving images genuinely need the toolchain:
+# AITER JIT-compiles kernels on first use and Triton calls ld.lld out
+# of /opt/rocm/llvm/bin.
+#
+# `minimal` is a measured 0.4 GB better on a 4.4 GB tree — the bulk of
+# the saving is the per-architecture kernel libraries, which both
+# profiles drop. Giving pytorch-run its own minimal base would mean a
+# second base image and a second layer cache per architecture, which
+# costs the registry more than the 0.4 GB it saves. So the profile is a
+# variable rather than a second target: set it when building a runtime
+# image on its own and you want the floor.
+variable "ROCM_PRUNE_PROFILE" {
+  default = "keep-toolchain"
+}
 variable "SDE_BASE"    { default = "" }
 variable "SDE_PYTORCH" { default = "" }
 variable "SDE_TRITON"  { default = "" }
@@ -154,6 +176,7 @@ variable "SDE_VLLM"    { default = "" }
 variable "SDE_LMCACHE" { default = "" }
 variable "SDE_CUPY"    { default = "" }
 
+EPOCH_ROCM    = SDE_ROCM    != "" ? SDE_ROCM    : SDE_EPOCH
 EPOCH_BASE    = SDE_BASE    != "" ? SDE_BASE    : SDE_EPOCH
 EPOCH_PYTORCH = SDE_PYTORCH != "" ? SDE_PYTORCH : SDE_EPOCH
 EPOCH_TRITON  = SDE_TRITON  != "" ? SDE_TRITON  : SDE_EPOCH
@@ -226,7 +249,13 @@ variable "PUBLISHED_INPUTS" {
 # The refs each context collapses to under PUBLISHED_INPUTS. These must
 # track the `tags` of the target they mirror — a change to one is a
 # change to the other.
-PUB_BASE    = "${REGISTRY}/${REGISTRY_NAME}/base:${ROCM_VERSION}-${PYTHON_VERSION}"
+# ARCH_TAG, because base is no longer architecture-independent: it
+# builds FROM rocm-runtime, which carries kernel libraries for one card
+# only. Without the arch here a gfx950 base would overwrite a gfx1201
+# one at the same tag — the identical bug pytorch-run's tag already
+# carries a comment about.
+PUB_BASE    = "${REGISTRY}/${REGISTRY_NAME}/base:${ROCM_VERSION}-${PYTHON_VERSION}-${ARCH_TAG}"
+PUB_ROCM    = "${REGISTRY}/${REGISTRY_NAME}/rocm-runtime:${ROCM_VERSION}-${ARCH_TAG}"
 PUB_PYTORCH = "${REGISTRY}/${REGISTRY_NAME}/pytorch:${PYTORCH_VERSION}-${ROCM_VERSION}-${ARCH_TAG}"
 PYTORCH_CACHE_TO = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/pytorch-cache:latest${CACHE_ARCH}${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=true,ignore-error=true"]
 
@@ -506,7 +535,7 @@ variable "REQUIRE_SCCACHE" {
 # belongs back in this list once a GPU node is available.
 group "default" {
   targets = [
-    "pytorch-base", "pytorch",
+    "rocm-runtime", "pytorch-base", "pytorch",
     "pytorch-wheel", "triton-wheel", "aiter-wheel",
     "cupy-wheel", "nixl-wheel", "vllm", "vllm-wheel",
     "lmcache", "lmcache-wheel",
@@ -542,29 +571,85 @@ group "serving" {
 # at all, so it was never written in the lifetime of this file. Each
 # target declares its own cache below.
 
+# ─── Slim ROCm base ──────────────────────────────────────────────
+# AMD's dev-ubuntu-26.04:10.1.0-full compresses to a single 8.67 GB
+# layer carrying kernel libraries for every architecture it supports.
+# Each image here is built for one. This target prunes it to that one
+# and flattens the result — see docker/rocm-prune.sh — and everything
+# downstream builds FROM it rather than from AMD's tag.
+#
+# Arch-scoped in the tag and in the cache, like every other target that
+# compiles for a specific card: the content genuinely differs per
+# architecture, and an unqualified tag would have one arch's base
+# overwrite another's, which is the bug pytorch-run's tag already
+# carries a comment about.
+target "rocm-runtime" {
+  dockerfile = "docker/Dockerfile.rocm-runtime"
+  tags = compact([
+    "${REGISTRY}/${REGISTRY_NAME}/rocm-runtime:${ROCM_VERSION}-${ARCH_TAG}",
+    "${REGISTRY}/${REGISTRY_NAME}/rocm-runtime:latest",
+    VCS_REF != "" ? "${REGISTRY}/${REGISTRY_NAME}/rocm-runtime:${ROCM_VERSION}-${ARCH_TAG}-g${VCS_REF}" : "",
+  ])
+  labels = merge(BASE_LABELS, {
+    "org.opencontainers.image.title"       = "rocm-runtime"
+    "org.opencontainers.image.description" = "ROCm ${ROCM_VERSION} pruned to ${PYTORCH_ROCM_ARCH}"
+    "org.opencontainers.image.version"     = "${ROCM_VERSION}-${ARCH_TAG}"
+  })
+  platforms = ["linux/amd64"]
+
+  cache-from = [
+    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/rocm-runtime-cache:latest${CACHE_ARCH},mode=max,registry.insecure=true",
+    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/rocm-runtime-cache:latest${CACHE_ARCH}-ref,mode=max,registry.insecure=true",
+  ]
+  cache-to = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/rocm-runtime-cache:latest${CACHE_ARCH}${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=true,ignore-error=true"]
+
+  args = {
+    BUILDKIT_BUILD_NAME = "rocm-pytorch-build/rocm-runtime/${PYTORCH_ROCM_ARCH}/${RUN_ID}"
+    SOURCE_DATE_EPOCH   = EPOCH_ROCM
+    ROCM_VERSION        = ROCM_VERSION
+    PYTORCH_ROCM_ARCH   = PYTORCH_ROCM_ARCH
+    ROCM_PRUNE_PROFILE  = ROCM_PRUNE_PROFILE
+  }
+
+  attest = NO_PROVENANCE
+
+  output = ["type=image,compression=zstd"]
+}
+
 # ─── Base ROCm image with dev toolchain ──────────────────────────
 target "pytorch-base" {
   dockerfile = "docker/Dockerfile.base"
   tags = compact([
-    "${REGISTRY}/${REGISTRY_NAME}/base:${ROCM_VERSION}-${PYTHON_VERSION}",
+    "${REGISTRY}/${REGISTRY_NAME}/base:${ROCM_VERSION}-${PYTHON_VERSION}-${ARCH_TAG}",
     "${REGISTRY}/${REGISTRY_NAME}/base:latest",
-    VCS_REF != "" ? "${REGISTRY}/${REGISTRY_NAME}/base:${ROCM_VERSION}-${PYTHON_VERSION}-g${VCS_REF}" : "",
+    VCS_REF != "" ? "${REGISTRY}/${REGISTRY_NAME}/base:${ROCM_VERSION}-${PYTHON_VERSION}-${ARCH_TAG}-g${VCS_REF}" : "",
   ])
   labels = merge(BASE_LABELS, {
     "org.opencontainers.image.title"       = "rocm-pytorch base"
     "org.opencontainers.image.description" = "ROCm ${ROCM_VERSION} dev base with Python ${PYTHON_VERSION}"
-    "org.opencontainers.image.version"     = "${ROCM_VERSION}-${PYTHON_VERSION}"
+    "org.opencontainers.image.version"     = "${ROCM_VERSION}-${PYTHON_VERSION}-${ARCH_TAG}"
   })
   platforms  = ["linux/amd64"]
 
-  # Cache for base layer (apt + common deps)
+  # Arch-scoped now, for the same reason the tag is: the apt and pip
+  # layers on top are architecture-independent, but the ROCm underneath
+  # them is not — so one arch reading another's cache would take the
+  # wrong kernel libraries as a hit.
   cache-from = [
-    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/base-cache:latest,mode=max,registry.insecure=true",
-    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/base-cache:latest-ref,mode=max,registry.insecure=true",
+    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/base-cache:latest${CACHE_ARCH},mode=max,registry.insecure=true",
+    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/base-cache:latest${CACHE_ARCH}-ref,mode=max,registry.insecure=true",
   ]
-  cache-to   = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/base-cache:latest${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=true,ignore-error=true"]
+  cache-to   = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/base-cache:latest${CACHE_ARCH}${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=true,ignore-error=true"]
+
+  # Same pattern as pytorch's base-img edge below: a named context, so
+  # one bake invocation builds the ROCm base and consumes it rather than
+  # silently picking up whatever was last published.
+  contexts = USE_PUB ? {} : {
+    rocm-img = "target:rocm-runtime"
+  }
 
   args = {
+    ROCM_BASE_IMAGE     = USE_PUB ? PUB_ROCM : "rocm-img"
     BUILDKIT_BUILD_NAME = "rocm-pytorch-build/base/${PYTORCH_ROCM_ARCH}/${RUN_ID}"
     SOURCE_DATE_EPOCH   = EPOCH_BASE
     ROCM_VERSION   = ROCM_VERSION
@@ -896,6 +981,7 @@ target "pytorch-run" {
   cache-to = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/runtime-cache:latest${CACHE_ARCH}${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=true,ignore-error=true"]
 
   args = {
+    RUNTIME_BASE_IMAGE  = USE_PUB ? PUB_ROCM : "rocm-img"
     BUILDKIT_BUILD_NAME = "rocm-pytorch-build/runtime/${PYTORCH_ROCM_ARCH}/${RUN_ID}"
     SOURCE_DATE_EPOCH   = EPOCH_RUNTIME
     PYTHON_VERSION = PYTHON_VERSION
@@ -913,9 +999,15 @@ target "pytorch-run" {
   # name has to resolve in both modes. It needs the explicit
   # docker-image:// scheme for the reason in the comment above — a bare
   # ref is read as a local directory.
+  # rocm-img rides along in both modes for the same reason: it reaches
+  # Dockerfile.runtime through an ARG, so under PUBLISHED_INPUTS the
+  # published ref is used and the context is not needed — but the
+  # unpublished path needs the edge or bake would schedule the two
+  # concurrently.
   contexts = USE_PUB ? {
     pytorch = "docker-image://${PUB_PYTORCH}"
   } : {
+    rocm-img = "target:rocm-runtime"
     pytorch = "target:pytorch"
   }
 

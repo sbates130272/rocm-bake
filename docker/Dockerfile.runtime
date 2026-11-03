@@ -5,13 +5,19 @@
 ARG PYTHON_VERSION=3.14
 ARG ROCM_VERSION=10.1.0-full
 
-# rocm/rocm:rocm_ubuntu24.04_* does not exist — that reference was
-# speculative and 503s through the mirror. AMD publishes only
-# dev-ubuntu-26.04:10.1.0-full for this ROCm; there is no -runtime or
-# -base variant, so this image is not as small as "minimal runtime"
-# suggests. Trimming it properly means installing just the ROCm runtime
-# packages onto plain ubuntu rather than taking the full SDK.
-ARG RUNTIME_BASE_IMAGE=rocm/dev-ubuntu-26.04:${ROCM_VERSION}
+# AMD publishes only dev-ubuntu-26.04:10.1.0-full for this ROCm —
+# there is no -runtime or -base variant — so this image used to take
+# the whole SDK and was not remotely as small as "minimal runtime"
+# suggests: 9.44 GB, of which 8.67 GB was that one layer.
+#
+# docker/Dockerfile.rocm-runtime is the answer this comment used to ask
+# for. It is not "install the runtime packages onto plain ubuntu",
+# which was the guess here before: ROCm 10.1 already splits its
+# per-architecture content into separate packages, so the SDK image can
+# simply be cut down to the one architecture it is being built for and
+# flattened. 8.67 GB becomes 1.54 GB that way, with the same library
+# surface.
+ARG RUNTIME_BASE_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/rocm-runtime:latest
 FROM ${RUNTIME_BASE_IMAGE} AS base
 
 # Re-declared inside the stage. ARGs before the first FROM live in the

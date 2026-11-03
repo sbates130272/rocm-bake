@@ -209,6 +209,7 @@ endif
 BAKE_PRINT = docker buildx bake -f rocm-bake.hcl
 
 .PHONY: help zot-check zot-catalog zot-tags zot-wheels zot-wheelhouse zot-logs \
+        image-sizes image-data image-publish zot-disk \
         builder-setup builder-snoc-strix builder-snoc-think builder-snoc-gaming \
         builder-snoc-pool builder-status builder-logs builder-restart \
         build-status build-logs build-inspect builder-ensure watch \
@@ -232,6 +233,7 @@ BAKE_PRINT = docker buildx bake -f rocm-bake.hcl
         perf-serve-stop perf-serve-status perf-publish \
         layer-summary \
         list-vars \
+        build-rocm-runtime push-rocm-runtime \
         build-base build-pytorch build-runtime build-all \
         push-base push-pytorch push-runtime push-all \
         clean clean-cache test \
@@ -290,6 +292,98 @@ zot-wheelhouse: ## Show published wheel artifacts and their sizes
 
 zot-logs: ## Follow Zot registry logs
 	@sudo journalctl -u zot -f
+
+# ─── Image sizes ─────────────────────────────────────────────────
+# The run images — the ones that get pulled onto a GPU host — and the
+# layer-cache repos. zot-wheelhouse above sizes the wheel artifacts,
+# which are scratch images whose payload is a few hundred MB; these are
+# the multi-gigabyte ones and nothing sized them until now.
+#
+# The column that matters is `shared`, not `total`: a layer digest that
+# appears under more than one repository is shared, and an image whose
+# own contribution is a fraction of its total has a base-image problem
+# rather than a problem of its own. That is how one 8.67 GB ROCm SDK
+# layer came to be 71-95% of every published image here.
+IMAGE_REPOS ?= base pytorch runtime vllm lmcache
+
+# Every repo buildkit exports a layer cache to. Keep in step with the
+# cache-to refs in rocm-bake.hcl: pytorch-wheel and lmcache-wheel share
+# their sibling's cache repo and so are deliberately absent.
+CACHE_REPOS ?= rocm-runtime-cache base-cache pytorch-cache runtime-cache \
+               vllm-cache lmcache-cache triton-wheel-cache \
+               aiter-wheel-cache cupy-wheel-cache nixl-wheel-cache
+
+image-sizes: ## Published image sizes, split into shared and own layers
+	@python3 .builders/imagesizes.py "$(REGISTRY)" "$(REGISTRY_NAME)" \
+		--images $(IMAGE_REPOS) --wheels $(WHEEL_REPOS) \
+		--caches $(CACHE_REPOS) $(if $(LAYERS),--layers,)
+
+# What the documentation site plots. Under dist/ for the same reason
+# BENCH_JSON is: generated, gitignored, and published to gh-pages
+# rather than committed to main.
+IMAGE_JSON ?= dist/images/images.json
+
+image-data: ## Aggregate published image sizes into dist/images/images.json
+	@python3 .builders/imagesizes.py "$(REGISTRY)" "$(REGISTRY_NAME)" \
+		--images $(IMAGE_REPOS) --wheels $(WHEEL_REPOS) \
+		--caches $(CACHE_REPOS) --json $(IMAGE_JSON)
+
+# Same flow and the same gate as bench-publish: the data only exists on
+# this fleet, the docs workflow preserves data/ when it deploys, and the
+# numbers are public the moment they land, so pushing needs PUSH=1.
+#
+# The file is read before it is overwritten, not clobbered: images.json
+# carries its own history array, and the copy on gh-pages is the only
+# place the older points exist.
+image-publish: ## Publish image sizes onto gh-pages (PUSH=1 to push)
+	@dir=$$(.builders/ghpages.sh $(GH_PAGES_DIR) $(GH_PAGES_BRANCH)); \
+	mkdir -p $(dir $(IMAGE_JSON)); \
+	if [ -f "$$dir/data/images.json" ] && [ ! -f $(IMAGE_JSON) ]; then \
+		cp "$$dir/data/images.json" $(IMAGE_JSON); \
+	fi; \
+	$(MAKE) --no-print-directory image-data; \
+	mkdir -p "$$dir/data"; \
+	cp $(IMAGE_JSON) "$$dir/data/images.json"; \
+	git -C "$$dir" add data; \
+	git -C "$$dir" diff --cached --quiet \
+		&& echo "no change to publish" \
+		|| git -C "$$dir" commit -s \
+			-m "data: refresh published image sizes"; \
+	if [ "$(PUSH)" = 1 ]; then \
+		git -C "$$dir" push origin $(GH_PAGES_BRANCH); \
+	else \
+		echo; \
+		echo "Committed locally. To publish:"; \
+		echo "  git -C $$dir push origin $(GH_PAGES_BRANCH)"; \
+		echo "or re-run with PUSH=1."; \
+	fi
+
+# What the registry actually costs on disk, which is not the sum of the
+# sizes above. Two corrections pull in opposite directions and both are
+# large: summing manifests double-counts every layer two tags share,
+# while Zot's dedupe and its untagged-manifest GC remove blobs no
+# manifest references any more.
+#
+# Worth having next to the per-image numbers precisely because the
+# per-image numbers invite the wrong conclusion. The cache repos look
+# like hundreds of GB of unbounded growth summed by tag; they are in
+# fact five fixed tags each — latest, latest-<arch>, latest-<arch>-ref
+# — overwritten on every build, with Zot collecting what that orphans.
+#
+# Best-effort and host-local: this reads a directory that only exists
+# on the node running Zot, so it degrades to a line of output
+# elsewhere, the same way cache-summary does.
+zot-disk: ## Actual deduplicated disk used by the registry
+	@dir=$$(sudo python3 -c "import json;print(json.load(open('/etc/zot/config.json'))['storage']['rootDirectory'])" 2>/dev/null); \
+	if [ -z "$$dir" ] || ! sudo test -d "$$dir"; then \
+		printf '  registry storage not readable here (Zot runs on %s)\n' "$(WEBDAV_HOST)"; \
+	else \
+		printf '  %-22s %s\n' "$$dir" "$$(sudo du -sh "$$dir" 2>/dev/null | cut -f1)"; \
+		printf '  %-22s %s\n' "$$dir/$(REGISTRY_NAME)" \
+			"$$(sudo du -sh "$$dir/$(REGISTRY_NAME)" 2>/dev/null | cut -f1)"; \
+		df -h "$$dir" 2>/dev/null | tail -1 \
+			| awk '{printf "  %-28s %s of %s used, %s free\n", "filesystem", $$3, $$2, $$4}'; \
+	fi
 
 # ─── Buildx Builder Setup ────────────────────────────────────────
 ##@ Compiler Cache
@@ -738,6 +832,14 @@ endef
 
 ##@ Build
 
+# The ROCm SDK cut down to one architecture and flattened. Everything
+# else builds FROM this; see docs/reference/image-sizes.md.
+build-rocm-runtime: builder-ensure ## Build the pruned ROCm base image
+	$(call bake,rocm-runtime)
+
+push-rocm-runtime: builder-ensure ## * Build and push the pruned ROCm base
+	$(call bake,rocm-runtime,--push)
+
 build-base: builder-ensure ## Build ROCm base image
 	$(call bake,pytorch-base)
 
@@ -1136,21 +1238,7 @@ perf-publish: ## Publish a perf run onto gh-pages (PERF_RUN=, PUSH=1 to push)
 		|| { echo "$$run has no report.md — run make perf-report"; exit 1; }; \
 	stamp=$$(basename "$$run"); \
 	echo "publishing $$stamp"; \
-	git fetch origin \
-		"+$(GH_PAGES_BRANCH):refs/remotes/origin/$(GH_PAGES_BRANCH)" 2>/dev/null || true; \
-	if [ ! -d $(GH_PAGES_DIR) ]; then \
-		if git rev-parse --verify -q origin/$(GH_PAGES_BRANCH) >/dev/null; then \
-			git worktree add $(GH_PAGES_DIR) origin/$(GH_PAGES_BRANCH) --detach; \
-			git -C $(GH_PAGES_DIR) checkout -B $(GH_PAGES_BRANCH) origin/$(GH_PAGES_BRANCH); \
-		else \
-			echo "$(GH_PAGES_BRANCH) does not exist on origin yet."; \
-			echo "Run the Docs workflow once to create it, then re-run this."; \
-			exit 1; \
-		fi; \
-	fi; \
-	git -C $(GH_PAGES_DIR) fetch origin \
-		"+$(GH_PAGES_BRANCH):refs/remotes/origin/$(GH_PAGES_BRANCH)"; \
-	git -C $(GH_PAGES_DIR) reset --hard origin/$(GH_PAGES_BRANCH); \
+	.builders/ghpages.sh $(GH_PAGES_DIR) $(GH_PAGES_BRANCH) > /dev/null; \
 	mkdir -p $(GH_PAGES_DIR)/data/perf/$$stamp; \
 	for f in $(PERF_PUBLISH_FILES); do \
 		cp $$run/$$f $(GH_PAGES_DIR)/data/perf/$$stamp/ 2>/dev/null || true; \
@@ -1563,21 +1651,7 @@ GH_PAGES_DIR ?= dist/gh-pages
 
 bench-publish: bench-data ## Publish the benchmark data onto gh-pages (PUSH=1 to push)
 	@test -s $(BENCH_JSON) || { echo "no benchmark data — run make bench first"; exit 1; }
-	@git fetch origin \
-		"+$(GH_PAGES_BRANCH):refs/remotes/origin/$(GH_PAGES_BRANCH)" 2>/dev/null || true
-	@if [ ! -d $(GH_PAGES_DIR) ]; then \
-		if git rev-parse --verify -q origin/$(GH_PAGES_BRANCH) >/dev/null; then \
-			git worktree add $(GH_PAGES_DIR) origin/$(GH_PAGES_BRANCH) --detach; \
-			git -C $(GH_PAGES_DIR) checkout -B $(GH_PAGES_BRANCH) origin/$(GH_PAGES_BRANCH); \
-		else \
-			echo "$(GH_PAGES_BRANCH) does not exist on origin yet."; \
-			echo "Run the Docs workflow once to create it, then re-run this."; \
-			exit 1; \
-		fi; \
-	fi
-	@git -C $(GH_PAGES_DIR) fetch origin \
-		"+$(GH_PAGES_BRANCH):refs/remotes/origin/$(GH_PAGES_BRANCH)"
-	@git -C $(GH_PAGES_DIR) reset --hard origin/$(GH_PAGES_BRANCH)
+	@.builders/ghpages.sh $(GH_PAGES_DIR) $(GH_PAGES_BRANCH) > /dev/null
 	@mkdir -p $(GH_PAGES_DIR)/data
 	@cp $(BENCH_JSON) $(GH_PAGES_DIR)/data/bench.json
 	@cp $(BENCH_DIR)/results.jsonl $(GH_PAGES_DIR)/data/bench.jsonl 2>/dev/null || true
@@ -1672,12 +1746,30 @@ clean: ## Remove built images from local registry (every arch in ARCHES)
 	done
 	@echo "Local images cleaned"
 
-clean-cache: ## Remove cache images from Zot
-	@echo "Removing cache images..."
-	@for tag in base-cache pytorch-cache runtime-cache cache; do \
-		docker rmi $(REGISTRY)/$(REGISTRY_NAME)/$$tag 2>/dev/null || true; \
+# This used to claim it removed cache images from Zot and did nothing
+# of the sort: `docker rmi` against a registry ref carrying no tag
+# matches nothing locally and never speaks to the registry at all, so
+# it printed "Cache images removed" every time having removed none.
+#
+# Nothing replaces the registry half, because nothing needs to. The
+# cache repos are not unbounded: each holds five fixed tags — latest,
+# latest-<arch> and latest-<arch>-ref — overwritten on every build, and
+# Zot is configured with dedupe, gc and deleteUntagged, so the
+# manifests an overwrite orphans are collected on its own schedule.
+# `make zot-disk` is the number to look at; `make image-sizes` is where
+# a target's cache got large.
+clean-cache: ## Drop locally-pulled cache images (Zot GCs its own)
+	@for a in $(ARCHES); do \
+		for r in $(CACHE_REPOS); do \
+			docker rmi $(REGISTRY)/$(REGISTRY_NAME)/$$r:latest-$$a \
+				2>/dev/null || true; \
+		done; \
 	done
-	@echo "Cache images removed (local only; Zot registry must be pruned separately)"
+	@for r in $(CACHE_REPOS); do \
+		docker rmi $(REGISTRY)/$(REGISTRY_NAME)/$$r:latest 2>/dev/null || true; \
+	done
+	@echo "Local cache images dropped. Zot prunes its own store —"
+	@echo "see 'make zot-disk' for what it actually holds."
 
 setup: zot-check builder-setup ## Full setup: check Zot, then builders
 	@echo "Setup complete. Run 'make build-all' to start building."

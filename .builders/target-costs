@@ -73,8 +73,16 @@ build lmcache-wheel     66
 #   lmcache       1m45s/1m49s/1m42s observed across three nodes.
 #   pytorch-base  5s/6s observed. Small, but a row of 6 beats a
 #                 fallback of 1 that means "unknown".
+#   rocm-runtime  NOT YET MEASURED. 300 is a placeholder, chosen high
+#                 rather than low: the target purges 260 packages out
+#                 of a 20 GB tree and then copies the 4.4 GB that
+#                 survives into a fresh layer, which is a lot of I/O
+#                 and no compilation. Placed too cheap it would land on
+#                 snoc-gaming behind WiFi, and every other target waits
+#                 on it. Re-measure with `make perf-build`.
 build pytorch         2336
 build vllm            1409
+build rocm-runtime     300
 build lmcache          105
 build pytorch-base       6
 

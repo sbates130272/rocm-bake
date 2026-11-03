@@ -54,17 +54,25 @@ ENV ROCM_PATH=/opt/rocm \
     GPU_ARCHS=${PYTORCH_ROCM_ARCH} \
     VLLM_TARGET_DEVICE=rocm
 
-COPY --from=tritonwheels /wheels/ /opt/wheels/triton/
-COPY --from=aiterwheels  /wheels/ /opt/wheels/aiter/
-COPY --from=nixlwheels   /wheels/ /opt/wheels/nixl/
-
+# Bind mounts, not COPYs. These three used to land under /opt/wheels/
+# and stay there for the life of the image — and `deps` is the base of
+# both the serving image and the builder, so every one of them carried
+# a gigabyte of wheels that had already been installed. Mounted, they
+# exist for this RUN only.
+#
+# The wheels remain recoverable from triton-wheel, aiter-wheel and
+# nixl-wheel, which is what those targets are for.
+#
 # Order matters only in that triton must not be resolved from PyPI:
 # upstream triton has no ROCm 10.1 build and installing it would shadow
 # ours. --no-deps on the triton wheels keeps pip from "helpfully"
 # pulling a published triton as a transitive dependency.
-RUN pip install --no-cache-dir --no-deps /opt/wheels/triton/*.whl && \
-    pip install --no-cache-dir /opt/wheels/aiter/*.whl && \
-    pip install --no-cache-dir /opt/wheels/nixl/*.whl
+RUN --mount=type=bind,from=tritonwheels,source=/wheels,target=/w/triton \
+    --mount=type=bind,from=aiterwheels,source=/wheels,target=/w/aiter \
+    --mount=type=bind,from=nixlwheels,source=/wheels,target=/w/nixl \
+    pip install --no-cache-dir --no-deps /w/triton/*.whl && \
+    pip install --no-cache-dir /w/aiter/*.whl && \
+    pip install --no-cache-dir /w/nixl/*.whl
 
 # AITER's wheel metadata does not carry its runtime dependencies — its
 # setup.py never folds requirements.txt into install_requires, so pip
@@ -357,16 +365,22 @@ ARG ROCM_VERSION
 LABEL org.opencontainers.image.source="https://github.com/vllm-project/vllm"
 LABEL org.opencontainers.image.description="vLLM ${VLLM_REF} serving image for ROCm ${ROCM_VERSION}, ${PYTORCH_ROCM_ARCH}"
 
-COPY --from=builder /wheels/ /opt/wheels/vllm/
 COPY --from=builder /wheels-build.log /wheels-sccache-stats.txt /wheels-arch.txt \
     /var/log/vllm-build/
 # The patched requirements, not the originals: installing the wheel's
 # own metadata would re-resolve the dependencies this build deliberately
 # dropped, and pull a CUDA torch in with them.
+#
+# Copied rather than mounted, unlike the wheel: this is a few KB and it
+# is the record of what was actually dropped, which is worth being able
+# to read out of a published image.
 COPY --from=builder /opt/vllm/requirements/ /opt/vllm-requirements/
 
-RUN pip install --no-cache-dir -r /opt/vllm-requirements/rocm.txt && \
-    pip install --no-cache-dir --no-deps /opt/wheels/vllm/*.whl && \
+# The wheel is mounted, not copied — vllm-wheel publishes it, so a copy
+# here only added its weight to every pull of the serving image.
+RUN --mount=type=bind,from=builder,source=/wheels,target=/w/vllm \
+    pip install --no-cache-dir -r /opt/vllm-requirements/rocm.txt && \
+    pip install --no-cache-dir --no-deps /w/vllm/*.whl && \
     python -c "import vllm; print('vLLM', vllm.__version__)" && \
     python -c "import torch; assert torch.version.hip, 'torch lost its HIP build'"
 
@@ -378,7 +392,6 @@ RUN pip install --no-cache-dir -r /opt/vllm-requirements/rocm.txt && \
 # --kv-offloading-backend lmcache fails at import without the package.
 # Upstream's own example says as much: "Requires lmcache to be installed".
 # The cache engine still runs in its own container; this is the client.
-COPY --from=lmcachewheels /wheels/ /opt/wheels/lmcache/
 COPY --from=lmcachewheels /requirements/ /opt/lmcache-requirements/
 
 # Pin grpcio to what vLLM already resolved, before LMCache's
@@ -421,9 +434,10 @@ print(f'grpcio=={md.version(\"grpcio\")}')" \
 # --no-deps on the wheel with the patched requirements installed first,
 # so pip cannot re-resolve install_requires and reintroduce the
 # CUDA-only entries that build stripped.
-RUN pip install --no-cache-dir -r /opt/lmcache-requirements/common.txt && \
+RUN --mount=type=bind,from=lmcachewheels,source=/wheels,target=/w/lmcache \
+    pip install --no-cache-dir -r /opt/lmcache-requirements/common.txt && \
     pip install --no-cache-dir --no-deps --ignore-requires-python \
-        /opt/wheels/lmcache/*.whl && \
+        /w/lmcache/*.whl && \
     python -c "import lmcache; print('LMCache', lmcache.__version__)" && \
     python -c "import torch; assert torch.version.hip, 'torch lost its HIP build'"
 
