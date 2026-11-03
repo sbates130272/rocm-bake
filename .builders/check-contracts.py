@@ -419,6 +419,71 @@ def check_manifests():
                  f"run without make would use the first")
 
 
+# ── 10. runner labels ↔ what the workflows ask for ───────────────
+def check_runner_labels():
+    """Every `runs-on: [self-hosted, ...]` must name labels a runner has.
+
+    This failure is silent in the worst way. A job whose labels no
+    runner carries does not error and does not fail — GitHub queues it
+    and keeps queueing it until the workflow hits its timeout, hours
+    later, and reports it as a slow run. Nothing in the repository
+    would have said the label was a typo.
+
+    fleet.runner_labels() is the one definition; the Ansible role
+    passes it to `config.sh --labels`. So the workflows have to stay
+    inside the union of what the fleet's runner nodes register.
+    """
+    fleet = load("fleet", ".builders/fleet.py")
+
+    available = set()
+    for path in sorted((ROOT / "manifests").glob("*.yml")):
+        try:
+            data = fleet.load(str(path))
+        except fleet.FleetError:
+            continue            # check_manifests already reported it
+        for name in fleet.nodes(data, "runner"):
+            available |= set(fleet.runner_labels(data,
+                                                 fleet.node_map(data)[name]))
+
+    # actionlint needs the same labels declared, or it rejects the
+    # workflow. Two lists that must agree, where the second exists to
+    # catch typos in the first — so the one thing it must not do is
+    # drift and start accepting them.
+    cfg = ROOT / ".github" / "actionlint.yaml"
+    if cfg.is_file():
+        import yaml
+        parsed = yaml.safe_load(cfg.read_text()) or {}
+        declared = set(parsed.get("self-hosted-runner", {}).get("labels")
+                       or [])
+        stale = declared - available - {"self-hosted"}
+        if stale:
+            fail("runner-labels",
+                 f".github/actionlint.yaml declares {sorted(stale)}, which "
+                 f"no runner node registers; actionlint would accept a "
+                 f"runs-on that never matches")
+        undeclared = available - declared - {"self-hosted"}
+        if undeclared:
+            fail("runner-labels",
+                 f"runner nodes register {sorted(undeclared)} but "
+                 f".github/actionlint.yaml does not declare them; a "
+                 f"workflow using one would fail lint")
+
+    wf = ROOT / ".github" / "workflows"
+    for path in sorted(wf.glob("*.yml")):
+        src = path.read_text()
+        for m in re.finditer(r"runs-on:\s*\[([^\]]*)\]", src):
+            labels = [x.strip().strip("'\"") for x in m.group(1).split(",")]
+            if "self-hosted" not in labels:
+                continue
+            missing = [x for x in labels if x not in available]
+            if missing:
+                fail("runner-labels",
+                     f".github/workflows/{path.name}: runs-on {labels} "
+                     f"asks for {missing}, which no runner node in any "
+                     f"manifest registers (available: {sorted(available)}); "
+                     f"that job would queue until it times out")
+
+
 def main():
     report = load("perfreport", ".builders/perfreport.py")
     sample = load("perfsample", ".builders/perfsample.py")
@@ -430,6 +495,7 @@ def main():
     check_costs()
     check_version_wheel_repos()
     check_manifests()
+    check_runner_labels()
 
     if FAIL:
         print("contract violations:", file=sys.stderr)
@@ -438,8 +504,8 @@ def main():
         return 1
     print("contracts ok: nginx log_format, balance placement, sample "
           "shape, perf stages, build-* rules, build-record names, "
-          "target-costs, the fleet manifests and versioncheck's wheel "
-          "repos all agree")
+          "target-costs, the fleet manifests, the runner labels and "
+          "versioncheck's wheel repos all agree")
     return 0
 
 

@@ -79,11 +79,62 @@
             cores      {{ ansible_facts['processor_vcpus'] }} ·
             ram {{ ansible_facts['memtotal_mb'] // 1024 }}GB
 
+# A runner that is installed but offline is the failure worth
+# catching: the jobs targeting it do not error, they queue until the
+# workflow times out, which reads as a slow fleet rather than a
+# missing runner.
+- name: Nodes that run CI jobs
+  hosts: runner_nodes
+  gather_facts: false
+  tasks:
+    - name: The runner service is active
+      become: true
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          unit=$(systemctl list-unit-files 'actions.runner.*.service' \
+                 --no-legend | awk 'NR==1 {print $1}')
+          [ -n "$unit" ] || { echo "NOT INSTALLED"; exit 0; }
+          printf '%s %s\n' "$unit" "$(systemctl is-active "$unit")"
+        executable: /bin/bash
+      register: fleet_runner_svc
+      changed_when: false
+      failed_when: false
+
+    - name: Runner
+      ansible.builtin.debug:
+        msg:
+          - "node       {{ inventory_hostname }}"
+          - "service    {{ fleet_runner_svc.stdout | default('unknown') }}"
+          - "labels     {{ fleet_runner_labels | join(',') }}"
+          - "repo       {{ fleet_runner_repo }}"
+
 - name: Builders, from here
   hosts: localhost
   connection: local
   gather_facts: false
   tasks:
+    # The fleet's own view, from GitHub's side. A runner can be
+    # `active` locally and still show offline here — a token that was
+    # revoked, or a node that lost its route out.
+    - name: GitHub agrees the runners are online
+      ansible.builtin.command:
+        cmd: >-
+          gh api repos/{{ hostvars[groups['runner_nodes'][0]].fleet_runner_repo
+          }}/actions/runners
+          --jq '.runners[] | "\(.name) \(.status) \(.busy)"'
+      register: fleet_runners_api
+      changed_when: false
+      failed_when: false
+      when: groups['runner_nodes'] | default([]) | length > 0
+
+    - name: Registered runners
+      ansible.builtin.debug:
+        msg: >-
+          {{ fleet_runners_api.stdout_lines
+             | default(['(gh unavailable, or no runner nodes)']) }}
+      when: groups['runner_nodes'] | default([]) | length > 0
+
     - name: Every builder can take work
       ansible.builtin.command:
         cmd: "{{ playbook_dir }}/../.builders/builder-health.py"

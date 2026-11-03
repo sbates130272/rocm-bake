@@ -1,0 +1,18 @@
+---
+# Only fires when the runner was actually re-registered. The unit name
+# carries the repository and runner name, so it is discovered rather
+# than spelled out.
+- name: Restart github_runner
+  become: true
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      unit=$(systemctl list-unit-files 'actions.runner.*.service' \
+             --no-legend | awk 'NR==1 {print $1}')
+      [ -n "$unit" ] || { echo "no runner unit installed yet"; exit 0; }
+      systemctl daemon-reload
+      systemctl restart "$unit"
+      echo "restarted $unit"
+    executable: /bin/bash
+  register: github_runner_restart
+  changed_when: "'restarted' in github_runner_restart.stdout"
