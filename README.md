@@ -148,7 +148,7 @@ what a fleet run found:
 
 | | |
 | --- | --- |
-| `rocm-bake.hcl` | The build graph: 14 targets, 3 groups, 47 variables |
+| `rocm-bake.hcl` | The build graph: 14 targets, 3 groups, 48 variables |
 | `Makefile` | Wrapper; reads every default out of `rocm-bake.hcl` |
 | `docker/` | Ten Dockerfiles and the ROCm prune script; build context is always the repo root |
 | `telemetry/build.sh` | Wraps a bake, emits Prometheus metrics |

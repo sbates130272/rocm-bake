@@ -53,8 +53,8 @@ TARGETS_DEFAULT="pytorch-base triton-wheel pytorch"
 
 # The arch every run in this invocation is measured at, recorded with
 # the result. Builds for different GPUs are not comparable — vLLM's
-# kernel prebuild is ~50 min on gfx950 and hours on gfx1201, and AITER
-# drops to PREBUILD_KERNELS=0 on RDNA — so pooling them would be the
+# kernel prebuild is ~50 min on gfx950 and hours on gfx1201 — so
+# pooling them would be the
 # same mistake as pooling runs at different MAX_JOBS, which the report
 # already guards against for exactly this reason.
 #

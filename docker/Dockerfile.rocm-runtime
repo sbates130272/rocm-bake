@@ -91,4 +91,56 @@ RUN set -eu; \
             -printf '%f '); \
     echo "ROCm ${ROCM_VERSION} (${ROCM_PRUNE_PROFILE}) for: ${found}"
 
+# Does the toolchain actually build something.
+#
+# The checks above assert that files are present, and twice that was
+# not enough. The prune removed the clang builtins runtime and then the
+# HIP cmake package; both left every binary in place, both passed every
+# assertion above, and both surfaced as a failed wheel build hours
+# later — cupy-wheel at 8 minutes, pytorch-wheel at 12 — with errors
+# naming neither ROCm nor the prune.
+#
+# Compiling a real program is the only check that covers that class,
+# and it is the cheap place to do it: a failure here costs seconds and
+# points at this file. No GPU is involved — hipcc cross-compiles for
+# ${PYTORCH_ROCM_ARCH} and the link is what exercises the builtins.
+#
+# keep-toolchain only. `minimal` deliberately has no compiler, so
+# there is nothing to test and its absence is not a defect.
+RUN set -eu; \
+    if [ "${ROCM_PRUNE_PROFILE}" != "keep-toolchain" ]; then \
+        echo "prune profile ${ROCM_PRUNE_PROFILE}: no toolchain to test"; \
+        exit 0; \
+    fi; \
+    arch=$(echo "${PYTORCH_ROCM_ARCH}" | tr ';' '\n' | head -1); \
+    cd /tmp; \
+    printf '%s\n' \
+        '#include <hip/hip_runtime.h>' \
+        '__global__ void k(float* p) { p[threadIdx.x] = 1.0f; }' \
+        'int main() { return 0; }' > t.hip; \
+    /opt/rocm/bin/hipcc --offload-arch="${arch}" -o t.out t.hip \
+        || { echo "rocm-runtime: hipcc cannot build for ${arch}." >&2; \
+             echo "  the toolchain is present but incomplete — see" >&2; \
+             echo "  docker/rocm-prune.sh, which is what removes from it." >&2; \
+             exit 1; }; \
+    rm -f t.hip t.out; \
+    test -f /opt/rocm/lib/cmake/hip-lang/hip-lang-config.cmake \
+        || { echo "rocm-runtime: the HIP cmake package is missing." >&2; \
+             echo "  cmake's HIP language detection needs it, so every" >&2; \
+             echo "  source build FROM this image fails at configure." >&2; \
+             exit 1; }; \
+    root=$(dirname "$(readlink -f /opt/rocm/lib)"); \
+    missing=0; \
+    for n in $(grep -rhoE '[A-Za-z0-9_.+-]+\.a\b' /opt/rocm/lib/cmake \
+                   2>/dev/null | sort -u); do \
+        find "${root}" -name "${n}" -print -quit 2>/dev/null | grep -q . \
+            || { echo "  dangling: ${n}" >&2; missing=$((missing+1)); }; \
+    done; \
+    [ "${missing}" -eq 0 ] \
+        || { echo "rocm-runtime: ${missing} cmake import(s) name archives" >&2; \
+             echo "  the prune removed. find_package() turns each one into" >&2; \
+             echo "  a hard configure error in every downstream build." >&2; \
+             exit 1; }; \
+    echo "toolchain ok: built for ${arch}, cmake archive imports resolve"
+
 CMD ["/bin/bash"]

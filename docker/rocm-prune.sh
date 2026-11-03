@@ -12,13 +12,23 @@
 # <component>10.1-<gfx>: amdrocm-blas10.1-gfx942, amdrocm-dnn10.1-gfx90a
 # and 258 more. Purging the ones for architectures we do not build for
 # is 10.77 GB of the 20.53, and dpkg knows what belongs to each, which a
-# filename pattern does not. The `rm` passes below are for the two
-# things packaging cannot express: static archives, which no runtime
-# loads, and headers.
+# filename pattern does not. The `rm` passes below are for what
+# packaging cannot express: static archives that nothing links, docs,
+# and — under `minimal` only — the headers and the HIP cmake package.
 #
-#   keep-toolchain  hipcc, the headers and LLVM stay. For images where
-#                   something compiles at run time — AITER JITs kernels,
-#                   Triton shells out to ld.lld.
+# Three of those passes have been wrong, each caught by a wheel build
+# hours downstream rather than here, so each now has an assertion in
+# Dockerfile.rocm-runtime: the clang builtins runtime, the HIP cmake
+# package, and the archives a cmake config imports. The shape of the
+# mistake was the same every time — a removal justified by reasoning
+# about the *runtime* images, applied in a profile whose name promises
+# a toolchain that builds.
+#
+#   keep-toolchain  hipcc, the headers, LLVM and /opt/rocm/lib/cmake
+#                   stay. For images where something compiles, whether
+#                   at build time (pytorch-wheel runs cmake against
+#                   ROCm) or at run time (AITER JITs kernels, Triton
+#                   shells out to ld.lld).
 #   minimal         those go too. For the plain PyTorch runtime image,
 #                   which compiles nothing.
 #
@@ -156,13 +166,89 @@ test -e /opt/rocm/lib/libamdhip64.so || {
 # build time and never opened at run time, so it has no business in an
 # image at all — but it ships inside packages whose shared libraries we
 # need, so dpkg cannot express this and rm has to.
-find /opt/rocm/ -name '*.a' -type f -delete 2>/dev/null || true
+#
+# Except the compiler's own runtime, which is the one .a that IS opened
+# by something we keep. clang links libclang_rt.builtins.a into every
+# HIP compilation; without it ld.lld fails with
+#
+#   cannot open .../lib/clang/24/lib/x86_64-unknown-linux-gnu/\
+#   libclang_rt.builtins.a: No such file or directory
+#
+# and the toolchain is present but cannot produce an executable. That
+# took out cupy-wheel, whose configure step compiles a probe program —
+# but the real cost is the one that would not have surfaced until a GPU
+# host: `keep-toolchain` exists precisely because AITER JIT-compiles
+# kernels on first use and Triton shells out to ld.lld, and both would
+# have failed the same way at run time.
+#
+# -prune, not a -path exclusion on the delete: the directory is skipped
+# before descent, so a future clang release that adds more archives
+# beside the builtins keeps them too.
+#
+# And not the archives a cmake package config imports, which is the
+# other half of the same lesson. Keeping /opt/rocm/lib/cmake (above)
+# put those configs back in front of `find_package`, and a config whose
+# IMPORTED_LOCATION points at a file this sweep deleted is a hard
+# configure error in anything that finds it:
+#
+#   rocshmem-targets.cmake:87: The imported target "roc::rocshmem"
+#   references the file "/opt/rocm/.../librocshmem.a" but this file
+#   does not exist.
+#
+# PyTorch's LoadHIP.cmake find_package()s its way across ROCm, so every
+# dangling config is a build stopper and fixing them one at a time is
+# a queue, not a fix. Ask the configs what they need instead: anything
+# a .cmake file names is kept, everything else goes.
+#
+# rocshmem is the case that found this. The script keeps that package
+# deliberately — see the note at the end about its hard Depends — so
+# its config was always going to be there, and its archive always had
+# to be there with it.
+# Matched on the basename, deliberately. A config spells its archive
+# as ${PACKAGE_PREFIX_DIR}/lib/librocshmem.a, so the literal text in
+# the file is a fragment with a variable in front of it and never a
+# path that exists — comparing resolved paths keeps nothing at all,
+# silently, which is exactly the failure this is here to prevent.
+# Basenames over-keep only if two components ship archives of the same
+# name, and a few duplicated megabytes is the right side to err on.
+keep_list=$(mktemp)
+grep -rhoE '[A-Za-z0-9_.+-]+\.a\b' "${ROCM_REAL}/lib/cmake" 2>/dev/null \
+    | sort -u > "${keep_list}" || true
+echo "rocm-prune: $(wc -l < "${keep_list}") archive name(s) referenced by cmake"
+
+find /opt/rocm/ \
+    -type d -path '*/llvm/lib/clang/*/lib' -prune -o \
+    -name '*.a' -type f -print0 2>/dev/null \
+    | while IFS= read -r -d '' f; do
+        grep -qxF "$(basename "$f")" "${keep_list}" || rm -f "$f"
+      done
+rm -f "${keep_list}"
 
 # ─── 4. Things only a build needs ────────────────────────────────
-# CMake package files and docs go in both profiles: nothing in either
-# image runs cmake against ROCm, and `make docs` is not this.
-rm -rf /opt/rocm/lib/cmake /opt/rocm/share/doc /opt/rocm/share/man \
+# Docs go in both profiles. `make docs` is not this.
+rm -rf /opt/rocm/share/doc /opt/rocm/share/man \
        /opt/rocm/share/info 2>/dev/null || true
+
+# The cmake package files stay under keep-toolchain, and the claim they
+# were removed on — "nothing in either image runs cmake against ROCm" —
+# was simply false. pytorch-wheel compiles PyTorch from source inside
+# this image, and cmake's own HIP language detection reads
+# lib/cmake/hip-lang/hip-lang-config.cmake to do it:
+#
+#   CMake Error at CMakeDetermineHIPCompiler.cmake:257
+#     The ROCm root directory ... does not contain the HIP runtime
+#     CMake package, expected at one of: .../hip-lang-config.cmake
+#
+# It cost a 12-minute build to find, immediately after the clang
+# builtins cost one. Both are the same mistake: keep-toolchain means a
+# toolchain that can actually build something, and these sweeps kept
+# removing pieces of it on reasoning about the *runtime* images.
+#
+# They are a few MB, and `minimal` still drops them — that profile
+# compiles nothing, which is what it is for.
+if [ "${PROFILE}" = "minimal" ]; then
+    rm -rf /opt/rocm/lib/cmake 2>/dev/null || true
+fi
 
 if [ "${PROFILE}" = "minimal" ]; then
     # Headers and the compiler front end, for an image that compiles
@@ -185,6 +271,20 @@ if [ "${PROFILE}" = "minimal" ]; then
            /opt/rocm/bin/hipcc /opt/rocm/bin/hipcc.pl \
            /opt/rocm/bin/hipify-perl /opt/rocm/bin/hipify-clang \
            2>/dev/null || true
+else
+    # keep-toolchain promises a toolchain that can actually link, and
+    # the .a sweep above is one careless pattern away from breaking
+    # that while leaving every binary in place. Assert it here rather
+    # than discovering it from a downstream build: cupy-wheel compiles
+    # a probe program during configure and died on exactly this, and
+    # AITER's first-use JIT and Triton's ld.lld would have failed the
+    # same way on a GPU host, hours later and further from the cause.
+    if ! find "${ROCM_REAL}/lib/llvm/lib/clang" -name 'libclang_rt.builtins*.a' \
+            -type f 2>/dev/null | grep -q .; then
+        echo "rocm-prune: the clang builtins runtime is gone." >&2
+        echo "  keep-toolchain cannot link without it; check the .a sweep." >&2
+        exit 1
+    fi
 fi
 
 # Deliberately NOT removed: amdrocm-rpp (image-processing primitives),

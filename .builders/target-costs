@@ -79,7 +79,13 @@ build lmcache-wheel     66
 #                 survives into a fresh layer, which is a lot of I/O
 #                 and no compilation. Placed too cheap it would land on
 #                 snoc-gaming behind WiFi, and every other target waits
-#                 on it. Re-measure with `make perf-warm`.
+#                 on it. The prune itself is measured at ~13s; what
+#                 this row needs is that plus the layer export, which
+#                 only a fleet run shows. rocm-runtime is not in the
+#                 wheels group, so `make perf-warm` does NOT measure
+#                 it — it is built by the bootstrap, ahead of and
+#                 outside the measured run. Time `make
+#                 push-rocm-runtime` directly instead.
 build pytorch         2336
 build vllm            1409
 build rocm-runtime     300

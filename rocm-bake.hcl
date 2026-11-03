@@ -148,8 +148,9 @@ variable "SDE_ROCM"    { default = "" }
 
 # How hard docker/rocm-prune.sh cuts the ROCm SDK down.
 #
-#   keep-toolchain  hipcc, the ROCm headers and LLVM survive
-#   minimal         they do not
+#   keep-toolchain  hipcc, the ROCm headers, LLVM and the HIP cmake
+#                   package under /opt/rocm/lib/cmake all survive
+#   minimal         none of them do
 #
 # keep-toolchain by default, and for every target, because one base
 # serves them all and the serving images genuinely need the toolchain:

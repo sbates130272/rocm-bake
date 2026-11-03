@@ -131,11 +131,13 @@ def image_entry(registry, namespace, repo, arch=None):
         layers = layers_of(base, tag)
     except Exception:
         return None
-    parsed = parse_tag(tag) or (None, None, None, None)
     return {
         "repo": repo,
         "tag": tag,
-        "arch": parsed[2] or "-",
+        # tag_arch, not parsed[2]: parse_tag cannot read base's
+        # <rocm>-<python>-<arch> tags at all, so the repo this function
+        # was widened for was the one whose row said "-".
+        "arch": tag_arch(tag) or "-",
         "pushed": pushed,
         "tags": len(tags),
         "bytes": sum(layer.get("size", 0) for layer in layers),

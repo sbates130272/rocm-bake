@@ -70,6 +70,30 @@ registry under `PUBLISHED_INPUTS=1`.
 
 `make perf-plan` reports what it *would* bootstrap and builds nothing.
 
+### A cold run on an architecture with nothing published
+
+`perf-cold` passes `--no-push`, which `balance.sh` turns into building
+`build-x` instead of `push-x`. Under `PUBLISHED_INPUTS=1` every input
+is still resolved as a registry ref, so a target built during a cold
+run is invisible to the target that needs it. On a card built before
+this is harmless; on a fresh one `pytorch` would wait for
+`pytorch-wheel` to build cold, for hours, and then fail at step 1
+resolving a ref that build never pushed.
+
+The bootstrap made that reachable — it satisfies `rocm-runtime` and
+`pytorch-base`, which used to be what stopped the run in one second —
+so `perf-cold` now checks the rest up front and refuses:
+
+```text
+[perf] cold run cannot complete on gfx1100
+[perf]   needed by the run and not published: cupy-wheel pytorch-wheel
+         pytorch aiter-wheel nixl-wheel lmcache-wheel
+[perf]   Publish them once first:
+[perf]     make perf-warm PERF_ARCH=gfx1100
+```
+
+Run `perf-warm` once for a new card, then `perf-cold` works.
+
 Anything else that hits a missing input — `balance.sh` directly, a
 wheel build — still fails the preflight, which now prints the commands
 that fix it:

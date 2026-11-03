@@ -84,8 +84,10 @@ module-by-module detail.
 Covered in [Caching](caching.md#scoped-by-architecture). Short version:
 `CACHE_ARCH` keeps each architecture's registry cache separate, because
 before it existed alternating architectures cost two cold builds every
-time. `pytorch-base` and `triton-wheel` stay on the shared ref
-deliberately — neither compiles device code.
+time. `triton-wheel` stays on the shared ref deliberately — it compiles
+no device code. `pytorch-base` does not: it builds FROM `rocm-runtime`,
+whose kernel libraries are for one card, so both its tag and its cache
+ref are arch-scoped now.
 
 ## Per-architecture pip index
 
