@@ -8,6 +8,8 @@ on:
       - "Makefile"
       - "serving/docker-compose.yml"
       - ".builders/**"
+      - "manifests/**"
+      - "ansible/**"
       - ".github/workflows/ci.yml"
   push:
     branches: [main]
@@ -17,6 +19,8 @@ on:
       - "Makefile"
       - "serving/docker-compose.yml"
       - ".builders/**"
+      - "manifests/**"
+      - "ansible/**"
       - ".github/workflows/ci.yml"
 
 permissions:
@@ -495,6 +499,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # fleet.py is the only thing in this repository that needs a
+      # package outside the standard library, and everything below
+      # reads the fleet manifest through it — including `make`, whose
+      # node list and registry come from there.
+      - name: PyYAML, for the fleet manifest
+        run: pip install pyyaml
+
       # rocm-bake.hcl owns every build default; the Makefile reads them
       # through its bake_default function. This fails the build if a
       # value is declared in both, which is how the two drifted apart
@@ -530,6 +541,41 @@ jobs:
             val=$(make -s --eval="__show:;@printf '%s' '\$($v)'" __show)
             printf '  %-20s %s\n' "$v" "$val"
             [ -n "$val" ] || { echo "::error::$v resolved empty"; exit 1; }
+          done
+
+      # Every committed manifest, not just the default one. A profile
+      # for a fleet nobody is currently running is exactly the one that
+      # rots, and the cost of finding out is standing the fleet up.
+      - name: Every fleet manifest loads and resolves
+        run: |
+          rc=0
+          for m in manifests/*.yml; do
+            name=$(basename "$m" .yml)
+            printf '== %s\n' "$name"
+            FLEET="$name" python3 -I .builders/fleet.py --table || rc=1
+            # The renderer, not just the loader: an unsubstituted
+            # placeholder in buildkitd.toml.in reaches a daemon config
+            # as a literal and is only noticed when a build cannot
+            # resolve the registry.
+            for node in $(FLEET="$name" python3 -I .builders/fleet.py --nodes); do
+              FLEET="$name" python3 -I .builders/fleet.py --buildkitd "$node" \
+                > /dev/null || rc=1
+            done
+          done
+          exit $rc
+
+      # The dynamic inventory is a third consumer of the same file, and
+      # the one whose failure mode is "no hosts matched" — a play that
+      # succeeds having done nothing at all.
+      - name: The Ansible inventory has the groups the plays target
+        run: |
+          pip install ansible-core
+          cd ansible
+          for group in builders registry_nodes cache_nodes all_nodes; do
+            hosts=$(ansible-inventory -i inventory/fleet.py --list \
+                    | python3 -c "import json,sys; print(' '.join(json.load(sys.stdin).get('$group', {}).get('hosts', [])))")
+            printf '  %-16s %s\n' "$group" "$hosts"
+            [ -n "$hosts" ] || { echo "::error::group $group is empty"; exit 1; }
           done
 
   compose:

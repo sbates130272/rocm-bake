@@ -91,7 +91,26 @@ jobs:
       - name: yamllint
         run: |
           pipx install yamllint
-          yamllint -c .yamllint.yml .github/
+          yamllint -c .yamllint.yml .github/ manifests/ ansible/
+
+  fleet:
+    name: Fleet manifests and plays
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # ansible-lint at its production profile. These plays reconfigure
+      # Docker daemons and a registry on machines that are not
+      # disposable, so the rules about idempotence and about naming
+      # what a task does are worth more here than on a throwaway host.
+      - name: ansible-lint
+        run: |
+          pipx install ansible-lint
+          cd ansible
+          ansible-lint site.yml check.yml
 
   python:
     name: Python
