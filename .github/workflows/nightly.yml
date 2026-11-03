@@ -1,0 +1,204 @@
+---
+name: Nightly — cold and warm build
+
+# A cold build and a warm build of every target, per architecture, on
+# AWS CodeBuild, published to ECR and reported as a GitHub issue.
+#
+# Why CodeBuild rather than a fleet of self-hosted runners: it is an
+# EC2 instance AWS administers, rented by the minute, with privileged
+# mode for BuildKit, up to 72 vCPU and 824 GB of SSD, and build
+# timeouts in hours. The ephemeral-runner alternative needs a Lambda
+# webhook handler, a launch template, a builder AMI kept in step with
+# ansible/roles/, and a sweep for orphaned instances. See
+# docs/operations/runners.md.
+#
+# NOT CodeBuild's Lambda compute mode, which AWS documents as
+# supporting no Docker builds or runs, no privileged mode, no caching
+# and nothing over 15 minutes.
+#
+# The matrix axis is ARCHITECTURE, not target. balance.sh resolves the
+# targets into nine waves whose maxima sum to within ~3% of the total
+# work in .builders/target-costs — the graph is a near-serial chain, so
+# splitting targets across machines buys almost nothing and turns local
+# layer reuse into registry pulls. Architectures share no edges.
+on:
+  schedule:
+    # 02:17 UTC. Not 02:00: every scheduled workflow on GitHub is
+    # written for the top of an hour, and the queue there is long
+    # enough to delay a job by many minutes.
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+    inputs:
+      arches:
+        description: 'Space-separated arch list (default: ARCHES in the Makefile)'
+        required: false
+        default: ''
+      skip_cold:
+        description: 'Skip the cold build — warm only'
+        type: boolean
+        required: false
+        default: false
+      push:
+        description: 'Push the warm build to ECR'
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  # One nightly at a time. Two runs would share the registry cache and
+  # each would report the other's contention as its own cost.
+  group: nightly
+  cancel-in-progress: false
+
+jobs:
+  # Resolved once, so the matrix and the report agree and a dispatch
+  # override is visible in the log rather than implied.
+  arches:
+    name: Which architectures
+    runs-on: ubuntu-latest
+    if: vars.NIGHTLY_ENABLED == 'true'
+    outputs:
+      list: ${{ steps.pick.outputs.list }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: pick
+        run: |
+          arches="${{ inputs.arches }}"
+          if [ -z "$arches" ]; then
+            arches=$(make -s arches-list | sed -n 's/^ARCHES = //p')
+          fi
+          echo "resolved: $arches"
+          printf 'list=%s\n' \
+            "$(printf '%s' "$arches" | jq -Rc 'split(" ") | map(select(length>0))')" \
+            >> "$GITHUB_OUTPUT"
+
+  build:
+    name: ${{ matrix.arch }}
+    needs: arches
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: ${{ fromJson(needs.arches.outputs.list) }}
+
+    # A CodeBuild-hosted ephemeral runner: CodeBuild takes the
+    # WORKFLOW_JOB_QUEUED webhook, starts a build, registers a runner
+    # for this one job and terminates it after. A runner showing
+    # "Offline" in the GitHub UI is the expected steady state here.
+    #
+    # The trailing label overrides the project's instance size per
+    # job, which is why one project serves the whole matrix.
+    runs-on:
+      - codebuild-${{ vars.CODEBUILD_PROJECT }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - instance-size:2xlarge
+
+    # Measured on snoc-think (32 cores), the targets total 9089 s of
+    # work and the cold half runs them from nothing. Six hours is
+    # generous on 72 vCPU and still bounds a wedged build.
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The build's identity is the CodeBuild project's service role,
+      # already attached to this machine. No OIDC exchange and no
+      # stored keys — those are for GitHub-hosted jobs that need AWS.
+      - name: Log in to ECR
+        run: |
+          aws ecr get-login-password --region "${{ vars.AWS_REGION }}" \
+            | docker login --username AWS --password-stdin \
+                "${{ vars.ECR_REGISTRY }}"
+
+      - name: Cold and warm build for ${{ matrix.arch }}
+        env:
+          REGISTRY: ${{ vars.ECR_REGISTRY }}
+          # ECR is HTTPS with auth. The bake file defaults this true
+          # for the fleet's plain-HTTP Zot, and leaving it that way
+          # here fails every cache export rather than falling back.
+          REGISTRY_INSECURE: "false"
+          CACHE_TAG_SUFFIX: -nightly
+        run: |
+          .builders/nightly.sh \
+            --arch "${{ matrix.arch }}" \
+            --out "/tmp/nightly-${{ matrix.arch }}" \
+            --ensure-ecr \
+            ${{ inputs.skip_cold && '--skip-cold' || '' }} \
+            ${{ inputs.push == false && '--no-push' || '' }}
+
+      # The report travels as an artifact. The job that ran the build
+      # holds registry credentials and third-party build code; it is
+      # not the job that writes to this repository.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nightly-${{ matrix.arch }}
+          path: /tmp/nightly-${{ matrix.arch }}
+          if-no-files-found: warn
+
+  report:
+    name: Report
+    needs: [arches, build]
+    # always(): a nightly that reports only on success cannot be told
+    # apart from one that never ran. The issue is the signal, so it
+    # has to survive the failure it exists to describe.
+    if: always() && needs.arches.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/reports
+          pattern: nightly-*
+
+      - name: Assemble the night's summary
+        run: |
+          {
+            printf '## Nightly %s\n\n' "$(date -u +%Y-%m-%d)"
+            printf 'Build result: **%s**\n\n' "${{ needs.build.result }}"
+            found=0
+            for d in /tmp/reports/nightly-*/; do
+              [ -s "$d/report.md" ] || continue
+              found=1
+              printf '### %s\n\n' "$(basename "$d" | sed 's/^nightly-//')"
+              cat "$d/report.md"
+              printf '\n'
+            done
+            if [ "$found" = 0 ]; then
+              printf '_No report was produced — the build did not get far enough._\n'
+            fi
+            printf '\n[Run](%s/%s/actions/runs/%s)\n' \
+              "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+          } > /tmp/summary.md
+          cat /tmp/summary.md
+
+      # Same shape as version-check.yml: one issue, commented on,
+      # rather than a fresh issue nightly. Labels are created with
+      # --force first because `gh issue create --label X` fails
+      # outright when X does not exist — which would break this step
+      # on the first night it had anything to say.
+      - name: File or update the nightly issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create nightly --force \
+            --color 1d76db --description "Scheduled cold/warm build report"
+          gh label create automated --force \
+            --color ededed --description "Filed by a workflow, not a human"
+          body=$(cat /tmp/summary.md)
+          existing=$(gh issue list --label nightly --state open \
+            --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+            echo "::notice::commented on issue #$existing"
+          else
+            gh issue create \
+              --title "[nightly] cold and warm build report" \
+              --label nightly --label automated \
+              --body "$body"
+          fi

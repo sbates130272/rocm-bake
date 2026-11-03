@@ -43,13 +43,14 @@ reports `running`, `inactive` or `error` per node.
 
 ## Continuous integration
 
-Four workflows, all on GitHub-hosted runners. None of them builds a
-real image — the images need a build fleet — so CI validates structure
-and agreement rather than output.
+Five workflows. Every pull-request check runs on a GitHub-hosted
+runner and builds no real image — the images need a build fleet — so
+the PR gate validates structure and agreement rather than output.
 
-No CI job runs on a build fleet. SNOC is driven by hand and registers
-no runner; the nightly that would build is designed but not built —
-see [CI runners](runners.md).
+The exception is the nightly, which does build: a cold and a warm run
+per architecture on AWS CodeBuild, published to ECR and reported as a
+GitHub issue. SNOC runs no CI job at all — it is driven by hand. See
+[CI runners](runners.md).
 
 **`CI — Dockerfile & bake validation`** runs on pull requests and pushes
 to `main`, path-filtered to the build files. It enumerates the bake

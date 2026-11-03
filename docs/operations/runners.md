@@ -134,30 +134,108 @@ gh variable set NIGHTLY_ENABLED   --body true
 job is skipped, so nothing queues against a project that is being
 rebuilt or an account that is being cleaned up.
 
-## What is still missing
+## The nightly
 
-There is no nightly workflow yet, and writing one needs two things
-this repository does not have.
+`.github/workflows/nightly.yml` runs at 02:17 UTC, one job per
+architecture, each calling `.builders/nightly.sh` on a CodeBuild
+machine. A separate GitHub-hosted job collects the reports and files
+them as a comment on one `nightly`-labelled issue — the same
+one-issue-commented-on shape `version-check.yml` uses.
 
-**A harness that runs on one machine.** `make perf-run` is a *fleet*
-harness: it drives `balance.sh` across nodes over ssh, and reads
+`nightly.sh` is deliberately *not* `perfrun.sh`. That one is a fleet
+harness: it drives `balance.sh` across nodes over ssh and reads
 `journalctl -u zot`, `/var/log/nginx/sccache.log` and
-`/var/cache/sccache-webdav/` locally with `sudo`. A CodeBuild runner
-is one machine with none of those services, so `perf-run` there would
-try to ssh to instances that do not exist and publish a report with
-its registry and cache lanes empty.
+`/var/cache/sccache-webdav/` on the services node. None of that exists
+on a rented machine, so running it there would ssh to instances that
+do not exist and publish a report with its cache and registry lanes
+empty. `nightly.sh` times two bake invocations and claims nothing it
+cannot see.
 
-`bench.sh` is the better fit — it already has named `cold` and `warm`
-scenarios, runs targets serially with isolated caches, and resolves
-its builder through `fleet.py --endpoint`, so a manifest whose single
-node is `connection: local` makes it run entirely on the CodeBuild
-machine. That manifest does not exist yet.
+Cold runs first and never pushes — `--no-cache` with every
+`cache-from` cleared, so the previous night's export cannot leak in.
+Warm is an ordinary build with the registry cache live, and it is the
+one that publishes. Run them the other way round and the "cold" build
+would be reading the cache the warm build had just written.
 
-**Somewhere to put the layers and the objects.** A warm build is only
-warm if its caches survive the machine, and CodeBuild machines do not.
-That means the registry and the compiler cache move off the fleet —
-ECR and S3 are the obvious answers, and both are already listed above
-as the right moves on AWS, but neither is done.
+### Cache errors are reported separately from the exit code
 
-Until those two land, the nightly stays a design rather than a
-workflow.
+Every `cache-to` in `rocm-bake.hcl` carries `ignore-error=true`, which
+is the right default: a registry that rejects a cache export should
+not fail a build that otherwise succeeded. The cost is that a night
+where *every* export failed still exits 0 and looks healthy, while the
+next warm build is secretly cold.
+
+So the report counts them in their own column, and says so in prose
+when the count is non-zero. A green nightly with a cache-error count
+climbing is the failure mode to watch for.
+
+### Where the warmth lives
+
+CodeBuild destroys the container when the build ends, so nothing on
+that machine survives to the next night. CodeBuild offers three
+caching mechanisms, and only one of them is right here.
+
+**Registry cache — what this uses.** `rocm-bake.hcl` already carries
+39 `type=registry,mode=max` cache refs. `mode=max` exports *every*
+intermediate layer, not just the ones in the final image, and the next
+night imports them from ECR. Nothing is stored on the host, so the
+container being destroyed costs nothing.
+
+This is also why the nightly does **not** use the common
+`docker pull $REPO:nightly || true` plus `docker build --cache-from`
+pattern. That is the classic builder's single-image cache; BuildKit's
+registry exporter already does strictly more, and swapping to it would
+lose the intermediate layers that make a warm build warm.
+
+**Local host cache — worth enabling anyway.** `LOCAL_DOCKER_LAYER_CACHE`
+on the project (which needs privileged mode, already on) is free and
+best-effort. It will rarely survive a 24-hour gap — AWS reallocates the
+host — but it makes a same-day re-run or a dispatched retry much
+cheaper. Enable it; just do not depend on it.
+
+**S3 zip cache — do not use it for layers.** CodeBuild's S3 cache
+zips the paths you name, uploads at the end and downloads at the
+start. The cache rows in `.builders/target-costs` total **17.6 GB per
+run**, with `triton-wheel` alone at 6.7 GB and `pytorch-wheel` at
+5.1 GB, on top of an 8.67 GB base image layer. Serialising a
+compress-upload-download-decompress of that around every build is the
+bottleneck the registry cache exists to avoid.
+
+!!! note "sccache is inert on CodeBuild, for now"
+    The compiler cache here is **sccache**, not ccache, and it speaks
+    `SCCACHE_WEBDAV_ENDPOINT` — nginx on the fleet's services node.
+    A CodeBuild machine has no such endpoint, so the nightly gets
+    *layer* reuse from ECR but no *object* reuse: anything that does
+    recompile, recompiles from scratch.
+
+    This is the one place S3 genuinely fits, and not via CodeBuild's
+    zip cache — sccache speaks S3 natively through `SCCACHE_BUCKET`.
+    Switching means changing `SCCACHE_WEBDAV_*` to `SCCACHE_S3_*`
+    across `rocm-bake.hcl` and the Dockerfiles, which is the "real
+    work, not configuration" that [the AWS page](aws.md) flags. Until
+    then, expect the cold/warm gap to be wider here than on SNOC.
+
+### What it needs in the account
+
+Beyond the CodeBuild project above:
+
+- **ECR repositories.** ECR does not create one on push the way Zot
+  does, and the failure lands at the end of a long build rather than
+  the start. `nightly.sh --ensure-ecr` creates the missing ones first;
+  the project's role needs `ecr:CreateRepository` for that, or you can
+  pre-create them and drop the flag.
+- **`LOCAL_DOCKER_LAYER_CACHE`** on the project — free, best-effort,
+  and no reason not to.
+- **`REGISTRY_INSECURE=false`.** The bake file defaults it `true` for
+  the fleet's plain-HTTP Zot. Left that way against ECR, every cache
+  export fails — and `ignore-error=true` hides it, which is exactly
+  what the column above exists to catch.
+- **Repository variables**: `CODEBUILD_PROJECT`, `ECR_REGISTRY`,
+  `AWS_REGION`, and `NIGHTLY_ENABLED=true`.
+
+!!! warning "Unverified against real infrastructure"
+    `nightly.sh` has been run locally — argument handling, target
+    resolution, the report, and the cache-error detection all work.
+    Nothing has run on CodeBuild, because the project does not exist
+    yet. Expect the first run to surface missing tooling in the image
+    and missing permissions on the service role.

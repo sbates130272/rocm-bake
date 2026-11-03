@@ -1,0 +1,15 @@
+---
+# actionlint rejects any `runs-on:` label it does not recognise, which
+# is the right default — a typo in a label is otherwise a job that
+# queues until the workflow times out rather than an error.
+#
+# The nightly runs on a CodeBuild-hosted GitHub Actions runner. Its
+# first label carries `${{ github.run_id }}`, so actionlint treats it
+# as an expression and lets it through; the instance-size override is
+# a literal and has to be declared here.
+#
+# See docs/operations/runners.md for what these mean and where the
+# project that answers to them is configured.
+self-hosted-runner:
+  labels:
+    - instance-size:2xlarge

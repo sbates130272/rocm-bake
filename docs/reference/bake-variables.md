@@ -1,6 +1,6 @@
 # Bake variables
 
-`rocm-bake.hcl` declares 45 variables and is the single source for every
+`rocm-bake.hcl` declares 47 variables and is the single source for every
 value a build reads. The Makefile parses the `variable` blocks at make
 parse time and reads the defaults out, so `make build-pytorch` and a
 bare `docker buildx bake pytorch` always agree.
@@ -52,7 +52,15 @@ v0.33 still pins to 1.95; `setup.py` builds `vllm/vllm-rs`.
 | --- | --- |
 | `REGISTRY` | `snoc-strix.fold-leaffish.ts.net:8080` |
 | `REGISTRY_NAME` | `rocm-pytorch` |
+| `REGISTRY_INSECURE` | `true` |
 | `SOURCE_URL` | `https://github.com/sbates130272/rocm-pytorch-build` |
+
+`REGISTRY_INSECURE` is `true` for the fleet's Zot, which serves plain
+HTTP on a tailnet. Set it `false` for any registry with TLS and auth —
+ECR, GHCR, Docker Hub. It reaches the `registry.insecure=` field of
+every `cache-from` and `cache-to` in the file, and leaving it `true`
+against an HTTPS registry fails the cache export rather than falling
+back, which `ignore-error=true` then swallows.
 
 ## Architecture and build shape
 
