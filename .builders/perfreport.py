@@ -1110,7 +1110,7 @@ def main():
     else:
         runs = sorted(p for p in PERF_DIR.glob("*") if p.is_dir())
         if not runs:
-            sys.exit(f"no runs under {PERF_DIR} — run `make perf-run` first")
+            sys.exit(f"no runs under {PERF_DIR} — run `make perf-cold` first")
         run = runs[-1]
     if not run.is_dir():
         sys.exit(f"not a directory: {run}")

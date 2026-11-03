@@ -1,14 +1,15 @@
 # Build graph
 
-`rocm-bake.hcl` declares thirteen targets. Bake derives the build DAG
+`rocm-bake.hcl` declares fourteen targets. Bake derives the build DAG
 from the `contexts` each one names, and orders the graph itself — which
-is why asking for `vllm` alone also builds `pytorch-base`,
+is why asking for `vllm` alone also builds `rocm-runtime`, `pytorch-base`,
 `triton-wheel`, `pytorch`, `aiter-wheel`, `nixl-wheel`, `cupy-wheel` and
 `lmcache-wheel`, in dependency order.
 
 ```mermaid
 flowchart TD
-    base["pytorch-base<br/><i>rocm/dev-ubuntu-26.04:10.1.0-full</i>"]
+    rocm["rocm-runtime<br/><i>rocm/dev-ubuntu-26.04:10.1.0-full,<br/>pruned to one arch</i>"]
+    base["pytorch-base"]
     triton["triton-wheel<br/><i>noarch</i>"]
     cupy["cupy-wheel"]
     pt["pytorch"]
@@ -22,6 +23,8 @@ flowchart TD
     vllm["vllm"]
     vllmw["vllm-wheel"]
 
+    rocm --> base
+    rocm --> run
     base --> triton
     base --> cupy
     base --> pt
@@ -74,7 +77,7 @@ not GEMMs, and it has no AITER code path.
 
 | Group | Members |
 | --- | --- |
-| `default` | `pytorch-base`, `pytorch`, `pytorch-wheel`, `triton-wheel`, `aiter-wheel`, `cupy-wheel`, `nixl-wheel`, `vllm`, `vllm-wheel`, `lmcache`, `lmcache-wheel` |
+| `default` | `rocm-runtime`, `pytorch-base`, `pytorch`, `pytorch-wheel`, `triton-wheel`, `aiter-wheel`, `cupy-wheel`, `nixl-wheel`, `vllm`, `vllm-wheel`, `lmcache`, `lmcache-wheel` |
 | `wheels` | `pytorch-wheel`, `triton-wheel`, `aiter-wheel`, `nixl-wheel`, `cupy-wheel`, `vllm-wheel`, `lmcache-wheel` |
 | `serving` | `cupy-wheel`, `nixl-wheel`, `vllm`, `vllm-wheel`, `lmcache`, `lmcache-wheel` |
 
@@ -188,7 +191,7 @@ Three orderings the old stages asserted by hand are now edges in
 
 - `triton-wheel` before `pytorch` — the pytorch image installs that wheel
 - `lmcache-wheel` before `vllm-wheel` — vLLM takes a `lmcache-wheel` context, and results cross nodes through Zot, so it must be *published* first
-- `pytorch-base` before everything
+- `rocm-runtime`, then `pytorch-base`, before everything
 
 ### Preflight
 

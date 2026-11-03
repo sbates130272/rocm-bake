@@ -92,19 +92,24 @@ same speed:
 ## Build targets
 
 ```text
-pytorch-base ─┬─► triton-wheel ─┬─► pytorch ─┬─► pytorch-run
-              │                 │            ├─► nixl-wheel
-              │                 │            └─► aiter-wheel
-              │                 ├─► pytorch-wheel
-              │                 └─► pytorch-test
-              └─► cupy-wheel
+rocm-runtime ─► pytorch-base ─┬─► triton-wheel ─┬─► pytorch ─┬─► pytorch-run
+                              │                 │            ├─► nixl-wheel
+                              │                 │            └─► aiter-wheel
+                              │                 ├─► pytorch-wheel
+                              │                 └─► pytorch-test
+                              └─► cupy-wheel
 
 lmcache, lmcache-wheel  ◄─ cupy-wheel, nixl-wheel, pytorch, triton-wheel
 vllm,    vllm-wheel     ◄─ aiter-wheel, lmcache-wheel, nixl-wheel,
                            pytorch, triton-wheel
 ```
 
-Thirteen targets, three groups (`default`, `wheels`, `serving`). Bake
+`rocm-runtime` is AMD's ROCm SDK cut down to the one GPU architecture
+being built for and flattened into a single layer: 8.67 GB becomes
+1.54 GB, and every image downstream inherits the difference. See
+[Image sizes](https://sbates130272.github.io/rocm-bake/reference/image-sizes/).
+
+Fourteen targets, three groups (`default`, `wheels`, `serving`). Bake
 derives the DAG from each target's `contexts`, so asking for `vllm`
 alone builds everything it needs.
 
@@ -149,11 +154,11 @@ make bench BENCH_SCENARIO=cold BUILDER=snoc-think
 make bench-report
 ```
 
-A second harness answers a different question — `make perf-run` builds
+A second harness answers a different question — `make perf-cold` builds
 every wheel across the whole fleet at once, with CPU, compiler-cache and
 registry traffic sampled throughout, and `make perf-report` renders it
 as markdown plus SVG and interactive charts. `bench.sh` gives isolated
-per-target cost; `perf-run` gives throughput under contention. Do not
+per-target cost; `perf-cold` gives throughput under contention. Do not
 quote one as if it were the other.
 
 Measured results, why `warm` is an assertion rather than a number, and
@@ -164,11 +169,11 @@ what a fleet run found:
 
 | | |
 | --- | --- |
-| `rocm-bake.hcl` | The build graph: 13 targets, 3 groups, 45 variables |
+| `rocm-bake.hcl` | The build graph: 16 targets, 3 groups, 49 variables |
 | `manifests/` | The fleets: which machines, what each is for, how fast its uplink |
 | `ansible/` | Makes a machine match the manifest; inventory is the manifest |
 | `Makefile` | Wrapper; reads what is built from `rocm-bake.hcl` and where from the manifest |
-| `docker/` | Nine Dockerfiles; build context is always the repo root |
+| `docker/` | Ten Dockerfiles and the ROCm prune script; build context is always the repo root |
 | `telemetry/build.sh` | Wraps a bake, emits Prometheus metrics |
 | `serving/` | Compose file for the vLLM + LMCache pair |
 | `.builders/` | Node setup, the balancer, the benchmark harness, registry readers |

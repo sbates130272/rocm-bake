@@ -247,7 +247,7 @@ services:
           --host 0.0.0.0 --port 8000 \
           --max-model-len "$${MAX_MODEL_LEN}" \
           --gpu-memory-utilization "$${GPU_UTIL}" \
-          $${KV_ARGS}
+          $${KV_ARGS} $${VLLM_EXTRA_ARGS}
     environment:
       <<: *hip-ipc
       # 1 wires up the LMCacheMPConnector; 0 serves without KV offload
@@ -256,6 +256,37 @@ services:
       MODEL: ${MODEL:-Qwen/Qwen2.5-3B-Instruct}
       MAX_MODEL_LEN: ${MAX_MODEL_LEN:-8192}
       GPU_UTIL: ${GPU_UTIL:-0.90}
+      # Anything else to hand `vllm serve`, unquoted so the shell splits
+      # it. Empty by default, so a normal run is unchanged.
+      #
+      # This exists for GPUs the defaults above cannot fit. The emulated
+      # gfx1250 in a qemu-minimal quick-start guest advertises 1 GiB of
+      # VRAM to KFD — enough for facebook/opt-125m and nothing larger —
+      # and getting even that to load needs flags the three settings
+      # above do not cover:
+      #
+      #   VLLM_EXTRA_ARGS="--enforce-eager --dtype float16 --swap-space 0"
+      #
+      # --enforce-eager matters most: graph capture allocates on top of
+      # the weights, and there is no headroom for it at this size.
+      # rocm-aic reaches for the same set, plus --kv-cache-dtype fp8 and
+      # a smaller --block-size, for the same reason.
+      VLLM_EXTRA_ARGS: ${VLLM_EXTRA_ARGS:-}
+      # 1 is torch's own default and what every CDNA lane wants. Set 0
+      # where hipBLASLt has no kernel library for the architecture:
+      # ROCm 10.1 ships no TensileLibrary_lazy_gfx1250.dat, so on
+      # gfx1250 every GEMM dies in heuristic selection —
+      #
+      #   rocblaslt error: Cannot read ".../TensileLibrary_lazy_gfx1250.dat"
+      #   hipModuleLoad failed: Kernels.so-000-gfx1250.hsaco
+      #   RuntimeError: HIPBLAS_STATUS_INVALID_VALUE when calling
+      #     hipblasLtMatmulAlgoGetHeuristic(...)
+      #
+      # — and the engine never finishes starting. 0 sends torch to
+      # rocBLAS instead, which does carry gfx1250 kernels. This is a
+      # property of the ROCm build, not of the GPU: real gfx1250 silicon
+      # would hit it the same way with this image.
+      TORCH_BLAS_PREFER_HIPBLASLT: ${TORCH_BLAS_PREFER_HIPBLASLT:-1}
       # Which transfer protocol the connector speaks, and it must be one
       # the server was started with — the same TRANSFER_MODE as above,
       # so the two cannot be configured apart.

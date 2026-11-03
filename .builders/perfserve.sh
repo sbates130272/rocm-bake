@@ -32,7 +32,7 @@ newest() {
 
 run=$(newest)
 if [ -z "${run}" ]; then
-    echo "no runs under ${PERF_DIR} — run 'make perf-run' first" >&2
+    echo "no runs under ${PERF_DIR} — run 'make perf-cold' first" >&2
     exit 1
 fi
 

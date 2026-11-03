@@ -117,9 +117,9 @@ the build graph at all. Its stage exits 1 when
 
 On RDNA. Every kernel compiles and the build then fails in the JIT
 module phase: six of 68 modules carry CDNA-only code and `setup.py`
-treats a failed module as fatal. The build should have selected
-`PREBUILD_LEVEL=0` — check that `PREBUILD_KERNELS` has not been pinned
-to 2 in the environment. See
+treats a failed module as fatal. `PREBUILD_LEVEL` is 0 by default on
+every architecture, so this means `PREBUILD_KERNELS` has been pinned to
+2 in the environment — a pin that is only safe on CDNA. See
 [Multiple GFX targets](../architecture/multi-arch.md).
 
 ### A build is wedged

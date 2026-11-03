@@ -1,6 +1,6 @@
 # Build targets and tags
 
-Thirteen targets. Every published repository is under
+Fourteen targets. Every published repository is under
 `snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/`, elided below.
 
 Each target emits **three** tags: a versioned one, `:latest`, and an
@@ -8,7 +8,8 @@ immutable `-g<sha>` tag whenever `VCS_REF` is non-empty.
 
 | Target | Repository | Versioned tag |
 | --- | --- | --- |
-| `pytorch-base` | `base` | `${ROCM_VERSION}-${PYTHON_VERSION}` |
+| `rocm-runtime` | `rocm-runtime` | `${ROCM_VERSION}-${ARCH}` |
+| `pytorch-base` | `base` | `${ROCM_VERSION}-${PYTHON_VERSION}-${ARCH}` |
 | `pytorch` | `pytorch` | `${PYTORCH_VERSION}-${ROCM_VERSION}-${ARCH}` |
 | `pytorch-wheel` | `pytorch-wheel` | `${PYTORCH_VERSION}-${ROCM_VERSION}-${ARCH}` |
 | `pytorch-run` | `runtime` | `${PYTORCH_VERSION}-${ROCM_VERSION}-${ARCH}` |
@@ -25,7 +26,8 @@ immutable `-g<sha>` tag whenever `VCS_REF` is non-empty.
 With the current defaults that resolves to:
 
 ```
-base:10.1.0-full-3.14
+rocm-runtime:10.1.0-full-gfx950
+base:10.1.0-full-3.14-gfx950
 pytorch:2.15.0-10.1.0-full-gfx950
 pytorch-wheel:2.15.0-10.1.0-full-gfx950
 runtime:2.15.0-10.1.0-full-gfx950
@@ -42,7 +44,7 @@ lmcache-wheel:v0.5.6-10.1.0-full-gfx950
 `make zot-tags REPO=rocm-pytorch/pytorch` lists what is actually
 published.
 
-## Two tags that are not what you would guess
+## Three tags that are not what you would guess
 
 **`triton-wheel` carries no architecture and is version-prefixed.**
 Triton is a compiler and publishes one noarch wheel, so the tag is
@@ -56,11 +58,18 @@ architecture-specific as that wheel is. Without the architecture in the
 tag a `gfx1201` runtime overwrote the `gfx950` one and only the digest
 told them apart.
 
+**`base` carries the architecture now, and did not used to.** It builds
+FROM `rocm-runtime`, which holds kernel libraries for one card only —
+so the apt and pip layers on top are architecture-independent while
+what is underneath them is not. Without the architecture in the tag,
+and in the cache ref, a `gfx950` base would overwrite a `gfx1201` one
+exactly as `runtime` once did. See [Image sizes](image-sizes.md).
+
 ## Groups
 
 | Group | Members |
 | --- | --- |
-| `default` | `pytorch-base`, `pytorch`, `pytorch-wheel`, `triton-wheel`, `aiter-wheel`, `cupy-wheel`, `nixl-wheel`, `vllm`, `vllm-wheel`, `lmcache`, `lmcache-wheel` |
+| `default` | `rocm-runtime`, `pytorch-base`, `pytorch`, `pytorch-wheel`, `triton-wheel`, `aiter-wheel`, `cupy-wheel`, `nixl-wheel`, `vllm`, `vllm-wheel`, `lmcache`, `lmcache-wheel` |
 | `wheels` | `pytorch-wheel`, `triton-wheel`, `aiter-wheel`, `nixl-wheel`, `cupy-wheel`, `vllm-wheel`, `lmcache-wheel` |
 | `serving` | `cupy-wheel`, `nixl-wheel`, `vllm`, `vllm-wheel`, `lmcache`, `lmcache-wheel` |
 

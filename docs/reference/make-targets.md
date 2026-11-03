@@ -23,9 +23,16 @@ make list-vars     # every variable these targets read, with its value
 | `zot-wheels` | Published wheel artifacts, newest first — `ZOT_TAGS=0` for all |
 | `zot-wheelhouse` | The same with sizes, plus anything extracted into `./dist/wheels` |
 | `zot-logs` | Follow the registry's journal |
+| `image-sizes` | Published image sizes, split into shared and own layers — `LAYERS=1` for the breakdown |
+| `image-data` | Aggregate those into `dist/images/images.json` for the docs site |
+| `image-publish` | Commit that onto `gh-pages`; `PUSH=1` to push |
+| `zot-disk` | What the registry actually occupies, deduplicated — registry host only |
 
 Nothing here starts, stops or configures Zot. It is a bare-metal
 systemd service owned outside this repository.
+
+`image-sizes` and `zot-disk` answer different questions and disagree by
+a factor of two: see [Image sizes](image-sizes.md).
 
 ## Compiler cache
 
@@ -104,6 +111,8 @@ the sibling project's builds.
 
 | Build (no push) | Push | Target |
 | --- | --- | --- |
+| `build-pytorch-src` | `push-pytorch-src` | `pytorch-src` |
+| `build-rocm-runtime` | `push-rocm-runtime` | `rocm-runtime` |
 | `build-base` | `push-base` | `pytorch-base` |
 | `build-pytorch` | `push-pytorch` | `pytorch` |
 | `build-runtime` | `push-runtime` | `pytorch-run` |
@@ -130,7 +139,7 @@ measurement stopped at the first wheel that had no build-only target.
 `fetch-cupy-wheel`, `fetch-nixl-wheel`, `fetch-vllm-wheel` and
 `fetch-lmcache-wheel` pull a published wheel artifact into `./dist`.
 
-`cold-build` builds `COLD_TARGET` (default `pytorch`) with neither
+`build-cold` builds `COLD_TARGET` (default `pytorch`) with neither
 layer cache nor compiler-cache hits.
 
 !!! note "`build-all` refuses `BUILDER=snoc-pool`"
@@ -188,17 +197,23 @@ See [Performance](../performance/index.md).
 | Target | |
 | --- | --- |
 | `perf-plan` | Which builder each wheel would land on; builds nothing |
-| `perf-run` | Cold parallel build of every wheel, fully instrumented |
-| `perf-build` | The same instrumentation on a *normal* build — caches on, pushes |
+| `perf-cold` | Cold parallel build of every wheel, fully instrumented |
+| `perf-warm` | The same instrumentation on a *warm* build — caches on, pushes |
 | `perf-report` | Render the newest run as markdown plus SVG charts |
 | `perf-serve` | Serve the newest run's interactive chart on `:8090` |
 | `perf-runs` | List collected runs, newest last |
 
 A different question from `bench`: the fleet flat out rather than one
-target in isolation. `perf-run` is a build from nothing; `perf-build`
+target in isolation. `perf-cold` is a build from nothing; `perf-warm`
 is the build you actually run, where the cost is almost entirely export
 rather than compute. See
 [Instrumented fleet runs](../performance/perf-runs.md).
+
+Both build and push whatever the registry is missing before they
+measure — on a new architecture that is `rocm-runtime` and
+`pytorch-base` — so neither needs a manual bootstrap. That step is
+warm and unsampled even under `perf-cold`; `perf-plan` reports it and
+builds nothing.
 
 `PERF_ARCH` selects the architecture, `PERF_TARGETS` overrides what is
 built (default: bake's `wheels` group plus `pytorch`; ordering comes
@@ -239,7 +254,7 @@ version in `rocm-bake.hcl`, run `make version-scrub`, commit both.
 | `bake-plan` | Print the resolved build plan as JSON |
 | `list-vars` | Every variable these targets read, with its value and source |
 | `clean` | Remove built images locally, for every architecture in `ARCHES` |
-| `clean-cache` | Remove cache images locally — the registry must be pruned separately |
+| `clean-cache` | Drop locally-pulled cache images; Zot garbage-collects its own store |
 | `setup` | `zot-check` then `builder-setup` |
 
 ## Variables worth knowing

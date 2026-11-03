@@ -1,0 +1,78 @@
+# syntax=docker/dockerfile:1
+# PyTorch's source tree, fetched once and published as an artifact.
+#
+# The clone used to live in Dockerfile.pytorch's `builder` stage, which
+# is `FROM ${BASE_IMAGE}`. That put an 8-minute network fetch on top of
+# a layer that changes for reasons having nothing to do with it: a new
+# ROCm, a new Python, a change to the prune. Measured on 2026-11-03,
+# rebuilding `rocm-runtime` and `base` three times in a day re-cloned
+# PyTorch three times, 481.9s of the 720s `pytorch-wheel` build and
+# 716s in a serving build that recursed into flash-attention, aiter and
+# composable_kernel.
+#
+# v2.15.0's source is the same bytes whatever ROCm it will be compiled
+# against, so this is keyed on PYTORCH_VERSION and GIT_REF alone — no
+# architecture, no ROCm version, no Python. It is rebuilt when the
+# version moves and at no other time, and `pytorch`, `pytorch-wheel`
+# and `pytorch-test` all take the same copy.
+#
+# Published as an artifact rather than kept in a cache mount: a cache
+# mount is per-builder, and this fleet has three.
+
+ARG PYTORCH_VERSION=2.15.0
+ARG GIT_REF=""
+
+# Ubuntu rather than a git-specific image, to add no new upstream to
+# the supply chain — every other Dockerfile here starts from Ubuntu or
+# from something built on it.
+FROM ubuntu:26.04 AS clone
+
+ARG PYTORCH_VERSION
+ARG GIT_REF
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Flags carried over verbatim from Dockerfile.pytorch, including the
+# measurement that chose them: --jobs 8 was worth ~27s of a ~180s cold
+# clone, and the floor is the checkout of ~80k files, which --jobs does
+# not touch. Back off with --set '*.args.GIT_JOBS=4' if 8 concurrent
+# TLS sessions to github.com are ever throttled.
+#
+# Not --revision, unlike Dockerfile.triton: PYTORCH_VERSION names a tag
+# so --branch with --depth 1 already fetches only that tag's tip, and
+# --revision reaches nothing in the submodules, which are the cost. It
+# would also leave a clone with no refs, and PyTorch's version
+# machinery reads git metadata.
+ARG GIT_JOBS=8
+RUN git clone --depth 1 --branch v${PYTORCH_VERSION} --recurse-submodules \
+    --shallow-submodules --jobs ${GIT_JOBS} \
+    https://github.com/pytorch/pytorch.git /opt/pytorch \
+    && cd /opt/pytorch \
+    && if [ -n "${GIT_REF}" ]; then \
+       git fetch --depth 1 origin ${GIT_REF} && git checkout ${GIT_REF} \
+       && git submodule sync \
+       && git submodule update --init --recursive --depth 1 \
+              --jobs ${GIT_JOBS}; \
+    fi \
+    && git -C /opt/pytorch rev-parse HEAD > /opt/pytorch-sha \
+    && du -sh /opt/pytorch
+
+# ─── The artifact ────────────────────────────────────────────────
+# scratch, like the wheel targets: this carries a payload and is never
+# run. `.git` goes with it deliberately — setup.py reads git metadata
+# for the version string, and a tree without it builds a wheel named
+# after the wrong version.
+FROM scratch AS src
+
+ARG PYTORCH_VERSION
+ARG GIT_REF
+
+LABEL org.opencontainers.image.source="https://github.com/pytorch/pytorch"
+LABEL org.opencontainers.image.description="PyTorch ${PYTORCH_VERSION} source tree with submodules"
+LABEL org.opencontainers.image.version="${PYTORCH_VERSION}"
+
+COPY --from=clone /opt/pytorch /opt/pytorch
+COPY --from=clone /opt/pytorch-sha /opt/pytorch-sha

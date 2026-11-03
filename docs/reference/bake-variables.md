@@ -72,11 +72,13 @@ back, which `ignore-error=true` then swallows.
 | `USE_FLASH_ATTENTION` | `ON` | |
 | `USE_ROCM_CK_SDPA_GFX12` | `""` | RDNA4 Composable Kernel SDPA, new in PyTorch 2.15 and `OFF` upstream. `ON` takes effect only on a gfx12 RDNA4 target; anywhere else it stays `OFF` |
 | `MAX_JOBS` | `""` | Empty derives it per node from `MemAvailable` |
-| `PREBUILD_KERNELS` | `""` | Empty derives it from the architecture: 0 on RDNA, 2 on CDNA |
+| `PREBUILD_KERNELS` | `""` | Empty means 0, on every architecture. Level 2 builds no wheel at all on `gfx1201` or `gfx125x` |
+| `ROCM_PRUNE_PROFILE` | `keep-toolchain` | How hard `docker/rocm-prune.sh` cuts the ROCm SDK down. `minimal` also drops the headers and the HIP cmake package — see [Image sizes](image-sizes.md) |
 
-See [Multiple GFX targets](../architecture/multi-arch.md) for why the
-architecture decides the prebuild level, and why `gfx125x` is a special
-case.
+The prebuild level no longer derives from the architecture; it is 0
+everywhere unless pinned. See
+[Multiple GFX targets](../architecture/multi-arch.md) for what the
+architecture still does decide.
 
 ## Compiler cache
 
@@ -112,9 +114,9 @@ case.
 | `VCS_REF` | `""` | Supplied by the Makefile; gets a `-dirty` suffix |
 | `BUILD_DATE` | `""` | Supplied by the Makefile as the commit's own timestamp |
 
-The nine per-image variables are `SDE_BASE`, `SDE_PYTORCH`,
-`SDE_TRITON`, `SDE_AITER`, `SDE_RUNTIME`, `SDE_NIXL`, `SDE_VLLM`,
-`SDE_LMCACHE` and `SDE_CUPY`. See
+The ten per-image variables are `SDE_ROCM`, `SDE_BASE`,
+`SDE_PYTORCH`, `SDE_TRITON`, `SDE_AITER`, `SDE_RUNTIME`, `SDE_NIXL`,
+`SDE_VLLM`, `SDE_LMCACHE` and `SDE_CUPY`. See
 [Reproducibility](../architecture/reproducibility.md) for why the epoch
 is a constant rather than a date from git history.
 

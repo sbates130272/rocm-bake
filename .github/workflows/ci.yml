@@ -87,8 +87,9 @@ jobs:
       # tags carry the arch and the cache ref does not, two archs share
       # one cache and each evicts the other — every switch becomes a
       # cold build. If the tags omit it, the target is built once for
-      # the whole fleet (pytorch-base, triton-wheel) and an arch-scoped
-      # ref would just fragment the cache for nothing.
+      # the whole fleet (triton-wheel) and an arch-scoped ref would
+      # just fragment the cache for nothing. pytorch-base was in that
+      # list until it began building FROM rocm-runtime.
       #
       # Tags rather than the PYTORCH_ROCM_ARCH arg: pytorch-run takes no
       # such arg — it compiles nothing — but COPYs the torch wheel out

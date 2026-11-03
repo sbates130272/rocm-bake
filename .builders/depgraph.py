@@ -4,7 +4,7 @@
 balance.sh used to carry the dependency order by hand as STAGE_1
 through STAGE_5. That was a second copy of something rocm-bake.hcl
 already states exactly — every target's `contexts` block — and the two
-could disagree without anything saying so. A gfx1250 perf-build
+could disagree without anything saying so. A gfx1250 perf-warm
 scheduled vllm-wheel when no gfx1250 pytorch image existed anywhere;
 it failed resolving its base image at step 1 of 7, 0s in, and took the
 rest of that node's queue down with it.
@@ -15,7 +15,7 @@ PUBLISHED_INPUTS the same edges collapse to registry refs in
 `args.*_IMAGE`, which is what the scheduler actually builds against —
 so both views are needed, and this reads both.
 
-Two modes, because the scheduler needs two different answers:
+Several modes, because the scheduler needs several different answers:
 
   --deps       "<target> <dep>..." per requested target. Edges leaving
                the requested set are kept; the scheduler treats those
@@ -25,6 +25,15 @@ Two modes, because the scheduler needs two different answers:
                registry, minus the ones this run will publish itself,
                checked against the registry. Exits 1 listing what is
                absent and the make target that would create it.
+
+  --missing-targets
+               The same check, answered as targets rather than as an
+               error: the bake targets that would produce the absent
+               images, space separated, empty if there are none. Exit
+               0 either way — "nothing to bootstrap" is an answer, not
+               a failure. perfrun.sh builds these before it measures,
+               so a new architecture does not need a manual bootstrap.
+
 
   --group      The members of a bake group. So that callers naming a
                set of targets — the Makefile, perfrun.sh — do not keep
@@ -40,6 +49,7 @@ Two modes, because the scheduler needs two different answers:
 Usage:
   depgraph.py --deps <target>...
   depgraph.py --preflight <target>...
+  depgraph.py --missing-targets <target>...
   depgraph.py --group <name>
 """
 import json
@@ -108,6 +118,28 @@ def deps_of(doc):
     return out
 
 
+def build_order(names):
+    """`names` sorted so a target follows everything it depends on.
+
+    Only for presentation — balance.sh schedules against --deps and
+    does not need a sequence. It matters in the error message, where
+    the rules are meant to be pasted in the order given: listing
+    `push-base` before `push-rocm-runtime` is alphabetical and exactly
+    backwards, and the first of the two would fail.
+    """
+    graph = deps_of(bake_print(sorted(set(names) | {"default"}),
+                               published=False) or {})
+
+    def depth(name, seen=()):
+        if name in seen:          # a cycle cannot happen in bake, but
+            return 0              # recursing forever on one would.
+        deps = graph.get(name) or []
+        return 1 + max((depth(d, seen + (name,)) for d in deps),
+                       default=-1)
+
+    return sorted(names, key=lambda n: (depth(n), n))
+
+
 def ref_parts(ref):
     """(host, path, tag) for a registry reference, or None.
 
@@ -150,6 +182,46 @@ def needed(doc):
     return out
 
 
+def missing_refs(targets):
+    """{ref: (set of requesting targets, owning target or None)}.
+
+    The images `targets` resolve from the registry that the registry
+    does not have, minus the ones this run publishes itself.
+
+
+    The owner is resolved against the *whole* graph, not against the
+    requested set. Resolving it against the requested set is what the
+    first version did, and it meant the one case where naming the fix
+    mattered most was the one case that could not name it: a run of the
+    `wheels` group does not build `pytorch-base`, so the owner of a
+    missing `base:` ref came back None and the error said only that
+    something was absent. Returns None, or (missing, owners) where
+    `owners` maps every published ref in the graph to its target.
+    """
+    pub = bake_print(targets, published=True)
+    if pub is None:
+        return None
+    # The default group plus whatever was asked for: enough to name the
+    # owner of anything a requested target can depend on, without
+    # enumerating every target in the file.
+    wide = bake_print(sorted(set(targets) | {"default"}), published=True)
+    owners = produced(wide if wide is not None else pub)
+
+    mine = produced(pub)
+    wanted = set(targets)
+    missing = {}
+    for name in targets:
+        for ref in needed(pub).get(name, []):
+            # Produced by something this run will build and push, so it
+            # is the scheduler's job to order it, not the registry's to
+            # already have it.
+            if mine.get(ref) in wanted:
+                continue
+            if not exists(ref):
+                missing.setdefault(ref, set()).add(name)
+    return missing, owners
+
+
 def exists(ref):
     """True if the registry has that manifest."""
     parts = ref_parts(ref)
@@ -178,7 +250,8 @@ def exists(ref):
 
 def main(argv):
     if len(argv) < 2 or argv[0] not in ("--deps", "--preflight", "--group",
-                                        "--dockerfiles"):
+                                        "--dockerfiles",
+                                        "--missing-targets"):
         print(__doc__.strip(), file=sys.stderr)
         return 2
     mode, targets = argv[0], argv[1:]
@@ -218,24 +291,21 @@ def main(argv):
                 print(name, path)
         return 0
 
-    pub = bake_print(targets, published=True)
-    if pub is None:
+    found = missing_refs(targets)
+    if found is None:
         print("depgraph: bake --print failed under PUBLISHED_INPUTS",
               file=sys.stderr)
         return 2
+    missing, owners = found
 
-    mine = produced(pub)
-    wanted = set(targets)
-    missing = {}
-    for name in targets:
-        for ref in needed(pub).get(name, []):
-            # Produced by something this run will build and push, so it
-            # is the scheduler's job to order it, not the registry's to
-            # already have it.
-            if mine.get(ref) in wanted:
-                continue
-            if not exists(ref):
-                missing.setdefault(ref, set()).add(name)
+    if mode == "--missing-targets":
+        # balance.sh schedules against --deps and does not need an
+        # order, but this is echoed into a log line a human reads, and
+        # "pytorch-base rocm-runtime" invites the conclusion that the
+        # bootstrap runs backwards.
+        print(" ".join(build_order({owners[r] for r in missing
+                                    if owners.get(r)})))
+        return 0
 
     if not missing:
         return 0
@@ -244,12 +314,26 @@ def main(argv):
           "nothing in this run builds them:", file=sys.stderr)
     for ref in sorted(missing):
         who = ", ".join(sorted(missing[ref]))
-        owner = mine.get(ref)
+        owner = owners.get(ref)
         fix = ""
         if owner:
             rule = MAKE_RULE.get(owner, f"push-{owner}")
             fix = f"   build it with: make {rule}"
         print(f"  {ref}\n      needed by: {who}{fix}", file=sys.stderr)
+
+    # The same rules again, as something that can be pasted. The
+    # per-ref hint above names one rule at a time and omits the
+    # architecture, which is the part that is actually wrong when a
+    # tag is arch-scoped: `make push-base` on its own rebuilds the
+    # default arch and leaves the one that failed still missing.
+    rules = [MAKE_RULE.get(t, f"push-{t}") for t in
+             build_order({owners[r] for r in missing if owners.get(r)})]
+    if rules:
+        arch = os.environ.get("PYTORCH_ROCM_ARCH", "")
+        suffix = f" PYTORCH_ROCM_ARCH={arch}" if arch else ""
+        print("\ndepgraph: to publish them, run:", file=sys.stderr)
+        for rule in rules:
+            print(f"  make {rule}{suffix}", file=sys.stderr)
     return 1
 
 

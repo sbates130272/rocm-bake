@@ -22,12 +22,20 @@
 }
 
 /* The summary table is generated, so it does not get the theme's
-   markdown table wrapper and needs the scroll behaviour itself. */
-#bench-summary {
+   markdown table wrapper and needs the scroll behaviour itself. The
+   image-size tables are generated the same way and want the same
+   treatment. */
+#bench-summary,
+#images-table,
+#images-wheels,
+#images-caches {
   overflow-x: auto;
 }
 
-#bench-summary table {
+#bench-summary table,
+#images-table table,
+#images-wheels table,
+#images-caches table {
   width: 100%;
   font-size: 0.75rem;
 }
