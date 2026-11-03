@@ -1,0 +1,37 @@
+---
+# Only the nodes that run what was built. Compiling for a GPU
+# architecture needs no card — the whole fleet cross-compiles — so this
+# is about `make gpu-test` and the serving stack, not about builds.
+
+- name: The kernel driver exposes a GPU
+  ansible.builtin.stat:
+    path: /dev/kfd
+  register: gpu_kfd
+
+- name: Fail when a node claims the gpu capability without a card
+  ansible.builtin.fail:
+    msg: >-
+      {{ inventory_hostname }} declares the 'gpu' capability but has no
+      /dev/kfd. Either amdgpu is not loaded, or the manifest is wrong.
+  when: not gpu_kfd.stat.exists
+
+# serving/docker-compose.yml takes RENDER_GID, because the gid differs
+# between distributions and a container joined to the wrong one opens
+# /dev/kfd and then cannot submit to it.
+- name: The render group id this node uses
+  ansible.builtin.command: stat -c %g /dev/kfd
+  register: gpu_render_gid
+  changed_when: false
+
+- name: Report it
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }}: {{ fleet_arch | default('unknown arch') }},
+      render gid {{ gpu_render_gid.stdout }}
+
+- name: The connecting user can reach the device
+  become: true
+  ansible.builtin.user:
+    name: "{{ ansible_user_id }}"
+    groups: [render, video]
+    append: true

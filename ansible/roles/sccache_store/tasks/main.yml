@@ -1,0 +1,55 @@
+---
+# The shared compiler cache: nginx with the DAV modules over a
+# directory tree, which sccache speaks natively through
+# SCCACHE_WEBDAV_ENDPOINT.
+#
+# The nginx configuration is NOT written here. It lives in
+# .builders/deploy-webdav.sh, and check-contracts.py asserts that the
+# log_format in that script still parses with perfreport.py's regex —
+# a second copy in a template would be a second thing to keep in step,
+# and the one that drifted would be the one nothing checks. This role
+# copies the script over and runs it.
+
+- name: The deployer is on the node
+  become: true
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../.builders/deploy-webdav.sh"
+    dest: /usr/local/sbin/rocm-bake-deploy-webdav.sh
+    mode: "0755"
+
+# The deployer reads the port, the storage path and the bind mode out
+# of the manifest through fleet.py, so both travel with it. FLEET_MANIFEST
+# points at the copy directly rather than relying on the manifests/
+# directory layout, which does not exist under /usr/local.
+- name: Fleet manifest and reader are on the node
+  become: true
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    mode: "0644"
+  loop:
+    - src: "{{ playbook_dir }}/../.builders/fleet.py"
+      dest: /usr/local/sbin/fleet.py
+    - src: "{{ fleet_manifest_path }}"
+      dest: /usr/local/sbin/fleet-manifest.yml
+  loop_control:
+    label: "{{ item.dest }}"
+
+- name: Nginx with the DAV modules, configured and running
+  become: true
+  ansible.builtin.command:
+    cmd: /usr/local/sbin/rocm-bake-deploy-webdav.sh {{ fleet_cache_port }}
+  environment:
+    FLEET_MANIFEST: /usr/local/sbin/fleet-manifest.yml
+  register: sccache_store_deploy
+  # The script is idempotent — it rewrites the site, reloads nginx and
+  # re-runs its own PUT/GET probe — but it is a shell script, so
+  # Ansible cannot tell a no-op run from a real one.
+  changed_when: "'Store:' in sccache_store_deploy.stdout"
+
+- name: The store answers
+  ansible.builtin.uri:
+    url: "http://{{ fleet_cache_host }}:{{ fleet_cache_port }}/"
+    status_code: [200, 403, 404]
+  delegate_to: localhost
+  become: false

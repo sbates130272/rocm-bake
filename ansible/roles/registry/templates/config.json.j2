@@ -1,0 +1,56 @@
+{
+  "distSpecVersion": "1.1.0",
+  "storage": {
+    "rootDirectory": "{{ registry_zot_storage }}",
+    "gc": true,
+    "gcDelay": "1h",
+    "gcInterval": "24h",
+    "dedupe": true
+  },
+  "http": {
+    "address": "0.0.0.0",
+    "port": "{{ fleet_registry_port }}",
+    "__comment_timeouts": "The ROCm base image's largest layer is 8.67GB and cannot cross a 1Gb/s link inside zot's 60s default; the push then dies at exactly 60 seconds naming neither the timeout nor the layer.",
+    "readTimeout": "30m",
+    "writeTimeout": "30m"{% if registry_zot_htpasswd %},
+    "auth": {
+      "htpasswd": {
+        "path": "/etc/zot/htpasswd"
+      }
+    },
+    "accessControl": {
+      "repositories": {
+        "**": {
+          "anonymousPolicy": ["read"],
+          "defaultPolicy": ["read", "create", "update"]
+        }
+      }
+    }{% endif %}
+
+  },
+  "log": {
+    "level": "info"
+  },
+  "extensions": {
+    "sync": {
+      "enable": true,
+      "registries": [
+{% for up in registry_zot_sync_upstreams %}
+        {
+          "urls": ["{{ up.url }}"],
+          "onDemand": true,
+          "tlsVerify": true,
+          "content": [
+{% for pattern in up.content %}
+            {"prefix": "{{ pattern }}"}{{ "," if not loop.last }}
+{% endfor %}
+          ]
+        }{{ "," if not loop.last }}
+{% endfor %}
+      ]
+    },
+    "search": {
+      "enable": true
+    }
+  }
+}

@@ -1,0 +1,61 @@
+---
+# Bring every node in the fleet manifest to the state the manifest
+# claims. Run from the ansible/ directory:
+#
+#   ansible-playbook site.yml                  the fleet FLEET names
+#   FLEET=aws ansible-playbook site.yml        another one
+#   ansible-playbook site.yml --check          what would change
+#   ansible-playbook site.yml --limit snoc-gaming
+#
+# Plays are grouped by capability rather than by machine, which is the
+# whole point of the manifest: a node is configured for what it is
+# declared to be for.
+
+- name: Every node
+  hosts: all_nodes
+  gather_facts: true
+  roles:
+    - common
+
+- name: Build nodes
+  hosts: builders
+  gather_facts: false
+  roles:
+    - docker
+
+- name: The node hosting the registry
+  hosts: registry_nodes
+  gather_facts: false
+  roles:
+    - registry
+
+- name: The node hosting the compiler cache
+  hosts: cache_nodes
+  gather_facts: false
+  roles:
+    - sccache_store
+
+- name: Nodes that are sampled during a perf run
+  hosts: metrics_nodes
+  gather_facts: false
+  roles:
+    - node_exporter
+
+- name: Nodes that run what was built
+  hosts: gpu_nodes
+  gather_facts: true
+  roles:
+    - gpu
+
+# Last, and on this machine: the builders are created over the Docker
+# API of nodes the plays above have just configured, so the daemon
+# configuration and the compiler-cache store are already in place when
+# the first one starts.
+- name: Buildx builders, from here
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    fleet_manifest_path: "{{ hostvars[groups['builders'][0]].fleet_manifest_path }}"
+  roles:
+    - buildkit

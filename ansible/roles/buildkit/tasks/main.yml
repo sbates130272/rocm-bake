@@ -1,0 +1,62 @@
+---
+# Runs on the control host, not on the build nodes.
+#
+# A buildx builder is created and owned from here: buildx starts a
+# buildkit container on each node over the Docker API, which is why a
+# remote node needs neither buildkitd, nor TLS certificates, nor the
+# buildx plugin. So the thing to converge is this machine's buildx
+# state, with one task per node.
+#
+# The buildkitd configuration is baked into the builder at create time
+# and never re-read, so a manifest change does not reach a builder that
+# already exists. This role says so rather than silently leaving a
+# stale one in place.
+
+- name: Builders exist for every build node
+  ansible.builtin.command:
+    cmd: "{{ playbook_dir }}/../.builders/builder-create.sh {{ item }}"
+  environment:
+    FLEET_MANIFEST: "{{ fleet_manifest_path }}"
+  loop: "{{ groups['builders'] }}"
+  register: buildkit_create
+  changed_when: "'Creating' in buildkit_create.stdout"
+
+- name: Every builder can take work
+  ansible.builtin.command:
+    cmd: "{{ playbook_dir }}/../.builders/builder-health.py --check {{ item }}"
+  environment:
+    FLEET_MANIFEST: "{{ fleet_manifest_path }}"
+  loop: "{{ groups['builders'] }}"
+  changed_when: false
+
+# The config is only compared, never rewritten: rewriting it would mean
+# recreating the builder, which drops that node's BuildKit content
+# store — up to 100 GB of layers that would then be pulled again.
+- name: The rendered buildkitd config matches the manifest
+  ansible.builtin.command:
+    cmd: "{{ playbook_dir }}/../.builders/fleet.py --buildkitd {{ item }}"
+  environment:
+    FLEET_MANIFEST: "{{ fleet_manifest_path }}"
+  loop: "{{ groups['builders'] }}"
+  register: buildkit_rendered
+  changed_when: false
+
+- name: Report builders whose baked-in config is older than the manifest
+  vars:
+    rendered_at_create: >-
+      {{ lookup('ansible.builtin.file',
+                playbook_dir + '/../.builders/generated/buildkitd-'
+                + item.item + '.toml',
+                errors='ignore') | default('', true) }}
+  ansible.builtin.debug:
+    msg: >-
+      {{ item.item }}: the manifest now renders a different
+      buildkitd.toml from the one baked into this builder. To adopt it —
+      and lose that node's BuildKit content store, which is the cost —
+      docker buildx rm {{ item.item }} && make builder-{{ item.item }}
+  loop: "{{ buildkit_rendered.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when:
+    - rendered_at_create | length > 0
+    - rendered_at_create != item.stdout

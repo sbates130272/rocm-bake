@@ -1,0 +1,5 @@
+---
+# Where telemetry/build.sh writes its .prom files; its own default is
+# the same path, and the two have to agree or the metrics are written
+# somewhere nothing scrapes.
+node_exporter_textfile_dir: /var/lib/node_exporter/textfile_collector

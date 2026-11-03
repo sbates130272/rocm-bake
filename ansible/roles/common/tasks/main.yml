@@ -1,0 +1,53 @@
+---
+# Everything every node needs regardless of what it is for.
+
+- name: Packages the build tooling shells out to
+  become: true
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - git
+      - jq
+      - python3-yaml
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+# The fleet's own addresses must never go through the corporate proxy.
+# The Makefile exports no_proxy for its own targets, but a buildkit
+# container, a systemd unit and an interactive shell each read it from
+# somewhere else — and the symptom when one misses it is not "proxy
+# error", it is a registry pull that hangs and then 403s.
+- name: NO_PROXY for the fleet, system-wide
+  become: true
+  ansible.builtin.lineinfile:
+    path: /etc/environment
+    regexp: "^{{ item }}="
+    line: '{{ item }}="{{ fleet_no_proxy }}"'
+    create: true
+    mode: "0644"
+  loop:
+    - no_proxy
+    - NO_PROXY
+  when: fleet_no_proxy | length > 0
+
+# Reported, not installed. Joining a tailnet is an authenticated
+# action with a one-time key; doing it from a playbook would mean
+# putting that key somewhere, and the node has to be reachable for
+# this play to be running at all.
+- name: Tailscale status
+  ansible.builtin.command: tailscale status --json
+  register: common_tailscale
+  changed_when: false
+  failed_when: false
+
+- name: Report a node that is not on the tailnet
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }} is not on a tailnet
+      ({{ 'tailscale is not installed' if common_tailscale.rc == 2
+          else 'tailscale is installed but not up' }}).
+      Fine if this fleet routes over a private network instead; see
+      cache.bind in the manifest.
+  when: common_tailscale.rc != 0

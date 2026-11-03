@@ -1,0 +1,99 @@
+---
+# The fleet acceptance test: can every node do the job the manifest
+# says it has? Read-only — it changes nothing and can be run against a
+# fleet mid-build.
+#
+#   ansible-playbook check.yml
+#   FLEET=aws ansible-playbook check.yml
+#
+# This supersedes `make cache-check`, which asked one of these
+# questions of a hardcoded list of two hostnames.
+
+- name: Every node
+  hosts: all_nodes
+  gather_facts: true
+  tasks:
+    - name: Reaches the registry
+      ansible.builtin.uri:
+        url: "http://{{ fleet_registry }}/v2/"
+        status_code: [200, 401]
+        timeout: 10
+      register: fleet_reg
+      failed_when: false
+
+    - name: Reaches the compiler cache
+      ansible.builtin.uri:
+        url: "http://{{ fleet_cache_host }}:{{ fleet_cache_port }}/"
+        status_code: [200, 403, 404]
+        timeout: 10
+      register: fleet_cache
+      failed_when: false
+
+    # Not a formality. A node that cannot write here compiles
+    # everything it is given and shares none of it, which looks exactly
+    # like a slow node rather than a broken one.
+    - name: Can write to the compiler cache, not just read it
+      ansible.builtin.uri:
+        url: >-
+          http://{{ fleet_cache_host }}:{{ fleet_cache_port }}/.probe/{{ inventory_hostname }}
+        method: PUT
+        body: rocm-bake fleet check
+        status_code: [201, 204]
+        timeout: 20
+      register: fleet_cache_write
+      failed_when: false
+
+    - name: Exports metrics
+      ansible.builtin.uri:
+        url: "http://{{ ansible_host }}:9100/metrics"
+        timeout: 10
+        return_content: false
+      delegate_to: localhost
+      register: fleet_metrics
+      failed_when: false
+      when: "'metrics' in fleet_capabilities"
+
+    # ansible_facts[...] rather than the bare ansible_* variables:
+    # top-level fact injection is deprecated and goes away in
+    # ansible-core 2.24.
+    - name: Has room for the BuildKit content store
+      ansible.builtin.set_fact:
+        fleet_free_gb: >-
+          {{ (ansible_facts['mounts'] | selectattr('mount', 'equalto', '/') | first)
+             .size_available // (1024 * 1024 * 1024) }}
+
+    - name: Summary
+      ansible.builtin.debug:
+        msg:
+          - "node       {{ inventory_hostname }} ({{ fleet_capabilities | join(',') }})"
+          - "registry   {{ 'ok' if fleet_reg.status in [200, 401] else 'UNREACHABLE' }}"
+          - "cache read {{ 'ok' if fleet_cache.status in [200, 403, 404] else 'UNREACHABLE' }}"
+          - "cache write {{ 'ok' if fleet_cache_write.status in [201, 204] else 'FAILED' }}"
+          - >-
+            metrics    {{ 'not claimed' if 'metrics' not in fleet_capabilities
+                          else ('ok' if fleet_metrics.status == 200 else 'UNREACHABLE') }}
+          - >-
+            disk       {{ fleet_free_gb }}GB free on /
+            {{ '(under the 200GB a full build wants)' if fleet_free_gb | int < 200 else '' }}
+          - >-
+            cores      {{ ansible_facts['processor_vcpus'] }} ·
+            ram {{ ansible_facts['memtotal_mb'] // 1024 }}GB
+
+- name: Builders, from here
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Every builder can take work
+      ansible.builtin.command:
+        cmd: "{{ playbook_dir }}/../.builders/builder-health.py"
+      environment:
+        # Its table is colourised for a terminal, and Ansible prints
+        # the escapes as literal \u001b through the JSON result.
+        NO_COLOR: "1"
+      register: fleet_health
+      changed_when: false
+
+    - name: Builder health
+      ansible.builtin.debug:
+        msg: "{{ fleet_health.stdout_lines }}"
