@@ -283,11 +283,30 @@ def main(argv):
         history = [h for h in history if h.get("generated") != now]
         history.append(point)
         path.parent.mkdir(parents=True, exist_ok=True)
+        # Without `layers`, here as well as in the history points above.
+        #
+        # Nothing reads it: docs/javascripts/images.js charts
+        # shared_bytes and own_bytes and mentions layers only in a
+        # header comment, and the per-layer view is `make image-sizes
+        # LAYERS=1`, which works on these objects in memory and never
+        # goes through this file.
+        #
+        # Emitting it made `make image-publish` impossible. The digests
+        # are 64-char hex, the secret-scanning pre-commit hook matches
+        # `[A-Za-z0-9+/]{40,}` as a generic high-entropy string, and the
+        # commit was refused — on a file whose entire content is public
+        # registry metadata. A published artifact should carry what the
+        # page needs and nothing else; that it also stops tripping the
+        # scanner is the symptom clearing, not the reason.
+        def sized(entries):
+            return [{k: v for k, v in e.items() if k != "layers"}
+                    for e in entries]
+
         path.write_text(json.dumps({
             "generated": now,
             "registry": f"{registry}/{namespace}",
-            "images": images,
-            "wheels": wheels,
+            "images": sized(images),
+            "wheels": sized(wheels),
             "caches": caches,
             "history": history[-HISTORY_KEEP:],
         }, indent=1))
