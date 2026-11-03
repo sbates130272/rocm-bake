@@ -41,9 +41,10 @@ compares it against what upstream has released and what we have published.
 
 ```bash
 make help                          # every target, grouped
+make list-nodes                    # which fleet this is, and what it has
 make zot-check                     # is the registry up?
-make builder-setup                 # create all three buildx builders
-sudo ./.builders/deploy-webdav.sh  # the shared compiler-cache store
+make fleet-apply                   # bring every node to the manifest's state
+make builder-setup                 # a buildx builder per node
 make push-all BUILDER=snoc-pool    # build and publish everything
 make watch                         # follow it from a second terminal
 ```
@@ -67,6 +68,26 @@ fleet cross-compiles. `make gpu-test` therefore needs `GPU_HOST` and
 `.builders/balance.sh`, which schedules one bake per target across the
 fleet by current load and hands results between stages through the
 registry.
+
+That table is not written down twice. It comes from
+`manifests/snoc.yml`, which is the only place a node name, address,
+role or link speed appears — the Makefile, the balancer, the sampler,
+the report and the Ansible inventory all read it through
+`.builders/fleet.py`.
+
+```bash
+make list-nodes                   # the manifest in effect
+make fleet-apply                  # make every node match it (Ansible)
+make fleet-check                  # ask each node whether it can do its job
+FLEET=aws make list-nodes         # a second profile, build-only
+```
+
+Details, including what each capability means and why `arch` is not the
+same claim as the `gpu` capability:
+[The fleet](https://sbates130272.github.io/rocm-bake/architecture/fleet/).
+A sized EC2 configuration, and what changes when every uplink is the
+same speed:
+[A fleet on AWS](https://sbates130272.github.io/rocm-bake/operations/aws/).
 
 ## Build targets
 
@@ -144,7 +165,9 @@ what a fleet run found:
 | | |
 | --- | --- |
 | `rocm-bake.hcl` | The build graph: 13 targets, 3 groups, 45 variables |
-| `Makefile` | Wrapper; reads every default out of `rocm-bake.hcl` |
+| `manifests/` | The fleets: which machines, what each is for, how fast its uplink |
+| `ansible/` | Makes a machine match the manifest; inventory is the manifest |
+| `Makefile` | Wrapper; reads what is built from `rocm-bake.hcl` and where from the manifest |
 | `docker/` | Nine Dockerfiles; build context is always the repo root |
 | `telemetry/build.sh` | Wraps a bake, emits Prometheus metrics |
 | `serving/` | Compose file for the vLLM + LMCache pair |

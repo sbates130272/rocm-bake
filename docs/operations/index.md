@@ -17,6 +17,7 @@ else is diagnosis.
 ## Health checks
 
 ```bash
+make fleet-check      # the whole fleet, against what the manifest claims
 make zot-check        # registry active and answering
 make cache-check      # every node can reach the compiler cache
 make builder-health   # which builders can take work
@@ -24,6 +25,17 @@ make builder-status   # all builders and their nodes
 make builder-load     # CPU, cores and load per node
 make version-check    # are any upstream pins behind?
 ```
+
+`fleet-check` is the one to run first: it asks every node in
+[the manifest](../architecture/fleet.md) whether it can reach the
+registry, read *and write* the compiler cache, and export metrics,
+then reports builder health. The targets under it ask one of those
+questions each.
+
+`make fleet-apply` is the other half — it makes a node match the
+manifest rather than reporting that it does not. Run it when the fleet
+is idle: it can restart `dockerd`, which stops every container on the
+node including a builder mid-build.
 
 `builder-health` is what `builder-ensure` gates every build target on,
 so a build against a dead node fails fast rather than hanging. It

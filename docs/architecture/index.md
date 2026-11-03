@@ -58,7 +58,7 @@ never see tailnet traffic. Two consequences run through everything else:
   in a profile.
 - Name resolution inside a build container is not the node's. BuildKit
   writes its own `resolv.conf` for the build sandbox and defaults it to
-  a public resolver, so `.builders/buildkitd-strix.toml` carries a
+  a public resolver, so `.builders/buildkitd.toml.in` carries a
   `[dns]` block listing MagicDNS first and two public resolvers after
   it. The public entries are load-bearing, not belt-and-braces: this
   tailnet has no global nameservers, so MagicDNS SERVFAILs on anything
@@ -107,6 +107,8 @@ reads `${NAME:-default}` out of it.
 
 ## Read on
 
+- [The fleet](fleet.md) — the manifest every tool reads, what a node
+  declares, and the Ansible that makes a machine match it
 - [Build graph](build-graph.md) — targets, contexts, and how work is
   scheduled across nodes
 - [Caching](caching.md) — the four caches and what each one buys

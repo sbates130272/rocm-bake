@@ -24,8 +24,10 @@ Each one is removed by a different lever, which is exactly what the
 ## 1. The node's content store
 
 BuildKit keeps every blob it has pulled or produced on the node's own
-disk, bounded by `gckeepstorage = "100GB"` in
-`.builders/buildkitd-strix.toml`. Nothing in this repository manages it;
+disk, bounded by `buildkit.gc_keep_storage` in the
+[fleet manifest](fleet.md) — `100GB` on SNOC — which
+`.builders/buildkitd.toml.in` renders into each node's
+`gckeepstorage`. Nothing in this repository manages the store itself;
 `docker buildx prune` is the only lever, and it is shared with any other
 project building on that node.
 
@@ -181,7 +183,7 @@ its frozen and cold runs.
 
 ## 4. Pull-through
 
-`.builders/buildkitd-strix.toml` points `docker.io`, `ghcr.io` and
+`.builders/buildkitd.toml.in` points `docker.io`, `ghcr.io` and
 `quay.io` at Zot, which syncs them on demand. The ROCm base image is
 8.67 GB in a single layer, so this is the difference between a build
 that starts in seconds and one that starts after a WAN transfer —

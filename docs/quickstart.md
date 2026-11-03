@@ -5,6 +5,12 @@ set up, skip to [step 5](#step-5-build).
 
 ## Prerequisites
 
+The fleet below is `manifests/snoc.yml`, which is what `FLEET`
+defaults to. Everything here reads that file, so a different fleet is
+a different manifest rather than a different set of instructions — see
+[The fleet](architecture/fleet.md) and
+[A fleet on AWS](operations/aws.md).
+
 - All nodes on the same Tailscale network.
 - `snoc-strix`: a `gfx1151` GPU, Docker 27+. Runs the Zot registry, the
   shared compiler cache, and the GPU tests.
@@ -103,20 +109,30 @@ needs it in `/etc/docker/daemon.json` (already set on Strix):
 }
 ```
 
+`make fleet-apply` writes that file on every build node, from the
+manifest's registry, so it does not have to be edited by hand on each.
+
 ## Step 3 — Create the builders
 
 ```bash
-make builder-snoc-strix     # local, gfx1151, hosts Zot + sccache
-make builder-snoc-think     # snoc-thinkstation, over SSH
-make builder-snoc-gaming    # snoc-gaming, over SSH
+make list-nodes             # which fleet this is, and what it declares
+make builder-setup          # one builder per build node in the manifest
+make builder-snoc-think     # or just one of them
 make builder-status         # what exists now
 ```
+
+There is no list of builders in the Makefile: `builder-setup` expands
+the node list from `manifests/$(FLEET).yml`, and `builder-<node>` is a
+pattern rule over the names in it. See
+[The fleet](architecture/fleet.md).
 
 The remote nodes join over SSH to their Docker daemons: buildx creates
 and owns a buildkit container on each, so neither needs buildkitd, TLS
 certificates, or the buildx plugin installed.
 
-Every builder is created with `.builders/buildkitd-strix.toml` and
+Every builder is created with a `buildkitd.toml` rendered for that node
+from `.builders/buildkitd.toml.in` — the registry, the search domain
+and the resolvers all come from the manifest — and with
 `--driver-opt network=host`. Both are load-bearing:
 
 - the config carries plain HTTP to Zot, the pull-through mirrors, and a
@@ -128,8 +144,10 @@ Every builder is created with `.builders/buildkitd-strix.toml` and
   bridged container's `resolv.conf`.
 
 !!! warning "Both are fixed at create time"
-    An existing builder does not pick up edits to the toml. After
-    changing it: `docker buildx rm snoc-strix && make builder-snoc-strix`.
+    An existing builder does not pick up a later manifest or template
+    change. To adopt one — and lose that node's BuildKit content
+    store, which is the cost:
+    `docker buildx rm snoc-strix && make builder-snoc-strix`.
 
 ## Step 4 — Deploy the shared compiler cache
 
@@ -143,6 +161,15 @@ sudo ./.builders/deploy-webdav.sh
 make cache-check                 # can every node reach it?
 make cache-summary               # endpoint, size, disk, deltas, hit rates
 ```
+
+The port and the storage path come from the manifest, so the deployer
+and the builders cannot disagree about where the store is. `make
+fleet-apply` runs this same script through the `sccache_store` role on
+whichever node the manifest marks `cache`, and `make fleet-check` then
+asks every node whether it can *write* to it — not just reach it,
+which is the question `cache-check` asks. A node that can only read
+compiles everything it is given and shares none of it, which looks
+exactly like a slow node rather than a broken one.
 
 !!! info "Why a durable store, and why WebDAV"
     The store has to survive a reboot. An in-RAM store loses the whole
