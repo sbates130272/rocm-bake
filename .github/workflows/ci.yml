@@ -8,6 +8,8 @@ on:
       - "Makefile"
       - "serving/docker-compose.yml"
       - ".builders/**"
+      - "manifests/**"
+      - "ansible/**"
       - ".github/workflows/ci.yml"
   push:
     branches: [main]
@@ -17,6 +19,8 @@ on:
       - "Makefile"
       - "serving/docker-compose.yml"
       - ".builders/**"
+      - "manifests/**"
+      - "ansible/**"
       - ".github/workflows/ci.yml"
 
 permissions:
@@ -111,19 +115,18 @@ jobs:
             fi
           done
 
-      # The three `docker build` steps that used to sit here pulled the
-      # base image from the tailnet Zot
-      # (snoc-strix.fold-leaffish.ts.net:8080), which a GitHub-hosted
-      # runner cannot resolve:
+      # Three `docker build` steps used to sit here and were removed:
+      # they pull their base image from the tailnet Zot, which a
+      # GitHub-hosted runner cannot resolve. `docker buildx bake
+      # --call=check` is what should replace them — it resolves each
+      # target's base image and runs BuildKit's own checks against the
+      # real args, in seconds rather than hours.
       #
-      #   failed to do request: Head "https://snoc-strix...:8080/v2/...":
-      #   dial tcp: lookup snoc-strix.fold-leaffish.ts.net: no such host
-      #
-      # They were not failing for a fixable reason, so they are gone
-      # rather than skipped. Dockerfile correctness is covered by
-      # hadolint in lint.yml, which needs no registry. Restore them
-      # behind `runs-on: [self-hosted]` if a fleet runner is ever
-      # registered — that is the only place they can work.
+      # It needs a runner that can reach the registry, and there is
+      # none: SNOC is driven by hand and deliberately registers no
+      # runner, and the AWS profile's runners do not exist yet. This
+      # comes back as part of the nightly, on `runs-on: [self-hosted,
+      # aws]`, not as a per-PR check — see docs/operations/runners.md.
 
   wheelindex:
     name: Per-arch pip index
@@ -240,6 +243,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
+
+      # perfreport takes its per-node chart colours from the fleet
+      # manifest through fleet.py, which needs PyYAML. Without it the
+      # report still renders, in fallback colours — but this job is
+      # here to exercise the real path, not the degraded one.
+      - name: PyYAML, for the fleet manifest
+        run: pip install pyyaml
 
       # ruff and py_compile prove perfreport parses; nothing proved it
       # renders. Every chart bug this tool has had — lines drawn as
@@ -496,6 +506,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # fleet.py is the only thing in this repository that needs a
+      # package outside the standard library, and everything below
+      # reads the fleet manifest through it — including `make`, whose
+      # node list and registry come from there.
+      - name: PyYAML, for the fleet manifest
+        run: pip install pyyaml
+
       # rocm-bake.hcl owns every build default; the Makefile reads them
       # through its bake_default function. This fails the build if a
       # value is declared in both, which is how the two drifted apart
@@ -531,6 +548,41 @@ jobs:
             val=$(make -s --eval="__show:;@printf '%s' '\$($v)'" __show)
             printf '  %-20s %s\n' "$v" "$val"
             [ -n "$val" ] || { echo "::error::$v resolved empty"; exit 1; }
+          done
+
+      # Every committed manifest, not just the default one. A profile
+      # for a fleet nobody is currently running is exactly the one that
+      # rots, and the cost of finding out is standing the fleet up.
+      - name: Every fleet manifest loads and resolves
+        run: |
+          rc=0
+          for m in manifests/*.yml; do
+            name=$(basename "$m" .yml)
+            printf '== %s\n' "$name"
+            FLEET="$name" python3 -I .builders/fleet.py --table || rc=1
+            # The renderer, not just the loader: an unsubstituted
+            # placeholder in buildkitd.toml.in reaches a daemon config
+            # as a literal and is only noticed when a build cannot
+            # resolve the registry.
+            for node in $(FLEET="$name" python3 -I .builders/fleet.py --nodes); do
+              FLEET="$name" python3 -I .builders/fleet.py --buildkitd "$node" \
+                > /dev/null || rc=1
+            done
+          done
+          exit $rc
+
+      # The dynamic inventory is a third consumer of the same file, and
+      # the one whose failure mode is "no hosts matched" — a play that
+      # succeeds having done nothing at all.
+      - name: The Ansible inventory has the groups the plays target
+        run: |
+          pip install ansible-core
+          cd ansible
+          for group in builders registry_nodes cache_nodes all_nodes; do
+            hosts=$(ansible-inventory -i inventory/fleet.py --list \
+                    | python3 -c "import json,sys; print(' '.join(json.load(sys.stdin).get('$group', {}).get('hosts', [])))")
+            printf '  %-16s %s\n' "$group" "$hosts"
+            [ -n "$hosts" ] || { echo "::error::group $group is empty"; exit 1; }
           done
 
   compose:

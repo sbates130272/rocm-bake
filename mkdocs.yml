@@ -87,6 +87,7 @@ nav:
   - Quick start: quickstart.md
   - Architecture:
       - architecture/index.md
+      - The fleet: architecture/fleet.md
       - Build graph: architecture/build-graph.md
       - Caching: architecture/caching.md
       - Reproducibility: architecture/reproducibility.md
@@ -104,4 +105,6 @@ nav:
       - Image sizes: reference/image-sizes.md
   - Operations:
       - operations/index.md
+      - CI runners: operations/runners.md
+      - A fleet on AWS: operations/aws.md
       - Troubleshooting: operations/troubleshooting.md

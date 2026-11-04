@@ -1,0 +1,42 @@
+---
+# perf-run samples every node's exporter on :9100 for the CPU, memory,
+# disk and network series its report plots, and telemetry/build.sh
+# writes build metrics into the textfile collector. Both fail quietly
+# when the exporter is missing — the report simply has no rows for that
+# node — which is why this is a role rather than something noticed at
+# run time.
+
+- name: Node exporter is installed
+  become: true
+  ansible.builtin.apt:
+    name: prometheus-node-exporter
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Textfile collector directory
+  become: true
+  ansible.builtin.file:
+    path: "{{ node_exporter_textfile_dir }}"
+    state: directory
+    # telemetry/build.sh writes here as the build user, not as root.
+    mode: "1777"
+
+# The Debian package does not enable the textfile collector, so
+# telemetry/build.sh writes .prom files nothing ever reads.
+- name: Textfile collector is enabled
+  become: true
+  ansible.builtin.copy:
+    dest: /etc/default/prometheus-node-exporter
+    mode: "0644"
+    content: |
+      # Managed by ansible/roles/node_exporter
+      ARGS="--collector.textfile.directory={{ node_exporter_textfile_dir }}"
+  notify: Restart node_exporter
+
+- name: Node exporter is running
+  become: true
+  ansible.builtin.systemd:
+    name: prometheus-node-exporter
+    state: started
+    enabled: true

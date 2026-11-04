@@ -19,7 +19,11 @@ HOST=""
 IMAGE=""
 ARCH="${PYTORCH_ROCM_ARCH:-gfx950}"
 WITH_TRITON=1
-REGISTRY="${REGISTRY:-snoc-strix.fold-leaffish.ts.net:8080}"
+# The fleet's own registry. rocm-bake.hcl carries the same value as a
+# bake default and CI checks the two agree; this reads the manifest so
+# a second fleet does not need the hcl edited to be testable.
+REGISTRY="${REGISTRY:-$(python3 -I "$(dirname "${BASH_SOURCE[0]}")/fleet.py" \
+    --make 2>/dev/null | sed -n 's/^FLEET_REGISTRY=//p')}"
 REGISTRY_NAME="${REGISTRY_NAME:-rocm-pytorch}"
 PYTORCH_VERSION="${PYTORCH_VERSION:-2.15.0}"
 ROCM_VERSION="${ROCM_VERSION:-10.1.0-full}"

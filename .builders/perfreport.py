@@ -26,6 +26,7 @@ Usage: perfreport.py [RUN_DIR] [--out report.md]
 """
 import argparse
 import html
+import importlib.util
 import json
 import re
 import subprocess
@@ -35,14 +36,27 @@ from pathlib import Path
 
 PERF_DIR = Path("/var/tmp/rocm-perf")
 
-# Slots 1-3 of the validated categorical palette, light and dark. Keyed
-# by builder so a target that moves between nodes keeps the node's
-# colour — colour follows the entity, never its rank.
-SERIES = {
-    "snoc-strix":  ("#2a78d6", "#3987e5"),
-    "snoc-think":  ("#eb6834", "#d95926"),
-    "snoc-gaming": ("#1baf7a", "#199e70"),
-}
+# Keyed by builder so a target that moves between nodes keeps the
+# node's colour — colour follows the entity, never its rank. The
+# assignment is the fleet manifest's: a node may name its own pair, and
+# the rest come from fleet.PALETTE in manifest order.
+SERIES = {}
+try:
+    _spec = importlib.util.spec_from_file_location(
+        "fleet", Path(__file__).resolve().parent / "fleet.py")
+    _fleet = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_fleet)
+    SERIES = _fleet.series(_fleet.load())
+except Exception as _exc:                           # noqa: BLE001
+    print(f"perfreport: cannot read the fleet manifest: {_exc}",
+          file=sys.stderr)
+
+# Used only when SERIES is empty, i.e. the manifest could not be read.
+# Colour then identifies nothing in particular — there are no node
+# names to follow — but the report still renders, which is the point:
+# the manifest is how a chart is coloured, not whether it exists.
+FALLBACK_PALETTE = ("#2a78d6", "#eb6834", "#2f9e52", "#9456c9",
+                    "#c9a227", "#4aa3a3")
 # Deliberately NOT from SERIES. Colour identifies a builder everywhere
 # else on this chart, and SERIES holds exactly three entries — one per
 # node — so every pick from it is some builder's colour. Taking "the
@@ -778,6 +792,12 @@ def interactive_chart(path, title, sub, metrics, targets,
         return False
 
     def colour_for(name, i):
+        # SERIES is empty when the manifest could not be read — no
+        # PyYAML, usually. That is already reported at import, and a
+        # report in fallback colours beats a ZeroDivisionError on top
+        # of a message that says what is wrong.
+        if not SERIES:
+            return FALLBACK_PALETTE[i % len(FALLBACK_PALETTE)]
         slot = list(SERIES).index(name) if name in SERIES else i
         return list(SERIES.values())[slot % len(SERIES)][0]
 
@@ -1232,7 +1252,15 @@ def main():
             charts.append(("writes.svg", "Cache bytes written (cumulative)"))
 
     # ── markdown ─────────────────────────────────────────────────
-    md = [f"# Cold parallel wheel build — {meta.get('stamp', run.name)}", ""]
+    # The mode is in the title because the two are not comparable and
+    # the page says so three paragraphs later. This read "Cold" for
+    # every run — correct when cold was the only mode, wrong since
+    # run.json started carrying one, and worst on gh-pages where the
+    # title is all a reader sees before quoting the number.
+    _mode = str(meta.get("mode", "")).strip().lower()
+    _kind = {"cold": "Cold", "warm": "Warm"}.get(_mode, "Instrumented")
+    md = [f"# {_kind} parallel wheel build — {meta.get('stamp', run.name)}",
+          ""]
     md.append(f"- **started** {fmt_start(meta, run)}")
     md.append(f"- **arch** `{meta.get('arch', '?')}` "
               f"· **commit** `{meta.get('vcs_ref', '?')}`"

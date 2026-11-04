@@ -30,8 +30,8 @@ status. The trailing "*" marks the default builder and is not part of
 the name.
 
 Usage:
-  ./builder-health.py                 table of every snoc-* builder
-  ./builder-health.py --all           every builder, not just snoc-*
+  ./builder-health.py                 table of this fleet's builders
+  ./builder-health.py --all           every builder buildx knows
   ./builder-health.py --status NAME   print one status word
   ./builder-health.py --check NAME    exit 0 if it can take work
   ./builder-health.py --list          builder names, one line, for make
@@ -47,11 +47,39 @@ shows was true a moment ago, rather than the display freezing.
 """
 
 import json
+import importlib.util
 import os
 import re
 import subprocess
 import sys
 import time
+from pathlib import Path
+
+
+def fleet_builders(names):
+    """Narrow a buildx builder list to this fleet's.
+
+    The filter used to be the literal prefix `snoc-`, which quietly
+    assumed every builder worth watching was named after one fleet.
+    Now it is membership of the manifest, plus the pool sentinel —
+    `make watch` lists the pool in its own right because its buildkit
+    instances keep their own build history.
+
+    Falls back to every name if the manifest cannot be read: a broken
+    manifest should not make `make watch` claim there are no builders.
+    """
+    try:
+        here = Path(__file__).resolve().parent
+        spec = importlib.util.spec_from_file_location("fleet", here / "fleet.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        data = mod.load()
+    except Exception as exc:                        # noqa: BLE001
+        print(f"builder-health: cannot read the fleet manifest ({exc}); "
+              f"showing every builder", file=sys.stderr)
+        return names
+    wanted = set(mod.nodes(data)) | {data["pool_builder"]}
+    return [n for n in names if n in wanted]
 
 # `docker buildx ls` contacts every endpoint, so it costs whatever the
 # slowest one costs — and the node most worth knowing about is the
@@ -70,13 +98,19 @@ MAX_AGE = 60
 # Nodes whose `error` was suppressed as a one-off; see debounce_errors.
 PENDING = "/tmp/.rocm-builder-health.pending.json"
 
-COLOUR = {
+# NO_COLOR is honoured, the same spelling the Makefile uses. Not
+# cosmetic: anything that captures this output rather than displaying
+# it gets the escapes as literal text — the Ansible check play printed
+# a table of \u001b[32m through its JSON result.
+_PLAIN = bool(os.environ.get("NO_COLOR"))
+COLOUR = {} if _PLAIN else {
     "running": "\033[32m",
     "error": "\033[31m",
     "inactive": "\033[33m",
     "missing": "\033[31m",
 }
-RESET = "\033[0m"
+RESET = "" if _PLAIN else "\033[0m"
+DIM = "" if _PLAIN else "\033[2m"
 
 
 def builder_table(max_age=MAX_AGE):
@@ -252,7 +286,7 @@ def main():
         table = builder_table(max_age)
         names = sorted(table)
         if "--all" not in args:
-            names = [n for n in names if n.startswith("snoc-")]
+            names = fleet_builders(names)
         print(" ".join(names))
         return 0
 
@@ -277,7 +311,7 @@ def main():
     table = builder_table(max_age)
     names = sorted(table)
     if "--all" not in args:
-        names = [n for n in names if n.startswith("snoc-")]
+        names = fleet_builders(names)
     if not names:
         print("  no builders registered")
         return 0
@@ -286,7 +320,7 @@ def main():
         state = status_of(name, table)
         colour = COLOUR.get(state, "")
         nodes = ", ".join(f"{n}:{s}" for n, s in table[name]) or "no nodes"
-        print(f"  {name:<16} {colour}{state:<9}{RESET} \033[2m{nodes}{RESET}")
+        print(f"  {name:<16} {colour}{state:<9}{RESET} {DIM}{nodes}{RESET}")
     return 0
 
 

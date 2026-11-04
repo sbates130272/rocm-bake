@@ -2,7 +2,12 @@
 #
 #   build <target> <seconds>   compile cost, roughly node-independent
 #   cache <target> <bytes>     layer cache the target exports
-#   netmb <node>   <MB/s>      that node's upload throughput to the store
+#
+# The third term, each node's upload throughput to the store, is no
+# longer here: it describes the fleet rather than a target, so it is
+# `link_mbps:` on the node in manifests/<fleet>.yml. balance.sh reads
+# it through fleet.py and charges it in the same `netmb` row format
+# this file used, so the arithmetic below is unchanged.
 #
 # Two terms, because a target's cost is not one number. The build is
 # CPU work; the cache export is a transfer, and the fleet's links
@@ -32,8 +37,9 @@
 #
 # Estimates for ordering, not promises. A stale table degrades the
 # schedule, never the build. Re-measure after anything that moves the
-# build materially - and re-measure netmb if the fleet is rewired,
-# since that is the term that now dominates.
+# build materially - and re-measure each node's link_mbps in the fleet
+# manifest if the fleet is rewired, since that is the term that now
+# dominates.
 
 build pytorch-wheel   2336
 build vllm-wheel      1409
@@ -116,9 +122,3 @@ cache lmcache-wheel    615890669
 cache cupy-wheel       402995659
 cache nixl-wheel       372131035
 cache pytorch-wheel   5046000000
-
-# snoc-strix hosts the store, so its "upload" is a local write and is
-# capped by disk rather than any link. snoc-gaming is WSL2 over WiFi.
-netmb snoc-strix      3000
-netmb snoc-think        90
-netmb snoc-gaming        3.7

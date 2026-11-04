@@ -19,7 +19,15 @@
 #   GPU_HOST=other ./serve-logs.sh
 set -uo pipefail
 
-GPU_HOST="${GPU_HOST:-snoc-thinkstation}"
+# The node the fleet manifest marks `gpu_node:`. Empty on a fleet that
+# has none, which the check below reports rather than running
+# `docker -H ssh://` with nothing after it.
+GPU_HOST="${GPU_HOST:-$(python3 -I "$(dirname "${BASH_SOURCE[0]}")/fleet.py" \
+    --make 2>/dev/null | sed -n 's/^FLEET_GPU_HOST=//p')}"
+if [ -z "${GPU_HOST}" ]; then
+    echo "serve-logs: this fleet declares no gpu node; set GPU_HOST=<host>" >&2
+    exit 1
+fi
 TAIL="${TAIL:-40}"
 MODE=follow
 FILTER=""

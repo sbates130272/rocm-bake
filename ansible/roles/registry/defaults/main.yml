@@ -1,0 +1,19 @@
+---
+registry_zot_version: v2.1.8
+registry_zot_storage: /var/lib/zot
+
+# Anonymous read is open so every pull, pull-through and cache read
+# works unauthenticated; only pushing needs an account. Set
+# registry_zot_htpasswd to a path on the control host to install one.
+registry_zot_htpasswd: ""
+
+# Upstreams Zot mirrors on demand. The manifest's registry.mirrors is
+# the same list in the form buildkitd wants; this is the form zot's
+# sync extension wants.
+registry_zot_sync_upstreams:
+  - url: https://registry-1.docker.io
+    content: ["library/**", "rocm/**", "moby/**"]
+  - url: https://ghcr.io
+    content: ["**"]
+  - url: https://quay.io
+    content: ["**"]

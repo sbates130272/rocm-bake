@@ -39,19 +39,20 @@ a factor of two: see [Image sizes](image-sizes.md).
 | Target | |
 | --- | --- |
 | `cache-summary` | Endpoint, size, disk, deltas and per-target hit rates |
-| `cache-check` | Can every build node reach the store? |
+| `cache-check` | Can every build node reach the store? (`fleet-check` asks more) |
 | `cache-logs` | Follow the WebDAV access log |
 | `layer-summary` | Layer reuse per image on its most recent build |
 
-## Builders
+## Fleet
 
 | Target | |
 | --- | --- |
-| `builder-setup` | All three builders |
-| `builder-snoc-strix` | Local `docker-container` driver |
-| `builder-snoc-think` | `snoc-thinkstation`, over SSH |
-| `builder-snoc-gaming` | `snoc-gaming`, over SSH |
-| `builder-snoc-pool` | All three as one buildx builder (little used — see below) |
+| `list-nodes` | Which manifest is in effect, and the nodes it declares |
+| `fleet-apply` | Bring every node to the state the manifest claims (Ansible) |
+| `fleet-check` | Read-only acceptance test: can each node do its job? |
+| `builder-setup` | A buildx builder for every build node in the manifest |
+| `builder-<node>` | One of them — `builder-snoc-think`, say |
+| `builder-pool` | Every build node as one buildx builder (little used — see below) |
 | `builder-status` | Every builder and its nodes |
 | `builder-health` | Which builders can take work |
 | `builder-load` | CPU, cores and load per node of `$(BUILDER)` |
@@ -64,6 +65,20 @@ why a build fails fast against a dead node rather than hanging.
 `builder-restart` drops that node's in-memory build state. The registry
 layer cache and the shared compiler cache are untouched, so the next
 build still picks up where it can.
+
+`builder-<node>` is a pattern rule over the node names in
+`manifests/$(FLEET).yml`, so a node added to the manifest needs no
+Makefile edit. The buildkitd config is rendered per node from that
+manifest and baked into the builder at create time — an existing
+builder does not pick up a later manifest change. To adopt one, and
+lose that node's content store in the process:
+
+```bash
+docker buildx rm snoc-think && make builder-snoc-think
+```
+
+See [The fleet](../architecture/fleet.md) for the manifest itself, and
+[A fleet on AWS](../operations/aws.md) for a second profile.
 
 ## Watching a build
 
@@ -246,12 +261,14 @@ version in `rocm-bake.hcl`, run `make version-scrub`, commit both.
 
 | Variable | Default | |
 | --- | --- | --- |
-| `BUILDER` | `snoc-strix` | Which builder, or `snoc-pool` for the balancer |
+| `FLEET` | `snoc` | Which `manifests/<name>.yml` describes the fleet |
+| `FLEET_MANIFEST` | — | A manifest path directly, instead of `FLEET` |
+| `BUILDER` | the manifest's `default_builder` | Which builder, or the pool sentinel for the balancer |
 | `ARCHES` | `gfx950 gfx1201 gfx1250` | What `arches-*` fans out over |
 | `PYTORCH_ROCM_ARCH` | `gfx950` | The architecture for **one** build |
 | `TELEMETRY` | `1` | `0` skips the metrics wrapper |
 | `BAKE_EXTRA` | — | Arbitrary extra flags passed to bake |
-| `GPU_HOST` | `snoc-thinkstation` | The machine with `/dev/kfd` |
+| `GPU_HOST` | the manifest's `gpu_node` | The machine with `/dev/kfd`; empty on a build-only fleet |
 | `REPO` | `rocm-pytorch/base` | What `zot-tags` lists |
 | `ZOT_TAGS` | `5` | Tags per repo in `zot-wheels`; `0` for all |
 | `BENCH_SCENARIO` | `all` | Which benchmark scenario `make bench` runs |

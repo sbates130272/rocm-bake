@@ -256,16 +256,26 @@ means.
 
 ## What a target costs depends on which node runs it
 
-`.builders/target-costs` is the input to that packing, and it has two
-terms because a target's cost is not one number:
+The packing has two terms, because a target's cost is not one number.
+Two of them come from `.builders/target-costs`, which describes
+targets; the third comes from the
+[fleet manifest](../architecture/fleet.md), which describes machines:
 
 ```text
-build <target> <seconds>   compile cost, roughly node-independent
-cache <target> <bytes>     what the target transfers when it exports
-netmb <node>   <MB/s>      that node's upload throughput to the store
+.builders/target-costs
+  build <target> <seconds>   compile cost, roughly node-independent
+  cache <target> <bytes>     what the target transfers when it exports
+
+manifests/<fleet>.yml
+  link_mbps: <MB/s>          that node's upload throughput to the store
 ```
 
-The cost of running a target on a node is `build + cache/netmb`, and
+`balance.sh` reads the third through `fleet.py --netmb`, in the same
+row format the other two use, so the arithmetic below is unchanged.
+The split is the point: `build` and `cache` are the same wherever a
+target runs, and the link speed is a property of the node.
+
+The cost of running a target on a node is `build + cache/link_mbps`, and
 the packer picks the node that finishes it **soonest** rather than the
 one that is least loaded.
 
@@ -279,8 +289,10 @@ about 28 on another.
 > node took it from 25m25s to 7m09s.
 
 Re-measure after anything that moves the build materially, and
-re-measure `netmb` if the fleet is rewired, since that is the term that
-now dominates.
+re-measure each node's `link_mbps` if the fleet is rewired, since that
+is the term that now dominates. On a fleet whose nodes share one fast
+network — every node in one AWS placement group, say — the term
+cancels and placement collapses to plain LPT on build time.
 
 !!! warning "Take the byte figures from a normal run"
     A cold run passes `--no-push`, so its export counts the cache but

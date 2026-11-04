@@ -220,8 +220,9 @@ that would finish it soonest, and each node runs one build at a time —
 several concurrent builds on one box each derive `MAX_JOBS` from
 `MemAvailable` as though they were alone, and oversubscribe it.
 
-The packing cost model is `.builders/target-costs`, and it ranks by
-which node would *finish* a target soonest rather than which is least
+The packing cost model is `.builders/target-costs` plus each node's
+`link_mbps` from the [fleet manifest](fleet.md), and it ranks by which
+node would *finish* a target soonest rather than which is least
 loaded, because this fleet's upload speeds span a factor of 25.
 
 `--queue` is still accepted and ignored. It named the mode that

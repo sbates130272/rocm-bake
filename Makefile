@@ -30,12 +30,57 @@ BAKE_DEFAULTS := $(shell awk ' \
 # "bake decides".
 bake_default = $(patsubst $(1)=%,%,$(filter $(1)=%,$(BAKE_DEFAULTS)))
 
+# ─── The fleet ───────────────────────────────────────────────────
+# Which machines exist, what each is for, and how fast its uplink is,
+# from manifests/$(FLEET).yml. Same shape as BAKE_DEFAULTS above — one
+# pass at parse time producing KEY=VALUE words — so there is one
+# convention here for "a value that comes from a file" rather than two.
+#
+# FLEET selects the manifest; FLEET_MANIFEST takes a path directly.
+# Both are read by fleet.py from the environment, hence the export.
+FLEET ?= snoc
+export FLEET
+export FLEET_MANIFEST
+FLEET_VARS := $(shell python3 -I .builders/fleet.py --make 2>/dev/null)
+ifeq ($(FLEET_VARS),)
+$(warning fleet: no usable manifest for FLEET=$(FLEET)$(if $(FLEET_MANIFEST), FLEET_MANIFEST=$(FLEET_MANIFEST)) — run `python3 .builders/fleet.py --check` for the reason)
+endif
+fleet_var = $(patsubst $(1)=%,%,$(filter $(1)=%,$(FLEET_VARS)))
+
+# fleet.py comma-separates its lists; see make_vars there for why. One
+# $(subst) turns a list back into make words.
+COMMA := ,
+fleet_list = $(subst $(COMMA), ,$(call fleet_var,$(1)))
+
+# Per-node lookups. A node name cannot be a make variable name — they
+# carry dashes and would collide with targets — so the manifest's
+# node=value pairs are filtered the same way bake_default filters its.
+FLEET_NODES     := $(call fleet_list,FLEET_NODES)
+FLEET_ALL_NODES := $(call fleet_list,FLEET_ALL_NODES)
+FLEET_HOSTS     := $(call fleet_list,FLEET_HOSTS)
+FLEET_ENDPOINTS := $(call fleet_list,FLEET_ENDPOINTS)
+FLEET_BUILD_ENDPOINTS := $(call fleet_list,FLEET_BUILD_ENDPOINTS)
+
+fleet_host     = $(patsubst $(1)=%,%,$(filter $(1)=%,$(FLEET_HOSTS)))
+fleet_endpoint = $(patsubst $(1)=%,%,$(filter $(1)=%,$(FLEET_ENDPOINTS)))
+
 # $(or ...) rather than ?=: the value has to be expanded once here, not
 # re-derived at every reference. An environment variable of the same
 # name still wins (make imports it, so $(REGISTRY) is already set), and
 # a command-line VAR=value overrides the assignment outright — so both
 # override paths keep working.
-REGISTRY          := $(or $(REGISTRY),$(call bake_default,REGISTRY))
+# Where, not what. The manifest owns the fleet's addresses — the
+# registry it publishes to and the compiler-cache store it reads —
+# because a second fleet is a second set of them and `FLEET=aws make
+# push-all` publishing to the SNOC registry would be the worst
+# possible failure: silent, and to someone else's machine.
+#
+# rocm-bake.hcl keeps its own defaults for a bare `docker buildx bake`
+# driven without make, and check-contracts.py asserts the default
+# manifest still agrees with them. Exported, so bake reads the
+# manifest's value from the environment.
+REGISTRY          := $(or $(REGISTRY),$(call fleet_var,FLEET_REGISTRY),$(call bake_default,REGISTRY))
+export REGISTRY
 REGISTRY_NAME     := $(or $(REGISTRY_NAME),$(call bake_default,REGISTRY_NAME))
 PYTORCH_VERSION   := $(or $(PYTORCH_VERSION),$(call bake_default,PYTORCH_VERSION))
 ROCM_VERSION      := $(or $(ROCM_VERSION),$(call bake_default,ROCM_VERSION))
@@ -44,23 +89,22 @@ PYTORCH_ROCM_ARCH := $(or $(PYTORCH_ROCM_ARCH),$(call bake_default,PYTORCH_ROCM_
 
 # BUILDER and REPO are make's own: bake has no concept of which node a
 # build lands on, nor of which Zot repository `make zot-tags` lists.
-BUILDER ?= snoc-strix
+# The manifest names the default; a node is addressed by its builder
+# name everywhere, and $(call fleet_host,<node>) resolves the machine
+# behind it where something has to ssh there — the builder is named
+# snoc-think but the machine is snoc-thinkstation, and there is no
+# snoc-think on the tailnet.
+BUILDER ?= $(call fleet_var,FLEET_DEFAULT_BUILDER)
 REPO ?= $(REGISTRY_NAME)/base
-
-# Remote build nodes. SSH endpoints, so these must be reachable as
-# `ssh <host>` from here (tailnet names work on the host; only builder
-# *containers* lack MagicDNS). Note the builder is named snoc-think but
-# the machine is snoc-thinkstation — there is no snoc-think on the
-# tailnet, so this variable keeps the real hostname.
-# (THINK_HOST and GAMING_HOST are defined below.)
 
 # The tailnet must never go through the corporate proxy. HTTP_PROXY and
 # HTTPS_PROXY are set in this environment but no_proxy is not, so every
 # proxy-aware tool (curl in some modes, python urllib, Go binaries like
-# zli and docker) tries to reach snoc-* through ZScaler and fails. Set
-# it here so make targets are correct regardless of the user's shell;
-# add the same to your profile for interactive use.
-NO_PROXY_LIST := localhost,127.0.0.1,::1,.ts.net,.local,10.0.0.0/8,100.64.0.0/10
+# zli and docker) tries to reach the fleet through ZScaler and fails.
+# Set it here so make targets are correct regardless of the user's
+# shell; add the same to your profile for interactive use. The list
+# describes the fleet's network, so it comes from the manifest.
+NO_PROXY_LIST := $(call fleet_var,FLEET_NO_PROXY)
 export no_proxy := $(NO_PROXY_LIST)
 export NO_PROXY := $(NO_PROXY_LIST)
 
@@ -114,13 +158,14 @@ export BUILD_PIDFILE
 
 MAKE_BIN := $(MAKE)
 
-# Shared compiler-cache store on Strix: nginx WebDAV over a directory
-# tree, so it survives a reboot.
-# Host and port from rocm-bake.hcl, for the same reason as everything else
-# in the block above — the builders and the deploy targets have to
-# agree on where the store is.
-WEBDAV_HOST := $(or $(WEBDAV_HOST),$(call bake_default,SCCACHE_WEBDAV_HOST))
-WEBDAV_PORT := $(or $(WEBDAV_PORT),$(call bake_default,SCCACHE_WEBDAV_PORT))
+# Shared compiler-cache store: nginx WebDAV over a directory tree, so
+# it survives a reboot. Which node hosts it, and on which port, is the
+# manifest's to say — same argument as REGISTRY above, and bake's own
+# defaults are the fallback and the cross-check.
+WEBDAV_HOST := $(or $(WEBDAV_HOST),$(call fleet_var,FLEET_CACHE_HOST),$(call bake_default,SCCACHE_WEBDAV_HOST))
+WEBDAV_PORT := $(or $(WEBDAV_PORT),$(call fleet_var,FLEET_CACHE_PORT),$(call bake_default,SCCACHE_WEBDAV_PORT))
+export SCCACHE_WEBDAV_HOST := $(WEBDAV_HOST)
+export SCCACHE_WEBDAV_PORT := $(WEBDAV_PORT)
 WEBDAV_URL  ?= http://$(WEBDAV_HOST):$(WEBDAV_PORT)
 
 # Build containers address the store by IP, resolved here once, not by
@@ -138,18 +183,16 @@ WEBDAV_URL  ?= http://$(WEBDAV_HOST):$(WEBDAV_PORT)
 WEBDAV_IP   ?= $(shell getent hosts $(WEBDAV_HOST) 2>/dev/null | awk '{print $$1; exit}')
 SCCACHE_WEBDAV_ENDPOINT ?= http://$(or $(WEBDAV_IP),$(WEBDAV_HOST)):$(WEBDAV_PORT)
 export SCCACHE_WEBDAV_ENDPOINT
-WEBDAV_DIR  ?= /var/cache/sccache-webdav
+WEBDAV_DIR  ?= $(call fleet_var,FLEET_CACHE_DIR)
 
-# A sentinel, not a builder. BUILDER=snoc-pool means "let the balancer
-# choose"; requests for it are routed through .builders/balance.sh,
-# which runs each target against a concrete node. Nothing is ever built
-# against a buildx pool now, so the pool builder need not exist — and if
-# it does, its records never update, which is why watch skips it.
-# Reclaim its containers with: docker buildx rm snoc-pool
-POOL_BUILDER ?= snoc-pool
-
-THINK_HOST ?= snoc-thinkstation
-GAMING_HOST ?= snoc-gaming
+# A sentinel, not a builder. BUILDER=$(POOL_BUILDER) means "let the
+# balancer choose"; requests for it are routed through
+# .builders/balance.sh, which runs each target against a concrete node.
+# Nothing is ever built against a buildx pool now, so the pool builder
+# need not exist — and if it does, its records never update, which is
+# why watch skips it.
+# Reclaim its containers with: docker buildx rm $(POOL_BUILDER)
+POOL_BUILDER ?= $(call fleet_var,FLEET_POOL_BUILDER)
 
 # Every build goes through the telemetry wrapper: it runs the bake, then
 # records duration, layer-cache hit ratio and sccache counters, and exits
@@ -210,8 +253,8 @@ BAKE_PRINT = docker buildx bake -f rocm-bake.hcl
 
 .PHONY: help zot-check zot-catalog zot-tags zot-wheels zot-wheelhouse zot-logs \
         image-sizes image-data image-publish zot-disk \
-        builder-setup builder-snoc-strix builder-snoc-think builder-snoc-gaming \
-        builder-snoc-pool builder-status builder-logs builder-restart \
+        builder-setup builder-pool list-nodes fleet-apply fleet-check \
+        builder-status builder-logs builder-restart \
         build-status build-logs build-inspect builder-ensure watch \
         build-stop gpu-test \
         serve-vllm serve-stack serve-wait serve-down serve-status \
@@ -360,11 +403,11 @@ image-publish: ## Publish image sizes onto gh-pages (PUSH=1 to push)
 		|| git -C "$$dir" commit -s \
 			-m "data: refresh published image sizes"; \
 	if [ "$(PUSH)" = 1 ]; then \
-		git -C "$$dir" push origin $(GH_PAGES_BRANCH); \
+		git -C "$$dir" push origin HEAD:$(GH_PAGES_BRANCH); \
 	else \
 		echo; \
 		echo "Committed locally. To publish:"; \
-		echo "  git -C $$dir push origin $(GH_PAGES_BRANCH)"; \
+		echo "  git -C $$dir push origin HEAD:$(GH_PAGES_BRANCH)"; \
 		echo "or re-run with PUSH=1."; \
 	fi
 
@@ -493,13 +536,17 @@ cache-summary: ## Compiler-cache state: size, disk, deltas and hit rates
 		echo "  hit rate  no telemetry file found"; \
 	fi
 
+# Every build node in the manifest, named as the builder rather than
+# the machine: that is the name the rest of the fleet tooling prints,
+# and the endpoint beside it says where it actually ran.
 cache-check: ## Verify every build node can reach the compiler cache
-	@for h in localhost $(THINK_HOST) $(GAMING_HOST); do \
-		printf '  %-20s ' "$$h"; \
-		if [ "$$h" = localhost ]; then \
+	@for pair in $(FLEET_BUILD_ENDPOINTS); do \
+		n=$${pair%%=*}; e=$${pair#*=}; \
+		printf '  %-14s %-26s ' "$$n" "$$e"; \
+		if [ "$$e" = local ]; then \
 			curl -sf -o /dev/null -w 'HTTP %{http_code}' "$(WEBDAV_URL)/" || printf UNREACHABLE; \
 		else \
-			ssh -n -o BatchMode=yes "$$h" "curl -sf -o /dev/null -w 'HTTP %{http_code}' '$(WEBDAV_URL)/'" 2>/dev/null \
+			ssh -n -o BatchMode=yes "$${e#ssh://}" "curl -sf -o /dev/null -w 'HTTP %{http_code}' '$(WEBDAV_URL)/'" 2>/dev/null \
 				|| printf UNREACHABLE; \
 		fi; \
 		echo; \
@@ -519,92 +566,60 @@ cache-logs: ## Follow the WebDAV store's access log
 		sudo tail -f /var/log/nginx/access.log; \
 	fi
 
-##@ Builders
+##@ Fleet
 
-builder-setup: builder-snoc-strix builder-snoc-think builder-snoc-gaming ## Setup all builders
+# One builder per node in the manifest. This was three hand-written
+# targets that differed only in a name and an endpoint, and could not
+# describe a fourth node without a fourth copy; the work is in
+# .builders/builder-create.sh now, and the node list comes from
+# manifests/$(FLEET).yml.
+#
+# Remote nodes join over SSH to their Docker daemons, not the
+# remote/TLS driver: buildx creates and owns a buildkit container on
+# each, so a remote node needs neither buildkitd, nor TLS certs, nor
+# the buildx plugin installed.
+builder-setup: $(addprefix builder-,$(FLEET_NODES)) ## Setup a builder for every node in the manifest (one node: builder-<node>)
+	@echo "builders: $(FLEET_NODES)"
 
-builder-snoc-strix: ## Setup the snoc-strix builder (local docker-container)
-	@if docker buildx ls --format '{{.Name}}' | grep -qx 'snoc-strix'; then \
-		echo "snoc-strix builder already exists"; \
-	else \
-		echo "Creating snoc-strix builder..."; \
-		docker buildx create \
-			--name snoc-strix \
-			--driver docker-container \
-			--driver-opt network=host \
-			--config .builders/buildkitd-strix.toml \
-			--driver-opt env.BUILDKIT_STEP_LOG_MAX_SIZE=104857600 \
-			--driver-opt env.BUILDKIT_STEP_LOG_MAX_SPEED=10485760 \
-			--platform linux/amd64; \
-	fi
-	@docker buildx use snoc-strix
-	@echo "snoc-strix builder active"
+# A pattern rule, so `make builder-snoc-think` still works and a node
+# added to the manifest needs no Makefile edit. Every explicit
+# builder-* target below (status, logs, restart, health, load, ensure,
+# pool) wins over this: make prefers an explicit rule to a pattern.
+#
+# The pool name routes to --pool, so the `make builder-$(POOL_BUILDER)`
+# spelling that predates this still does what it says.
+builder-%:
+	@.builders/builder-create.sh $*
 
-# snoc-thinkstation and snoc-gaming join over SSH to their Docker
-# daemons, not the remote/TLS driver: buildx creates and owns a buildkit
-# container on each, so neither node needs buildkitd, TLS certs, or the
-# buildx plugin installed. Both are gfx1201 (RDNA4), so they can
-# cross-compile for gfx950 but cannot run the GPU test stage.
-builder-snoc-think: ## Setup the snoc-think builder (over SSH to snoc-thinkstation)
-	@if docker buildx ls --format '{{.Name}}' | grep -qx 'snoc-think'; then \
-		echo "snoc-think builder already exists"; \
-	else \
-		echo "Creating snoc-think builder..."; \
-		docker buildx create \
-			--name snoc-think \
-			--driver docker-container \
-			--driver-opt network=host \
-			--config .builders/buildkitd-strix.toml \
-			--driver-opt env.BUILDKIT_STEP_LOG_MAX_SIZE=104857600 \
-			--driver-opt env.BUILDKIT_STEP_LOG_MAX_SPEED=10485760 \
-			--platform linux/amd64 \
-			ssh://$(THINK_HOST); \
-	fi
+# One buildx builder holding every node. buildx spreads independent
+# targets across its nodes, so `docker buildx bake --builder $(POOL_BUILDER)`
+# uses the whole fleet — but it selects by platform, not by capacity,
+# which is why `make push-all BUILDER=$(POOL_BUILDER)` goes through
+# balance.sh instead and this builder need not exist at all.
+builder-pool: ## Setup a buildx pool holding every build node
+	@.builders/builder-create.sh --pool
 
-builder-snoc-gaming: ## Setup the snoc-gaming builder (over SSH)
-	@if docker buildx ls --format '{{.Name}}' | grep -qx 'snoc-gaming'; then \
-		echo "snoc-gaming builder already exists"; \
-	else \
-		echo "Creating snoc-gaming builder..."; \
-		docker buildx create \
-			--name snoc-gaming \
-			--driver docker-container \
-			--driver-opt network=host \
-			--config .builders/buildkitd-strix.toml \
-			--driver-opt env.BUILDKIT_STEP_LOG_MAX_SIZE=104857600 \
-			--driver-opt env.BUILDKIT_STEP_LOG_MAX_SPEED=10485760 \
-			--platform linux/amd64 \
-			ssh://$(GAMING_HOST); \
-	fi
+# What the manifest says, before anything tries to reach a machine.
+# The first question when a build lands somewhere surprising is which
+# manifest is in effect, and FLEET is easy to have exported and
+# forgotten.
+list-nodes: ## Show the fleet manifest in effect and the nodes it declares
+	@python3 -I .builders/fleet.py --table
 
-# One builder with all three nodes. buildx spreads independent targets
-# across nodes, so `make build-all BUILDER=snoc-pool` uses the whole fleet.
-# A single target still builds on one node — this is fan-out, not a
-# distributed compile of one image.
-builder-snoc-pool: ## Setup a 3-node pool (snoc-strix + snoc-think + snoc-gaming)
-	@if docker buildx ls --format '{{.Name}}' | grep -qx 'snoc-pool'; then \
-		echo "snoc-pool builder already exists"; \
-	else \
-		echo "Creating snoc-pool builder..."; \
-		docker buildx create --name snoc-pool --node snoc-strix \
-			--driver docker-container \
-			--driver-opt network=host \
-			--config .builders/buildkitd-strix.toml \
-			--platform linux/amd64; \
-		docker buildx create --name snoc-pool --append --node snoc-think \
-			--driver docker-container \
-			--driver-opt network=host \
-			--config .builders/buildkitd-strix.toml \
-			--platform linux/amd64 \
-			ssh://$(THINK_HOST); \
-		docker buildx create --name snoc-pool --append --node snoc-gaming \
-			--driver docker-container \
-			--driver-opt network=host \
-			--config .builders/buildkitd-strix.toml \
-			--platform linux/amd64 \
-			ssh://$(GAMING_HOST); \
-	fi
-	@docker buildx inspect snoc-pool --bootstrap
+# Ansible owns the state of a node — packages, daemon configuration,
+# the registry, the compiler-cache store, the exporter — and reads the
+# same manifest through the same fleet.py. These two targets exist so
+# the entry point is still `make`; everything they do is in ansible/.
+ANSIBLE_FLAGS ?=
+fleet-apply: ## Bring every node to the state the manifest claims (ANSIBLE_FLAGS=--check)
+	@command -v ansible-playbook >/dev/null \
+		|| { echo "ansible-playbook not found: apt-get install ansible"; exit 1; }
+	@cd ansible && ansible-playbook site.yml $(ANSIBLE_FLAGS)
+
+fleet-check: ## Can every node do the job the manifest says it has?
+	@command -v ansible-playbook >/dev/null \
+		|| { echo "ansible-playbook not found: apt-get install ansible"; exit 1; }
+	@cd ansible && ansible-playbook check.yml $(ANSIBLE_FLAGS)
 
 ##@ Monitoring
 
@@ -1296,11 +1311,11 @@ perf-publish: ## Publish a perf run onto gh-pages (PERF_RUN=, PUSH=1 to push)
 		|| git -C $(GH_PAGES_DIR) commit -s \
 			-m "data: add perf run $$stamp"; \
 	if [ "$(PUSH)" = 1 ]; then \
-		git -C $(GH_PAGES_DIR) push origin $(GH_PAGES_BRANCH); \
+		git -C $(GH_PAGES_DIR) push origin HEAD:$(GH_PAGES_BRANCH); \
 	else \
 		echo; \
 		echo "Committed locally. To publish:"; \
-		echo "  git -C $(GH_PAGES_DIR) push origin $(GH_PAGES_BRANCH)"; \
+		echo "  git -C $(GH_PAGES_DIR) push origin HEAD:$(GH_PAGES_BRANCH)"; \
 		echo "or re-run with PUSH=1."; \
 	fi
 
@@ -1458,7 +1473,10 @@ push-serving: builder-ensure ## * Build and push nixl + vLLM + LMCache
 # Executing what the Build section produced, as opposed to producing
 # it. These need a node that can actually run the artifact, which is
 # why none of them are in push-all: a build host is not necessarily a
-# GPU host. snoc-thinkstation has the gfx1201 card and is the default.
+# GPU host. The manifest's `gpu_node:` names it; a fleet that has no
+# node with the `gpu` capability — a cloud build fleet, where no
+# instance has an AMD accelerator — leaves it empty, and these targets
+# say so rather than failing on an empty hostname.
 ##@ Run
 
 test: builder-ensure ## Run the test stage against a GPU
@@ -1468,8 +1486,22 @@ test: builder-ensure ## Run the test stage against a GPU
 # runs over ssh by default. GPU_HOST is the machine with /dev/kfd;
 # PYTORCH_ROCM_ARCH selects which image to test, so the same target
 # covers every architecture we publish.
-GPU_HOST ?= snoc-thinkstation
+GPU_HOST ?= $(call fleet_var,FLEET_GPU_HOST)
+
+# Printed by every target that needs a card, in place of the obscure
+# failure an empty GPU_HOST produces: `ssh ""`, or a compose file
+# pointed at DOCKER_HOST=ssh:// with nothing after it.
+define require_gpu_host
+	@[ -n "$(GPU_HOST)" ] || { \
+		echo "fleet $(call fleet_var,FLEET_NAME) declares no gpu node, so there is"; \
+		echo "nowhere to run this. Either set GPU_HOST=<host> for a one-off, or"; \
+		echo "give a node the 'gpu' capability and name it in gpu_node: in"; \
+		echo "$(call fleet_var,FLEET_MANIFEST_PATH)."; \
+		exit 1; }
+endef
+
 gpu-test: ## Run the published image on a real GPU (GPU_HOST=, PYTORCH_ROCM_ARCH=)
+	$(require_gpu_host)
 	@.builders/gpu-test.sh --host "$(GPU_HOST)" --arch "$(PYTORCH_ROCM_ARCH)"
 
 # ─── Serve ────────────────────────────────────────────────────────
@@ -1577,6 +1609,7 @@ SERVE_TEST_ARGS ?=
 # sure a result is attributable to the configuration under test rather
 # than to the one before it.
 serve-vllm: ## Serve vLLM alone on GPU_HOST, no KV offload (the baseline)
+	$(require_gpu_host)
 	@echo "serving $(SERVE_MODEL) on $(GPU_HOST) — vLLM only"
 	@$(COMPOSE) down --remove-orphans 2>/dev/null || true
 	@$(COMPOSE) up -d --wait lmcache 2>/dev/null || true
@@ -1584,6 +1617,7 @@ serve-vllm: ## Serve vLLM alone on GPU_HOST, no KV offload (the baseline)
 	@$(MAKE_BIN) --no-print-directory serve-wait
 
 serve-stack: ## Serve vLLM + LMCache MP on GPU_HOST (KV_TIER=cpu|file)
+	$(require_gpu_host)
 	@echo "serving $(SERVE_MODEL) on $(GPU_HOST) — vLLM + LMCache MP, tier=$(or $(KV_TIER),$(call compose_default,KV_TIER))"
 	@KV_OFFLOAD=1 $(COMPOSE) up -d
 	@$(MAKE_BIN) --no-print-directory serve-wait
@@ -1622,6 +1656,7 @@ serve-test-l2: ## Prove the disk tier serves KV blocks (needs KV_TIER=file)
 	@.builders/serve-test.sh --l2 $(SERVE_TEST_ARGS)
 
 serve-down: ## Stop the serving stack and remove its containers
+	$(require_gpu_host)
 	@$(COMPOSE) down --remove-orphans
 
 # Not `compose logs`: that only knows about the compose stack, and the
@@ -1642,6 +1677,7 @@ serve-logs-sorted: ## Snapshot of both logs merged in timestamp order
 	@.builders/serve-logs.sh --sorted $(SERVE_LOG_ARGS)
 
 serve-status: ## Show what is running on GPU_HOST
+	$(require_gpu_host)
 	@$(COMPOSE) ps
 
 # ─── Benchmarks ───────────────────────────────────────────────────
@@ -1706,11 +1742,11 @@ bench-publish: bench-data ## Publish the benchmark data onto gh-pages (PUSH=1 to
 		|| git -C $(GH_PAGES_DIR) commit -s \
 			-m "data: refresh build benchmarks from $(BUILDER)"
 	@if [ "$(PUSH)" = 1 ]; then \
-		git -C $(GH_PAGES_DIR) push origin $(GH_PAGES_BRANCH); \
+		git -C $(GH_PAGES_DIR) push origin HEAD:$(GH_PAGES_BRANCH); \
 	else \
 		echo; \
 		echo "Committed locally. To publish:"; \
-		echo "  git -C $(GH_PAGES_DIR) push origin $(GH_PAGES_BRANCH)"; \
+		echo "  git -C $(GH_PAGES_DIR) push origin HEAD:$(GH_PAGES_BRANCH)"; \
 		echo "or re-run with PUSH=1."; \
 	fi
 
@@ -1859,6 +1895,10 @@ list-vars: ## Show the variables these targets read, and their values
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' PYTORCH_ROCM_ARCH "$(PYTORCH_ROCM_ARCH)"
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' ARCHES "$(ARCHES)  (what arches-* fans out over)"
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' MAX_JOBS "$(if $(MAX_JOBS),$(MAX_JOBS),(derived per node from free memory))"
+	@printf '\n$(C_BOLD)Fleet$(C_OFF)  (make list-nodes for the whole manifest)\n'
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' FLEET "$(FLEET)  ($(call fleet_var,FLEET_MANIFEST_PATH))"
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' FLEET_NODES "$(FLEET_NODES)"
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' POOL_BUILDER "$(POOL_BUILDER)  (sentinel: routes through balance.sh)"
 	@printf '\n$(C_BOLD)Location$(C_OFF)\n'
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' BUILDER "$(BUILDER)"
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' REGISTRY "$(REGISTRY)"
@@ -1875,7 +1915,7 @@ list-vars: ## Show the variables these targets read, and their values
 		printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' "$${v%%=*}" "$${v#*=}  (overridden)"; \
 	done
 	@printf '\n$(C_BOLD)Serving$(C_OFF)  (make serve-vllm / serve-stack / serve-test)\n'
-	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' GPU_HOST "$(GPU_HOST)"
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' GPU_HOST "$(or $(GPU_HOST),(none — this fleet declares no gpu node))"
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' SERVE_MODEL "$(SERVE_MODEL)"
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' SERVE_ARCH "$(SERVE_ARCH)  (probed from GPU_HOST, not the build arch)"
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' VLLM_TAG "$(VLLM_TAG)"

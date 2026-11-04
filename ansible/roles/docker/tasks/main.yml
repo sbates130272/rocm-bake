@@ -1,0 +1,50 @@
+---
+# Docker's own installation is left alone — it is an opinionated,
+# distribution-specific job, and a node unreachable to Docker is not
+# one this play can reach either. What is managed here is the daemon
+# configuration the fleet depends on, which is where the failures
+# actually come from.
+
+- name: Docker is installed
+  ansible.builtin.command: docker version --format '{{ "{{" }}.Server.Version{{ "}}" }}'
+  register: docker_version
+  changed_when: false
+  failed_when: false
+
+- name: Fail with what to do about a missing Docker
+  ansible.builtin.fail:
+    msg: >-
+      docker is not usable on {{ inventory_hostname }}
+      ({{ docker_version.stderr | default('not installed') | trim }}).
+      Install Docker 27+ from docker.com's apt repository, add the
+      connecting user to the docker group, and re-run.
+  when: docker_version.rc != 0
+
+- name: Docker is new enough for the buildx features these builds use
+  ansible.builtin.assert:
+    that:
+      - docker_version.stdout is version('27.0.0', '>=')
+    fail_msg: >-
+      Docker {{ docker_version.stdout }} on {{ inventory_hostname }};
+      27+ is required.
+
+# The registry serves plain HTTP on the fleet's own network. Without
+# both of these the daemon refuses it on the TLS handshake, and the
+# mirror entry is what keeps an upstream pull from egressing.
+- name: Daemon configuration for the fleet registry
+  become: true
+  ansible.builtin.copy:
+    dest: /etc/docker/daemon.json
+    mode: "0644"
+    content: |
+      {
+        "insecure-registries": ["{{ fleet_registry }}"],
+        "registry-mirrors": ["http://{{ fleet_registry }}"]
+      }
+  notify: Restart docker
+
+- name: The connecting user can reach the Docker socket
+  ansible.builtin.command: docker info --format '{{ "{{" }}.ServerVersion{{ "}}" }}'
+  register: docker_info
+  changed_when: false
+  failed_when: docker_info.rc != 0

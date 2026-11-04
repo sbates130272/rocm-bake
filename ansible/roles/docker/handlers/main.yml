@@ -1,0 +1,9 @@
+---
+# Restarting dockerd stops every container on the node, including a
+# buildx builder mid-build. Run site.yml when the fleet is idle.
+- name: Restart docker
+  become: true
+  ansible.builtin.systemd:
+    name: docker
+    state: restarted
+    daemon_reload: true

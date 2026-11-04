@@ -1,0 +1,11 @@
+---
+- name: Restart zot
+  become: true
+  ansible.builtin.systemd:
+    name: zot
+    state: restarted
+    daemon_reload: true
+  # Only when this role owns the service. An unmanaged zot is other
+  # people's: a handler that fires from a verify-only run would take
+  # the fleet's registry down to no purpose.
+  when: fleet_registry_managed

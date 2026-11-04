@@ -144,8 +144,9 @@ RUN tar xzf /tmp/sccache.tar.gz -C /usr/local/bin --strip-components=1 \
 #    a client on 4226 would attach to the node's own sccache.service —
 #    and that server executes compiles in the *host* filesystem, where
 #    this container's sources do not exist (it fails with exit 254).
-#  - The tailnet name resolves only because .builders/buildkitd-strix.toml
-#    sets [dns] for the build sandbox. RUN steps do not inherit the
+#  - The tailnet name resolves only because the buildkitd.toml rendered
+#    per node from .builders/buildkitd.toml.in sets [dns] for the build
+#    sandbox, from the manifest's `domain:`. RUN steps do not inherit the
 #    builder's resolver, so without that block this fails with "cache
 #    storage failed to read ... I/O error" and the build silently falls
 #    back to no caching at all.

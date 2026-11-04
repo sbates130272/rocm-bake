@@ -17,6 +17,7 @@ else is diagnosis.
 ## Health checks
 
 ```bash
+make fleet-check      # the whole fleet, against what the manifest claims
 make zot-check        # registry active and answering
 make cache-check      # every node can reach the compiler cache
 make builder-health   # which builders can take work
@@ -25,15 +26,31 @@ make builder-load     # CPU, cores and load per node
 make version-check    # are any upstream pins behind?
 ```
 
+`fleet-check` is the one to run first: it asks every node in
+[the manifest](../architecture/fleet.md) whether it can reach the
+registry, read *and write* the compiler cache, and export metrics,
+then reports builder health. The targets under it ask one of those
+questions each.
+
+`make fleet-apply` is the other half — it makes a node match the
+manifest rather than reporting that it does not. Run it when the fleet
+is idle: it can restart `dockerd`, which stops every container on the
+node including a builder mid-build.
+
 `builder-health` is what `builder-ensure` gates every build target on,
 so a build against a dead node fails fast rather than hanging. It
 reports `running`, `inactive` or `error` per node.
 
 ## Continuous integration
 
-Four workflows, all on GitHub-hosted runners. None of them builds a real
-image — the images need this fleet — so CI validates structure and
-agreement rather than output.
+Five workflows. Every pull-request check runs on a GitHub-hosted
+runner and builds no real image — the images need a build fleet — so
+the PR gate validates structure and agreement rather than output.
+
+The exception is the nightly, which does build: a cold and a warm run
+per architecture on AWS CodeBuild, published to ECR and reported as a
+GitHub issue. SNOC runs no CI job at all — it is driven by hand. See
+[CI runners](runners.md).
 
 **`CI — Dockerfile & bake validation`** runs on pull requests and pushes
 to `main`, path-filtered to the build files. It enumerates the bake

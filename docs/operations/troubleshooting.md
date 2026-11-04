@@ -19,7 +19,7 @@ make zot-check
 | Log line | Cause |
 | --- | --- |
 | `no such host` | The builder cannot resolve the tailnet name. It was created without `--driver-opt network=host`, so Docker gave it the upstream resolver instead of the host's MagicDNS one. |
-| `http: server gave HTTP response to HTTPS client` | DNS is fine but the client will not speak plain HTTP. For the Docker daemon, check `insecure-registries` in `/etc/docker/daemon.json`; for BuildKit, confirm the builder was created with `--config .builders/buildkitd-strix.toml`. |
+| `http: server gave HTTP response to HTTPS client` | DNS is fine but the client will not speak plain HTTP. For the Docker daemon, check `insecure-registries` in `/etc/docker/daemon.json`; for BuildKit, confirm the builder was created from the fleet manifest with `make builder-<node>` rather than by hand — a builder created with no `--config` has no `[registry]` block. |
 
 Both settings are fixed at builder-create time, so the fix is always
 `docker buildx rm <name>` then `make builder-<name>`. Editing the toml
@@ -80,7 +80,7 @@ telemetry textfile, per target, from the last build of each.
 | Log line | Cause |
 | --- | --- |
 | `No such file or directory` on a source path | The client reached a server outside its own container. Structurally impossible now that the server is addressed over a unix socket, but this is what it looked like. |
-| `cache storage failed to read … I/O error` | The store's address did not resolve. Check the `[dns]` block in `.builders/buildkitd-strix.toml`, and that the Makefile resolved `WEBDAV_IP` — build containers address the store by IP, not by name. |
+| `cache storage failed to read … I/O error` | The store's address did not resolve. Check the `[dns]` block in `.builders/buildkitd.toml.in`, and that the Makefile resolved `WEBDAV_IP` — build containers address the store by IP, not by name. |
 | `Cache write errors` climbing | The store's filesystem is full. `make cache-summary` shows the disk line. |
 
 `SCCACHE_LOG=debug` reveals what sccache's "Cache errors" counter is
