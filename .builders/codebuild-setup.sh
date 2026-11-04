@@ -58,6 +58,15 @@ run() {
     "$@"
 }
 
+# As run(), but swallows the command's own stdout. For calls whose
+# success is already reported by the line above them and whose JSON
+# would otherwise land in the middle of the transcript. Errors still
+# surface: only stdout is dropped.
+run_quiet() {
+    if [ "${DRY}" = 1 ]; then printf '   would run: %s\n' "$*"; return 0; fi
+    "$@" >/dev/null
+}
+
 # Derive rather than ask. This also proves the caller's credentials
 # work before anything is created.
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/null) || {
@@ -122,7 +131,7 @@ for name in "${REPOS[@]}"; do
         continue
     fi
     printf '   create  %s\n' "${repo}"
-    run aws ecr create-repository --region "${REGION}" \
+    run_quiet aws ecr create-repository --region "${REGION}" \
         --repository-name "${repo}" \
         --image-tag-mutability MUTABLE >/dev/null
 done
@@ -155,7 +164,7 @@ for name in "${REPOS[@]}"; do
         *) continue ;;
     esac
     printf '   policy  %s/%s\n' "${REGISTRY_NAME}" "${name}"
-    run aws ecr put-lifecycle-policy --region "${REGION}" \
+    run_quiet aws ecr put-lifecycle-policy --region "${REGION}" \
         --repository-name "${REGISTRY_NAME}/${name}" \
         --lifecycle-policy-text "${LIFECYCLE}" >/dev/null 2>&1 \
         || echo "      (could not set lifecycle policy)"
@@ -172,19 +181,19 @@ if aws s3api head-bucket --bucket "${SCCACHE_BUCKET}" --region "${REGION}" \
     echo "   exists  s3://${SCCACHE_BUCKET}"
 else
     echo "   create  s3://${SCCACHE_BUCKET}"
-    run aws s3api create-bucket --bucket "${SCCACHE_BUCKET}" --region "${REGION}" \
+    run_quiet aws s3api create-bucket --bucket "${SCCACHE_BUCKET}" --region "${REGION}" \
         --create-bucket-configuration "LocationConstraint=${REGION}" \
         || echo "      (create failed — the name may be taken globally)"
 fi
 
 echo "   blocking public access"
-run aws s3api put-public-access-block --bucket "${SCCACHE_BUCKET}" \
+run_quiet aws s3api put-public-access-block --bucket "${SCCACHE_BUCKET}" \
     --public-access-block-configuration \
     'BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true' \
     || echo "      (could not block public access)"
 
 echo "   setting a 30-day expiry"
-run aws s3api put-bucket-lifecycle-configuration --bucket "${SCCACHE_BUCKET}" \
+run_quiet aws s3api put-bucket-lifecycle-configuration --bucket "${SCCACHE_BUCKET}" \
     --lifecycle-configuration '{"Rules":[{"ID":"expire-cold-objects","Status":"Enabled","Filter":{"Prefix":""},"Expiration":{"Days":30}}]}' \
     || echo "      (could not set the lifecycle policy)"
 
@@ -309,7 +318,14 @@ if aws codebuild batch-get-projects --region "${REGION}" \
     | grep -q "^${PROJECT}$"; then
     echo "   exists"
 else
+    # Retried, because IAM is eventually consistent and CodeBuild
+    # validates the service role at CreateProject. A role created
+    # seconds earlier reliably fails the first attempt with
+    # "CodeBuild is not authorized to perform: sts:AssumeRole on
+    # service role", which reads like a broken trust policy and is
+    # not — the same call succeeds unchanged a moment later.
     echo "   creating"
+    create_project() {
     run aws codebuild create-project --region "${REGION}" \
         --name "${PROJECT}" \
         --source "{\"type\":\"GITHUB\",\"location\":\"https://github.com/${REPO_SLUG}\",\"buildspec\":\"\",\"reportBuildStatus\":false}" \
@@ -317,8 +333,21 @@ else
         --environment '{"type":"LINUX_CONTAINER","image":"aws/codebuild/amazonlinux-x86_64-standard:5.0","computeType":"BUILD_GENERAL1_2XLARGE","privilegedMode":true,"imagePullCredentialsType":"CODEBUILD"}' \
         --service-role "${ROLE_ARN}" \
         --timeout-in-minutes 480 \
-        --queued-timeout-in-minutes 60 >/dev/null || exit 1
-    echo "   created"
+        --queued-timeout-in-minutes 60 >/dev/null
+    }
+    for attempt in 1 2 3 4 5; do
+        if create_project; then
+            echo "   created (attempt ${attempt})"
+            break
+        fi
+        [ "${attempt}" = 5 ] && {
+            echo "   create-project failed five times — if the error named" >&2
+            echo "   sts:AssumeRole, the role may still be propagating; re-run." >&2
+            exit 1
+        }
+        echo "   attempt ${attempt} failed, waiting for IAM to propagate"
+        sleep 10
+    done
 fi
 
 say "Webhook (WORKFLOW_JOB_QUEUED)"
@@ -327,11 +356,32 @@ if aws codebuild batch-get-projects --region "${REGION}" --names "${PROJECT}" \
     echo "   exists"
 else
     echo "   creating"
-    run aws codebuild create-webhook --region "${REGION}" \
+    if run aws codebuild create-webhook --region "${REGION}" \
         --project-name "${PROJECT}" --build-type BUILD \
         --filter-groups '[[{"type":"EVENT","pattern":"WORKFLOW_JOB_QUEUED"}]]' \
-        >/dev/null || exit 1
-    echo "   created"
+        >/dev/null 2>&1; then
+        echo "   created"
+    else
+        cat >&2 <<'HINT'
+   FAILED.
+
+   An OAuthProviderException naming "GitHub API limit reached or
+   permission issue" almost always means the second thing: the AWS
+   Connector for GitHub app has not been granted the Webhooks scope.
+   Creating a webhook is not a permission the connection handshake
+   asks for up front.
+
+   Fix it at https://github.com/settings/installations
+     -> AWS Connector for GitHub -> Configure
+     -> accept the newly requested permissions
+     -> confirm Webhooks: Read and write, and that this repository is
+        in the selection
+
+   Then re-run this script; everything above is already done and will
+   be skipped.
+HINT
+        exit 1
+    fi
 fi
 
 # ── 6. what to do next ───────────────────────────────────────────
