@@ -47,10 +47,12 @@ Five workflows. Every pull-request check runs on a GitHub-hosted
 runner and builds no real image — the images need a build fleet — so
 the PR gate validates structure and agreement rather than output.
 
-The exception is the nightly, which does build: a cold and a warm run
-per architecture on AWS CodeBuild, published to ECR and reported as a
-GitHub issue. SNOC runs no CI job at all — it is driven by hand. See
-[CI runners](runners.md).
+The exception is the nightly, which does build: a warm run per
+architecture on AWS CodeBuild, published to ECR, reported as a GitHub
+issue and to
+[data/nightly/](https://sbates130272.github.io/rocm-bake/data/nightly/).
+SNOC runs no CI job at all — it is driven by hand. See
+[CI runners](runners.md) and [Building on AWS](aws.md).
 
 **`CI — Dockerfile & bake validation`** runs on pull requests and pushes
 to `main`, path-filtered to the build files. It enumerates the bake

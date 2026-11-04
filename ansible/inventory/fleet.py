@@ -12,7 +12,7 @@ machines.
 
 FLEET / FLEET_MANIFEST select the manifest, same as everywhere else:
 
-    FLEET=aws ansible-playbook -i inventory/fleet.py site.yml
+    FLEET=<profile> ansible-playbook -i inventory/fleet.py site.yml
 """
 import importlib.util
 import json

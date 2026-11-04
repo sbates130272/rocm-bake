@@ -106,5 +106,5 @@ nav:
   - Operations:
       - operations/index.md
       - CI runners: operations/runners.md
-      - A fleet on AWS: operations/aws.md
+      - Building on AWS: operations/aws.md
       - Troubleshooting: operations/troubleshooting.md

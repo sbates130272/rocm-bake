@@ -47,11 +47,14 @@ matrix.
 
 ### Why this rather than an EC2 fleet
 
-The alternative in [A fleet on AWS](aws.md) is a Lambda webhook
-handler, a launch template, a builder AMI kept in step with
-`ansible/roles/`, a GitHub App to mint registration tokens, and a
-sweep for instances whose job never arrived. CodeBuild is one project
-and a webhook, and AWS maintains the parts that rot.
+The classic answer is a Lambda webhook handler, a launch template, a
+builder AMI kept in step with `ansible/roles/`, a GitHub App to mint
+registration tokens, and a sweep for instances whose job never arrived.
+[`philips-labs/terraform-aws-github-runner`](https://github.com/philips-labs/terraform-aws-github-runner)
+implements it properly. CodeBuild is one project and a webhook, and AWS
+maintains the parts that rot. [Building on AWS](aws.md) has the
+measurement that says a multi-node fleet would not have been faster
+anyway.
 
 ### Why not Lambda compute
 
@@ -157,24 +160,28 @@ three-arch bill.
 
 `.github/workflows/nightly.yml` runs at 02:17 UTC, one job per
 architecture, each calling `.builders/nightly.sh` on a CodeBuild
-machine. A separate GitHub-hosted job collects the reports and files
-them as a comment on one `nightly`-labelled issue — the same
-one-issue-commented-on shape `version-check.yml` uses.
+machine. A separate GitHub-hosted job collects the reports, files them
+as a comment on one `nightly`-labelled issue, and publishes them to
+[data/nightly/](https://sbates130272.github.io/rocm-bake/data/nightly/).
+
+It skips itself when `main` has not moved since the last successful
+scheduled run. Nothing changed means nothing to measure, and a warm
+build of an unchanged tree is a bill with no result.
 
 `nightly.sh` is deliberately *not* `perfrun.sh`. That one is a fleet
 harness: it drives `balance.sh` across nodes over ssh and reads
-`journalctl -u zot`, `/var/log/nginx/sccache.log` and
-`/var/cache/sccache-webdav/` on the services node. None of that exists
-on a rented machine, so running it there would ssh to instances that
-do not exist and publish a report with its cache and registry lanes
-empty. `nightly.sh` times two bake invocations and claims nothing it
-cannot see.
+`journalctl -u zot` and `/var/log/nginx/sccache.log` on the services
+node. None of that exists on a rented machine. `nightly.sh` times bake
+invocations and claims nothing it cannot see.
 
-Cold runs first and never pushes — `--no-cache` with every
-`cache-from` cleared, so the previous night's export cannot leak in.
-Warm is an ordinary build with the registry cache live, and it is the
-one that publishes. Run them the other way round and the "cold" build
-would be reading the cache the warm build had just written.
+**The schedule is warm-only.** Warm is an ordinary build with the
+registry cache live, and it is the one that publishes. A cold run
+— `--no-cache` with every `cache-from` cleared, so the previous
+night's export cannot leak in — pushes nothing and deletes its own
+sccache prefix, so it buys a measurement and roughly doubles the bill.
+Ask for it with `-f run_cold=true`, or set `NIGHTLY_COLD=true`. When
+both run, cold goes first: the other way round and the "cold" build
+would read the cache the warm build had just written.
 
 ### Cache errors are reported separately from the exit code
 
@@ -220,41 +227,33 @@ run**, with `triton-wheel` alone at 6.7 GB and `pytorch-wheel` at
 compress-upload-download-decompress of that around every build is the
 bottleneck the registry cache exists to avoid.
 
-!!! note "sccache is inert on CodeBuild, for now"
-    The compiler cache here is **sccache**, not ccache, and it speaks
-    `SCCACHE_WEBDAV_ENDPOINT` — nginx on the fleet's services node.
-    A CodeBuild machine has no such endpoint, so the nightly gets
-    *layer* reuse from ECR but no *object* reuse: anything that does
-    recompile, recompiles from scratch.
+**sccache on S3 — the object cache.** The layer cache is only half of
+it: anything that does recompile needs the compiler cache too, and a
+rented machine cannot reach the fleet's nginx WebDAV endpoint. So the
+nightly sets `SCCACHE_BUCKET`, which outranks `SCCACHE_WEBDAV_ENDPOINT`
+in the Dockerfiles. An empty bucket name is treated as unset, so the
+same bake file still serves the fleet. See
+[Building on AWS](aws.md).
 
-    This is the one place S3 genuinely fits, and not via CodeBuild's
-    zip cache — sccache speaks S3 natively through `SCCACHE_BUCKET`.
-    Switching means changing `SCCACHE_WEBDAV_*` to `SCCACHE_S3_*`
-    across `rocm-bake.hcl` and the Dockerfiles, which is the "real
-    work, not configuration" that [the AWS page](aws.md) flags. Until
-    then, expect the cold/warm gap to be wider here than on SNOC.
+### What It Needs In The Account
 
-### What it needs in the account
-
-Beyond the CodeBuild project above:
+`.builders/codebuild-setup.sh` creates all of it, idempotently, and
+prints the `gh variable set` lines at the end. What it sets up, and why
+each matters:
 
 - **ECR repositories.** ECR does not create one on push the way Zot
   does, and the failure lands at the end of a long build rather than
   the start. `nightly.sh --ensure-ecr` creates the missing ones first;
   the project's role needs `ecr:CreateRepository` for that, or you can
   pre-create them and drop the flag.
+- **An S3 bucket** for sccache, with a 30-day object expiry.
 - **`LOCAL_DOCKER_LAYER_CACHE`** on the project — free, best-effort,
   and no reason not to.
 - **`REGISTRY_INSECURE=false`.** The bake file defaults it `true` for
   the fleet's plain-HTTP Zot. Left that way against ECR, every cache
   export fails — and `ignore-error=true` hides it, which is exactly
   what the column above exists to catch.
-- **Repository variables**: `CODEBUILD_PROJECT`, `ECR_REGISTRY`,
-  `AWS_REGION`, and `NIGHTLY_ENABLED=true`.
 
-!!! warning "Unverified against real infrastructure"
-    `nightly.sh` has been run locally — argument handling, target
-    resolution, the report, and the cache-error detection all work.
-    Nothing has run on CodeBuild, because the project does not exist
-    yet. Expect the first run to surface missing tooling in the image
-    and missing permissions on the service role.
+A full run is measured at **$13.94** for thirteen targets on one
+architecture, with zero cache errors. See
+[Building on AWS](aws.md).

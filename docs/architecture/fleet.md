@@ -34,8 +34,8 @@ nodes:
 ```
 
 ```bash
-make list-nodes          # which manifest is in effect, and what it says
-FLEET=aws make list-nodes
+make list-nodes                # which manifest is in effect, and what it says
+FLEET=<profile> make list-nodes  # a second manifest, if there is one
 ```
 
 ## What a node declares
@@ -64,13 +64,13 @@ distinction is the one that makes a cloud fleet possible at all.
 Compiling for `gfx950` does not need a `gfx950` card — the SNOC fleet
 has none and cross-compiles for it every day. A card is needed only to
 *run* the result. So `snoc-gaming` has a `gfx1201` and does not get GPU
-work, and an EC2 fleet has no card at all and still builds everything:
+work, and a cloud builder has no card at all and still builds
+everything. A manifest that declares no GPU node says so and stops:
 
-```bash
-$ FLEET=aws make gpu-test
-fleet aws declares no gpu node, so there is nowhere to run this.
+```text
+fleet <name> declares no gpu node, so there is nowhere to run this.
 Either set GPU_HOST=<host> for a one-off, or give a node the 'gpu'
-capability and name it in gpu_node: in manifests/aws.yml.
+capability and name it in gpu_node:.
 ```
 
 That message is the point. Before, `GPU_HOST` was a hostname with a
@@ -120,7 +120,7 @@ builder-%:
 Versions, refs, build args and the target graph are bake's. The
 registry, the compiler-cache store and which machines exist are the
 manifest's — because a second fleet is a second set of those, and
-`FLEET=aws make push-all` publishing to the SNOC registry would be the
+a `FLEET=... make push-all` publishing to the SNOC registry would be the
 worst available failure: silent, and onto someone else's machine.
 
 `rocm-bake.hcl` keeps its own `REGISTRY` and `SCCACHE_WEBDAV_*`
@@ -157,7 +157,6 @@ what a node is for rather than naming machines.
 make fleet-apply                      # converge every node
 make fleet-apply ANSIBLE_FLAGS=--check
 make fleet-check                      # read-only acceptance test
-FLEET=aws make fleet-apply
 ```
 
 | Role | Hosts | What it owns |

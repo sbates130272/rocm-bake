@@ -79,15 +79,16 @@ the report and the Ansible inventory all read it through
 make list-nodes                   # the manifest in effect
 make fleet-apply                  # make every node match it (Ansible)
 make fleet-check                  # ask each node whether it can do its job
-FLEET=aws make list-nodes         # a second profile, build-only
 ```
 
 Details, including what each capability means and why `arch` is not the
 same claim as the `gpu` capability:
 [The fleet](https://sbates130272.github.io/rocm-bake/architecture/fleet/).
-A sized EC2 configuration, and what changes when every uplink is the
-same speed:
-[A fleet on AWS](https://sbates130272.github.io/rocm-bake/operations/aws/).
+
+The fleet is driven by hand and registers no CI runner. The nightly
+builds on AWS CodeBuild instead, publishing to ECR and sharing a
+compiler cache on S3 — one measured night is $13.94. See
+[Building on AWS](https://sbates130272.github.io/rocm-bake/operations/aws/).
 
 ## Build targets
 

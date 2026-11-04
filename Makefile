@@ -71,7 +71,7 @@ fleet_endpoint = $(patsubst $(1)=%,%,$(filter $(1)=%,$(FLEET_ENDPOINTS)))
 # override paths keep working.
 # Where, not what. The manifest owns the fleet's addresses — the
 # registry it publishes to and the compiler-cache store it reads —
-# because a second fleet is a second set of them and `FLEET=aws make
+# because a second fleet is a second set of them and a `FLEET=... make
 # push-all` publishing to the SNOC registry would be the worst
 # possible failure: silent, and to someone else's machine.
 #
