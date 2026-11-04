@@ -480,6 +480,34 @@ variable "SCCACHE_WEBDAV_ENDPOINT" {
 
 WEBDAV_ENDPOINT = SCCACHE_WEBDAV_ENDPOINT != "" ? SCCACHE_WEBDAV_ENDPOINT : "http://${SCCACHE_WEBDAV_HOST}:${SCCACHE_WEBDAV_PORT}"
 
+# ─── sccache on S3, for builds that are not on the fleet ─────────
+# The WebDAV store above is nginx on the services node, reachable over
+# the tailnet. A rented build machine — CodeBuild, say — has neither,
+# so it needs a store that outlives the machine.
+#
+# Empty by default, and that is the safety property: sccache treats an
+# empty SCCACHE_BUCKET as unset and falls back to WebDAV, so the fleet
+# is unaffected by these existing. Verified against sccache 0.19.0 —
+# unset and "" both select WebDAV, a non-empty bucket selects S3.
+#
+# Credentials deliberately do NOT appear here. They reach the build as
+# a BuildKit secret mounted at /run/secrets/aws, so they never become
+# a build arg and never land in image history or an ECR push.
+variable "SCCACHE_BUCKET" {
+  default = ""
+}
+
+variable "SCCACHE_REGION" {
+  default = ""
+}
+
+# Namespaced separately from the WebDAV prefix: the two stores hold the
+# same objects under different keys, and sharing a prefix name between
+# them would make an S3 listing look like fleet traffic.
+variable "SCCACHE_S3_KEY_PREFIX" {
+  default = "rocm-pytorch"
+}
+
 # Key namespace within that store. Overridable so a benchmark can run
 # against an isolated prefix and delete it afterwards without touching
 # the fleet's objects.
@@ -775,6 +803,10 @@ target "pytorch-common" {
     # the port and the strictness toggle are worth overriding here.
     SCCACHE_WEBDAV_ENDPOINT = WEBDAV_ENDPOINT
     SCCACHE_WEBDAV_KEY_PREFIX = SCCACHE_WEBDAV_KEY_PREFIX
+    # Empty on the fleet, which is how WebDAV above stays the backend.
+    SCCACHE_BUCKET       = SCCACHE_BUCKET
+    SCCACHE_REGION       = SCCACHE_REGION
+    SCCACHE_S3_KEY_PREFIX = SCCACHE_S3_KEY_PREFIX
     SCCACHE_LOG          = SCCACHE_LOG
     MAX_JOBS            = MAX_JOBS
     SCCACHE_VERSION      = SCCACHE_VERSION
@@ -913,6 +945,10 @@ target "triton-wheel" {
     SCCACHE_VERSION     = SCCACHE_VERSION
     SCCACHE_WEBDAV_ENDPOINT = WEBDAV_ENDPOINT
     SCCACHE_WEBDAV_KEY_PREFIX = SCCACHE_WEBDAV_KEY_PREFIX
+    # Empty on the fleet, which is how WebDAV above stays the backend.
+    SCCACHE_BUCKET       = SCCACHE_BUCKET
+    SCCACHE_REGION       = SCCACHE_REGION
+    SCCACHE_S3_KEY_PREFIX = SCCACHE_S3_KEY_PREFIX
     SCCACHE_LOG         = SCCACHE_LOG
     MAX_JOBS            = MAX_JOBS
   }
@@ -976,6 +1012,10 @@ target "aiter-wheel" {
     PYTORCH_ROCM_ARCH   = PYTORCH_ROCM_ARCH
     SCCACHE_WEBDAV_ENDPOINT = WEBDAV_ENDPOINT
     SCCACHE_WEBDAV_KEY_PREFIX = SCCACHE_WEBDAV_KEY_PREFIX
+    # Empty on the fleet, which is how WebDAV above stays the backend.
+    SCCACHE_BUCKET       = SCCACHE_BUCKET
+    SCCACHE_REGION       = SCCACHE_REGION
+    SCCACHE_S3_KEY_PREFIX = SCCACHE_S3_KEY_PREFIX
   }
 
   output = ["type=image,compression=zstd"]
@@ -1110,6 +1150,10 @@ target "cupy-wheel" {
     SCCACHE_VERSION         = SCCACHE_VERSION
     SCCACHE_WEBDAV_ENDPOINT = WEBDAV_ENDPOINT
     SCCACHE_WEBDAV_KEY_PREFIX = SCCACHE_WEBDAV_KEY_PREFIX
+    # Empty on the fleet, which is how WebDAV above stays the backend.
+    SCCACHE_BUCKET       = SCCACHE_BUCKET
+    SCCACHE_REGION       = SCCACHE_REGION
+    SCCACHE_S3_KEY_PREFIX = SCCACHE_S3_KEY_PREFIX
     MAX_JOBS                = MAX_JOBS
   }
 
@@ -1163,6 +1207,10 @@ target "nixl-wheel" {
     SCCACHE_VERSION         = SCCACHE_VERSION
     SCCACHE_WEBDAV_ENDPOINT = WEBDAV_ENDPOINT
     SCCACHE_WEBDAV_KEY_PREFIX = SCCACHE_WEBDAV_KEY_PREFIX
+    # Empty on the fleet, which is how WebDAV above stays the backend.
+    SCCACHE_BUCKET       = SCCACHE_BUCKET
+    SCCACHE_REGION       = SCCACHE_REGION
+    SCCACHE_S3_KEY_PREFIX = SCCACHE_S3_KEY_PREFIX
   }
 
   output = ["type=image,compression=zstd"]
@@ -1227,6 +1275,10 @@ target "vllm" {
     SCCACHE_VERSION         = SCCACHE_VERSION
     SCCACHE_WEBDAV_ENDPOINT = WEBDAV_ENDPOINT
     SCCACHE_WEBDAV_KEY_PREFIX = SCCACHE_WEBDAV_KEY_PREFIX
+    # Empty on the fleet, which is how WebDAV above stays the backend.
+    SCCACHE_BUCKET       = SCCACHE_BUCKET
+    SCCACHE_REGION       = SCCACHE_REGION
+    SCCACHE_S3_KEY_PREFIX = SCCACHE_S3_KEY_PREFIX
   }
 
   output = ["type=image,compression=zstd"]
@@ -1317,6 +1369,10 @@ target "lmcache" {
     SCCACHE_VERSION         = SCCACHE_VERSION
     SCCACHE_WEBDAV_ENDPOINT = WEBDAV_ENDPOINT
     SCCACHE_WEBDAV_KEY_PREFIX = SCCACHE_WEBDAV_KEY_PREFIX
+    # Empty on the fleet, which is how WebDAV above stays the backend.
+    SCCACHE_BUCKET       = SCCACHE_BUCKET
+    SCCACHE_REGION       = SCCACHE_REGION
+    SCCACHE_S3_KEY_PREFIX = SCCACHE_S3_KEY_PREFIX
   }
 
   output = ["type=image,compression=zstd"]

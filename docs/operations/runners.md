@@ -127,12 +127,31 @@ account:
 
 ```bash
 gh variable set CODEBUILD_PROJECT --body <project-name>
-gh variable set NIGHTLY_ENABLED   --body true
+gh variable set ECR_REGISTRY      --body <acct>.dkr.ecr.<region>.amazonaws.com
+gh variable set AWS_REGION        --body <region>
+gh variable set NIGHTLY_ARCHES    --body gfx1201        # optional
+gh variable set NIGHTLY_ENABLED   --body true           # last
 ```
 
-`NIGHTLY_ENABLED` is the off switch. Unset it and the nightly's first
-job is skipped, so nothing queues against a project that is being
-rebuilt or an account that is being cleaned up.
+`NIGHTLY_ENABLED` is the off switch, and belongs last. Unset it and the
+nightly's first job is skipped, so nothing queues against a project
+that is being rebuilt or an account that is being cleaned up.
+
+`NIGHTLY_ARCHES` narrows the matrix. The arch list is resolved from
+three places, most specific first:
+
+| | |
+| --- | --- |
+| `workflow_dispatch` input | one run only |
+| `NIGHTLY_ARCHES` variable | every scheduled run |
+| `ARCHES` in the Makefile | the default, all three |
+
+Start at one architecture. The first few nights are shaking out the
+build image and the IAM role, and three simultaneous failures are
+three times the log for the same single cause. Widen by setting the
+variable — no commit, and no re-deciding it by hand on every dispatch,
+which is how a temporary single-arch nightly quietly becomes a
+three-arch bill.
 
 ## The nightly
 

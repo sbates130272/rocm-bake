@@ -28,6 +28,14 @@ ARG CUPY_REF=v14.2.0
 ARG PYTORCH_ROCM_ARCH=gfx950
 ARG ROCM_VERSION=10.1.0-full
 ARG SCCACHE_WEBDAV_ENDPOINT=http://snoc-strix.fold-leaffish.ts.net:8081
+
+# sccache on S3, for builds that are not on the fleet. Empty selects
+# the WebDAV store above: sccache treats an empty SCCACHE_BUCKET as
+# unset, so these are inert on SNOC. Credentials are NOT args — they
+# arrive as a BuildKit secret, so they stay out of image history.
+ARG SCCACHE_BUCKET=
+ARG SCCACHE_REGION=
+ARG SCCACHE_S3_KEY_PREFIX=rocm-pytorch
 # Key namespace within the shared store, and a unix socket rather than
 # a TCP port — the builders run with --driver-opt network=host, so a
 # fixed port is shared by every container on the node and two builds'
@@ -57,6 +65,9 @@ ENV ROCM_HOME=/opt/rocm \
     CUPY_INSTALL_USE_HIP=1 \
     HCC_AMDGPU_TARGET=${PYTORCH_ROCM_ARCH} \
     SCCACHE_WEBDAV_ENDPOINT=${SCCACHE_WEBDAV_ENDPOINT} \
+    SCCACHE_BUCKET=${SCCACHE_BUCKET} \
+    SCCACHE_REGION=${SCCACHE_REGION} \
+    SCCACHE_S3_KEY_PREFIX=${SCCACHE_S3_KEY_PREFIX} \
     SCCACHE_SERVER_UDS=/tmp/sccache.sock \
     SCCACHE_WEBDAV_KEY_PREFIX=${SCCACHE_WEBDAV_KEY_PREFIX} \
     SCCACHE_IGNORE_CLIENT_VERSION=1 \
@@ -123,7 +134,14 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # setup.py directly rather than `python -m build`: cupy's build reads
 # the environment set above, and a PEP 517 front end would run it in an
 # isolated venv where ROCM_HOME and the HIP toolchain are not visible.
-RUN njobs="${MAX_JOBS}"; \
+# The secret is optional on purpose. On the fleet there is none and
+# sccache uses the WebDAV store; on S3 it carries the credentials,
+# which arrive as a tmpfs file for the life of this instruction and so
+# never reach image history, a layer, or a published tag. `set -a`
+# exports them for the sccache server that the compiler wrapper starts.
+RUN --mount=type=secret,id=aws,required=false \
+    if [ -s /run/secrets/aws ]; then set -a; . /run/secrets/aws; set +a; fi; \
+    njobs="${MAX_JOBS}"; \
     if [ -z "${njobs}" ]; then \
         cores=$(nproc); \
         njobs=$(awk -v per="${MEM_PER_JOB_GB}" '/^MemAvailable:/ {print int($2/1024/1024/per)}' /proc/meminfo); \

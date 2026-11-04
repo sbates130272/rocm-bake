@@ -1,6 +1,6 @@
 # Bake variables
 
-`rocm-bake.hcl` declares 49 variables and is the single source for every
+`rocm-bake.hcl` declares 52 variables and is the single source for every
 value a build reads. The Makefile parses the `variable` blocks at make
 parse time and reads the defaults out, so `make build-pytorch` and a
 bare `docker buildx bake pytorch` always agree.
@@ -88,9 +88,52 @@ architecture still does decide.
 | `SCCACHE_WEBDAV_PORT` | `8081` | |
 | `SCCACHE_WEBDAV_ENDPOINT` | `""` | Composed from host and port; the Makefile supplies a resolved address |
 | `SCCACHE_WEBDAV_KEY_PREFIX` | `rocm-pytorch` | Namespace within the store |
+| `SCCACHE_BUCKET` | `""` | S3 store, for builds off the fleet. Empty selects WebDAV |
+| `SCCACHE_REGION` | `""` | Required whenever `SCCACHE_BUCKET` is set |
+| `SCCACHE_S3_KEY_PREFIX` | `rocm-pytorch` | Namespace within the bucket |
 | `SCCACHE_LOG` | `warn` | `debug` reveals what "Cache errors" is counting |
 | `SCCACHE_VERSION` | `0.19.0` | 0.8.0 is the floor for caching `hipcc -x hip` |
 | `REQUIRE_SCCACHE` | `1` | Refuse to compile when the store is unreachable |
+
+### WebDAV on the fleet, S3 off it
+
+The WebDAV store is nginx on the services node, reached over the
+tailnet. A rented build machine has neither, so it needs a store that
+outlives the machine — hence S3.
+
+The two coexist rather than replacing each other. sccache ranks S3
+above WebDAV and treats an empty `SCCACHE_BUCKET` as unset, so the S3
+variables are inert on SNOC. Verified against sccache 0.19.0 with a
+deliberately unresolvable WebDAV endpoint: unset and `""` both select
+WebDAV, a non-empty bucket selects S3.
+
+**Credentials are not variables.** They reach the build as a BuildKit
+secret mounted at `/run/secrets/aws` for the life of the instruction,
+so they never become a build arg and never land in image history or a
+published tag:
+
+```bash
+aws configure export-credentials --format env-no-export > /tmp/awscreds
+docker buildx bake -f rocm-bake.hcl --set '*.secrets=id=aws,src=/tmp/awscreds' \
+  cupy-wheel
+shred -u /tmp/awscreds
+```
+
+!!! warning "A readable-but-unwritable bucket caches nothing, silently"
+    `REQUIRE_SCCACHE=1` catches bad credentials and a missing bucket —
+    sccache probes the store at server start and aborts, so the build
+    fails in seconds rather than after an hour of uncached compiles.
+    What it cannot catch is a policy that grants reads but not writes.
+    Grant `s3:ListBucket` too: without it a missing key returns `403`
+    rather than `404`, and the probe fails for the wrong reason.
+
+!!! note "Session credentials expire"
+    Credentials sourced from the environment carry no expiry hint for
+    sccache to refresh against. A build longer than the session turns
+    every later cache operation into a `403`, *after* the preflight has
+    passed — so it degrades quietly. Use an `sts:assume-role` with an
+    explicit long `--duration-seconds` rather than a snapshot of
+    ambient container credentials.
 | `FORCE_RECACHE` | `false` | `true` recompiles everything, ignoring sccache |
 
 !!! warning "There is deliberately no `SCCACHE_SERVER_PORT`"

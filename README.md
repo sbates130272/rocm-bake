@@ -169,7 +169,7 @@ what a fleet run found:
 
 | | |
 | --- | --- |
-| `rocm-bake.hcl` | The build graph: 16 targets, 3 groups, 49 variables |
+| `rocm-bake.hcl` | The build graph: 16 targets, 3 groups, 52 variables |
 | `manifests/` | The fleets: which machines, what each is for, how fast its uplink |
 | `ansible/` | Makes a machine match the manifest; inventory is the manifest |
 | `Makefile` | Wrapper; reads what is built from `rocm-bake.hcl` and where from the manifest |

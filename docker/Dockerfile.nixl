@@ -36,6 +36,14 @@ ARG UCX_REF=v1.22.0
 ARG PYTORCH_ROCM_ARCH=gfx950
 ARG ROCM_VERSION=10.1.0-full
 ARG SCCACHE_WEBDAV_ENDPOINT=http://snoc-strix.fold-leaffish.ts.net:8081
+
+# sccache on S3, for builds that are not on the fleet. Empty selects
+# the WebDAV store above: sccache treats an empty SCCACHE_BUCKET as
+# unset, so these are inert on SNOC. Credentials are NOT args — they
+# arrive as a BuildKit secret, so they stay out of image history.
+ARG SCCACHE_BUCKET=
+ARG SCCACHE_REGION=
+ARG SCCACHE_S3_KEY_PREFIX=rocm-pytorch
 # Key namespace within the shared store, and a unix socket rather than a
 # TCP port — the builders run with --driver-opt network=host, so a fixed
 # SCCACHE_SERVER_PORT is shared by every container on the node and two
@@ -55,6 +63,9 @@ ENV ROCM_PATH=/opt/rocm \
     NIXL_HOME=/usr/local/nixl \
     PYTORCH_ROCM_ARCH=${PYTORCH_ROCM_ARCH} \
     SCCACHE_WEBDAV_ENDPOINT=${SCCACHE_WEBDAV_ENDPOINT} \
+    SCCACHE_BUCKET=${SCCACHE_BUCKET} \
+    SCCACHE_REGION=${SCCACHE_REGION} \
+    SCCACHE_S3_KEY_PREFIX=${SCCACHE_S3_KEY_PREFIX} \
     SCCACHE_SERVER_UDS=/tmp/sccache.sock \
     SCCACHE_WEBDAV_KEY_PREFIX=${SCCACHE_WEBDAV_KEY_PREFIX} \
     SCCACHE_IGNORE_CLIENT_VERSION=1 \

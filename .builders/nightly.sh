@@ -68,6 +68,46 @@ export REGISTRY REGISTRY_NAME
 
 log() { printf '%s %s\n' "$(date -u +%H:%M:%S)" "$*" >&2; }
 
+# sccache: WebDAV on the fleet, S3 off it. Empty SCCACHE_BUCKET leaves
+# the Dockerfiles on WebDAV, which is what makes this inert on SNOC.
+export SCCACHE_BUCKET="${SCCACHE_BUCKET:-}"
+export SCCACHE_REGION="${SCCACHE_REGION:-}"
+export SCCACHE_S3_KEY_PREFIX="${SCCACHE_S3_KEY_PREFIX:-rocm-pytorch}"
+
+# Credentials travel as a BuildKit secret, never as a build arg: an
+# arg is recorded in image history and would publish them with every
+# push. The file is 0600, lives only for this run, and is shredded on
+# exit however the script leaves.
+SECRET_ARGS=()
+CREDS_FILE=""
+cleanup_creds() {
+    [ -n "${CREDS_FILE}" ] && [ -f "${CREDS_FILE}" ] \
+        && shred -u "${CREDS_FILE}" 2>/dev/null
+    return 0
+}
+trap cleanup_creds EXIT INT TERM
+
+if [ -n "${SCCACHE_BUCKET}" ]; then
+    [ -n "${SCCACHE_REGION}" ] || {
+        echo "nightly: SCCACHE_BUCKET is set but SCCACHE_REGION is not" >&2
+        exit 1
+    }
+    CREDS_FILE="$(mktemp)"
+    chmod 600 "${CREDS_FILE}"
+    if aws configure export-credentials --format env-no-export \
+         > "${CREDS_FILE}" 2>/dev/null && [ -s "${CREDS_FILE}" ]; then
+        SECRET_ARGS=(--set "*.secrets=id=aws,src=${CREDS_FILE}")
+        log "sccache: S3 ${SCCACHE_BUCKET} (${SCCACHE_REGION}), credentials via secret mount"
+    else
+        echo "nightly: SCCACHE_BUCKET is set but no AWS credentials resolved;" \
+             "the build would fail at sccache server start" >&2
+        exit 1
+    fi
+else
+    log "sccache: WebDAV (no SCCACHE_BUCKET set)"
+fi
+
+
 # The default group, unless told otherwise. Read out of the bake file
 # rather than listed here, so a target added there is built here.
 if [ -n "${TARGETS_ARG}" ]; then
@@ -79,16 +119,76 @@ fi
 [ "${#TARGETS[@]}" -gt 0 ] || { echo "nightly: no targets resolved" >&2; exit 1; }
 log "arch ${ARCH}, ${#TARGETS[@]} targets: ${TARGETS[*]}"
 
-# ECR will not create a repository on push the way Zot does, and the
-# failure arrives at the end of a long build rather than the start.
+# A buildx builder on the docker-container driver. Not optional: the
+# default `docker` driver has no shared cache and cannot export one —
+# .builders/builder-create.sh says so in as many words — so on a fresh
+# machine every `cache-to type=registry,mode=max` in rocm-bake.hcl
+# fails. With ignore-error=true on all of them, that failure is silent
+# and the warm build is secretly cold for ever.
+#
+# A named builder rather than --use, so running this on a workstation
+# does not repoint that machine's default away from its fleet builder.
+BUILDER_NAME="${BUILDER_NAME:-rocm-nightly}"
+ensure_builder() {
+    if docker buildx inspect "${BUILDER_NAME}" >/dev/null 2>&1; then
+        log "builder ${BUILDER_NAME} exists"
+    else
+        log "creating builder ${BUILDER_NAME} (docker-container)"
+        docker buildx create --name "${BUILDER_NAME}" \
+            --driver docker-container --bootstrap >/dev/null || {
+                echo "nightly: could not create a docker-container builder;" \
+                     "cache export would silently fail" >&2
+                exit 1
+            }
+    fi
+}
+ensure_builder
+
+# The ECR repositories the build will actually push and cache to.
+#
+# NOT "<target>" and "<target>-cache": the repository name comes from
+# the tag, not the target, and the two differ. `pytorch-base` publishes
+# to rocm-pytorch/base and caches to base-cache; `pytorch-common` has no
+# repository of its own and caches into pytorch-cache; `pytorch-wheel`
+# shares pytorch-cache. Deriving names from the target list creates
+# repositories nothing uses and misses the ones the push needs — and
+# ECR, unlike Zot, will not create one on push, so the failure lands at
+# the end of a long build.
+ecr_repo_names() {
+    docker buildx bake -f rocm-bake.hcl --print default 2>/dev/null \
+        | python3 -I -c '
+import json, re, sys
+names = set()
+doc = json.load(sys.stdin)
+for spec in doc.get("target", {}).values():
+    for tag in spec.get("tags") or []:
+        m = re.search(r"/([^/:]+)(?::|$)", tag)
+        if m:
+            names.add(m.group(1))
+    for key in ("cache-to", "cache-from"):
+        for entry in spec.get(key) or []:
+            ref = entry.get("ref", "") if isinstance(entry, dict) else str(entry)
+            m = re.search(r"/([^/:,]+)(?::|,|$)", ref)
+            if m:
+                names.add(m.group(1))
+print("\n".join(sorted(n for n in names if n)))
+'
+}
+
 if [ "${ENSURE_ECR}" = 1 ]; then
-    for t in "${TARGETS[@]}" ; do
-        for repo in "${REGISTRY_NAME}/${t}" "${REGISTRY_NAME}/${t}-cache"; do
-            aws ecr describe-repositories --repository-names "${repo}" >/dev/null 2>&1 \
-                || aws ecr create-repository --repository-name "${repo}" \
-                     --image-tag-mutability MUTABLE >/dev/null 2>&1 \
-                || log "could not create ECR repo ${repo} (may already exist)"
-        done
+    mapfile -t ECR_REPOS < <(ecr_repo_names)
+    [ "${#ECR_REPOS[@]}" -gt 0 ] || {
+        echo "nightly: could not derive ECR repository names from bake" >&2
+        exit 1
+    }
+    log "ensuring ${#ECR_REPOS[@]} ECR repositories"
+    for name in "${ECR_REPOS[@]}"; do
+        repo="${REGISTRY_NAME}/${name}"
+        aws ecr describe-repositories --repository-names "${repo}" >/dev/null 2>&1 \
+            && continue
+        aws ecr create-repository --repository-name "${repo}" \
+            --image-tag-mutability MUTABLE >/dev/null 2>&1 \
+            || log "could not create ECR repo ${repo}"
     done
     log "ECR repositories ensured"
 fi
@@ -110,7 +210,9 @@ phase() {
     local start end rc cerr
     log "${name}: starting"
     start=$(date +%s)
-    docker buildx bake -f rocm-bake.hcl "$@" "${TARGETS[@]}" >"${logf}" 2>&1
+    docker buildx bake --builder "${BUILDER_NAME}" \
+        "${SECRET_ARGS[@]+"${SECRET_ARGS[@]}"}" \
+        -f rocm-bake.hcl "$@" "${TARGETS[@]}" >"${logf}" 2>&1
     rc=$?
     end=$(date +%s)
     cerr=$(cache_errors "${logf}")

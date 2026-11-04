@@ -43,6 +43,10 @@ on:
         type: boolean
         required: false
         default: true
+      targets:
+        description: 'Space-separated bake targets (default: the whole default group)'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -64,13 +68,30 @@ jobs:
       list: ${{ steps.pick.outputs.list }}
     steps:
       - uses: actions/checkout@v4
+      # Three sources, most specific first: the dispatch input, then a
+      # NIGHTLY_ARCHES repository variable, then the Makefile's ARCHES.
+      #
+      # The variable is the one that matters in practice. A nightly
+      # worth trusting starts on one architecture and widens once the
+      # image and the IAM role have been proven, and that decision
+      # should not require a commit — nor should it be re-made by hand
+      # on every dispatch, which is how a "temporary" single-arch
+      # nightly silently becomes a three-arch bill.
       - id: pick
+        env:
+          NIGHTLY_ARCHES: ${{ vars.NIGHTLY_ARCHES }}
         run: |
           arches="${{ inputs.arches }}"
+          source="workflow_dispatch input"
+          if [ -z "$arches" ]; then
+            arches="$NIGHTLY_ARCHES"
+            source="NIGHTLY_ARCHES repository variable"
+          fi
           if [ -z "$arches" ]; then
             arches=$(make -s arches-list | sed -n 's/^ARCHES = //p')
+            source="ARCHES in the Makefile"
           fi
-          echo "resolved: $arches"
+          echo "resolved: $arches  (from $source)"
           printf 'list=%s\n' \
             "$(printf '%s' "$arches" | jq -Rc 'split(" ") | map(select(length>0))')" \
             >> "$GITHUB_OUTPUT"
@@ -119,11 +140,18 @@ jobs:
           # here fails every cache export rather than falling back.
           REGISTRY_INSECURE: "false"
           CACHE_TAG_SUFFIX: -nightly
+          # sccache on S3 rather than the fleet's tailnet WebDAV store,
+          # which this machine cannot reach. Unset SCCACHE_BUCKET and
+          # the build falls back to WebDAV and fails at server start —
+          # loudly, which is the right failure.
+          SCCACHE_BUCKET: ${{ vars.SCCACHE_BUCKET }}
+          SCCACHE_REGION: ${{ vars.AWS_REGION }}
         run: |
           .builders/nightly.sh \
             --arch "${{ matrix.arch }}" \
             --out "/tmp/nightly-${{ matrix.arch }}" \
             --ensure-ecr \
+            ${{ inputs.targets && format('--targets ''{0}''', inputs.targets) || '' }} \
             ${{ inputs.skip_cold && '--skip-cold' || '' }} \
             ${{ inputs.push == false && '--no-push' || '' }}
 
