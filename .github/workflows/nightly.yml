@@ -43,6 +43,10 @@ on:
         type: boolean
         required: false
         default: true
+      targets:
+        description: 'Space-separated bake targets (default: the whole default group)'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -141,6 +145,7 @@ jobs:
             --arch "${{ matrix.arch }}" \
             --out "/tmp/nightly-${{ matrix.arch }}" \
             --ensure-ecr \
+            ${{ inputs.targets && format('--targets ''{0}''', inputs.targets) || '' }} \
             ${{ inputs.skip_cold && '--skip-cold' || '' }} \
             ${{ inputs.push == false && '--no-push' || '' }}
 
