@@ -208,7 +208,15 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # one cc1plus per job at ~2GB each, capped by core count. /proc is the
 # host's here, which is what we want — the balancer picks the node, and
 # this adapts to whichever it picked.
-RUN if [ -z "${MAX_JOBS}" ]; then \
+# sccache reads its credentials from the environment. On the fleet
+# there is no secret and the WebDAV store needs none; on S3 this is
+# the only way they reach the RUN sandbox, which has no ~/.aws and
+# cannot route to the container credential endpoint. The secret is a
+# tmpfs file for the life of this instruction, so it never lands in
+# image history or a published layer.
+RUN --mount=type=secret,id=aws,required=false \
+    if [ -s /run/secrets/aws ]; then set -a; . /run/secrets/aws; set +a; fi; \
+    if [ -z "${MAX_JOBS}" ]; then \
         cores=$(nproc); \
         jobs=$(awk -v per="${MEM_PER_JOB_GB}" '/^MemAvailable:/ {print int($2/1024/1024/per)}' /proc/meminfo); \
         [ -n "${jobs}" ] || jobs=${cores}; \

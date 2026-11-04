@@ -235,12 +235,35 @@ RUN printf 'server_startup_timeout_ms = 60000\n' > /etc/sccache.toml
 # Fail early and loudly rather than spending an hour rebuilding PyTorch
 # against a cache that silently is not there.
 ARG REQUIRE_SCCACHE=1
-RUN if sccache --show-stats > /dev/null 2>&1; then \
-        echo "sccache: server up, cache = ${SCCACHE_WEBDAV_ENDPOINT}"; \
+# sccache reads its credentials from the environment. On the fleet
+# there is no secret and the WebDAV store needs none; on S3 this is
+# the only way they reach the RUN sandbox, which has no ~/.aws and
+# cannot route to the container credential endpoint. The secret is a
+# tmpfs file for the life of this instruction, so it never lands in
+# image history or a published layer.
+RUN --mount=type=secret,id=aws,required=false \
+    if [ -s /run/secrets/aws ]; then set -a; . /run/secrets/aws; set +a; fi; \
+    if [ -n "${SCCACHE_BUCKET}" ]; then \
+        store="s3://${SCCACHE_BUCKET} (${SCCACHE_REGION})"; \
+    else \
+        store="${SCCACHE_WEBDAV_ENDPOINT}"; \
+    fi; \
+    if sccache --show-stats > /dev/null 2>&1; then \
+        echo "sccache: server up, cache = ${store}"; \
     elif [ "${REQUIRE_SCCACHE}" = "1" ]; then \
-        echo "ERROR: sccache could not reach ${SCCACHE_WEBDAV_ENDPOINT}." >&2; \
-        echo "  Check nginx on Strix (sccache-webdav site), and that this" >&2; \
-        echo "  builder was created with --driver-opt network=host." >&2; \
+        echo "ERROR: sccache could not reach ${store}." >&2; \
+        if [ -n "${SCCACHE_BUCKET}" ]; then \
+            echo "  The S3 backend is selected. Check that the build was" >&2; \
+            echo "  given --secret id=aws carrying AWS_ACCESS_KEY_ID," >&2; \
+            echo "  AWS_SECRET_ACCESS_KEY and, for session credentials," >&2; \
+            echo "  AWS_SESSION_TOKEN; and that the policy grants" >&2; \
+            echo "  s3:ListBucket as well as Get/PutObject — without it" >&2; \
+            echo "  a missing key returns 403 rather than 404 and this" >&2; \
+            echo "  probe fails for the wrong reason." >&2; \
+        else \
+            echo "  Check nginx on Strix (sccache-webdav site), and that this" >&2; \
+            echo "  builder was created with --driver-opt network=host." >&2; \
+        fi; \
         echo "  Build anyway with --set '*.args.REQUIRE_SCCACHE=0'." >&2; \
         exit 1; \
     else \
@@ -323,7 +346,15 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # so SCCACHE_RECACHE=false enables it exactly as =true does. Exporting it
 # unconditionally put every build in write-only mode — sccache never read
 # the cache, so no build could ever hit.
-RUN if [ "${FORCE_RECACHE}" = "true" ] || [ "${FORCE_RECACHE}" = "1" ]; then \
+# sccache reads its credentials from the environment. On the fleet
+# there is no secret and the WebDAV store needs none; on S3 this is
+# the only way they reach the RUN sandbox, which has no ~/.aws and
+# cannot route to the container credential endpoint. The secret is a
+# tmpfs file for the life of this instruction, so it never lands in
+# image history or a published layer.
+RUN --mount=type=secret,id=aws,required=false \
+    if [ -s /run/secrets/aws ]; then set -a; . /run/secrets/aws; set +a; fi; \
+    if [ "${FORCE_RECACHE}" = "true" ] || [ "${FORCE_RECACHE}" = "1" ]; then \
         export SCCACHE_RECACHE=1; \
         echo "sccache: forced recache ON — cache reads disabled for this build"; \
     else \

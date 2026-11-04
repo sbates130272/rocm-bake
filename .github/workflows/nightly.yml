@@ -173,8 +173,12 @@ jobs:
     # has to survive the failure it exists to describe.
     if: always() && needs.arches.result == 'success'
     runs-on: ubuntu-latest
+    # contents: write so this job can publish onto gh-pages. It is the
+    # build job that must not hold it — that one runs repository code
+    # on a machine with registry credentials. This one only reads
+    # artifacts and writes a page, on a GitHub-hosted runner.
     permissions:
-      contents: read
+      contents: write
       issues: write
     steps:
       - uses: actions/checkout@v4
@@ -210,6 +214,45 @@ jobs:
       # --force first because `gh issue create --label X` fails
       # outright when X does not exist — which would break this step
       # on the first night it had anything to say.
+      # A separate area from data/perf/, deliberately. Those runs come
+      # from perfrun.sh across the fleet, with per-target timings and
+      # sampling; these are two bake invocations on one rented
+      # machine. docs/performance/ opens with a warning about quoting
+      # one harness's numbers as another's, and merging them into one
+      # index would be that mistake made structural.
+      - name: Publish the run onto gh-pages
+        if: needs.build.result != 'skipped'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          stamp=$(date -u +%Y%m%dT%H%M%SZ)
+          git fetch origin gh-pages --depth=1
+          git worktree add /tmp/ghp origin/gh-pages --detach
+          dest="/tmp/ghp/data/nightly/${stamp}"
+          mkdir -p "$dest"
+          for d in /tmp/reports/nightly-*/; do
+            [ -d "$d" ] || continue
+            arch=$(basename "$d" | sed 's/^nightly-//')
+            mkdir -p "$dest/$arch"
+            cp "$d"/report.md "$d"/summary.json "$dest/$arch/" 2>/dev/null || true
+          done
+          cp /tmp/summary.md "$dest/index.md"
+          python3 -I .builders/nightlysite.py /tmp/ghp/data/nightly
+          cd /tmp/ghp
+          git add data/nightly
+          if git diff --cached --quiet; then
+            echo "nothing to publish"
+          else
+            git -c user.name='github-actions[bot]' \
+                -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+                commit -m "data: add nightly run ${stamp}"
+            # HEAD:gh-pages, not the branch name: this worktree is
+            # detached, and pushing the branch name would push the
+            # local ref rather than what was just committed.
+            git push origin HEAD:gh-pages
+          fi
+
       - name: File or update the nightly issue
         env:
           GH_TOKEN: ${{ github.token }}

@@ -284,7 +284,9 @@ BAKE_PRINT = docker buildx bake -f rocm-bake.hcl
         bench bench-report bench-data bench-publish \
         docs-deps docs-build docs-serve \
         version-check version-scrub version-scrub-check \
-        validate bake-plan setup
+        validate bake-plan setup \
+        arches-list arches-push-all arches-push-wheels \
+        arches-perf-warm arches-perf-cold
 
 # ─── Zot Registry ────────────────────────────────────────────────
 # zot runs as a bare-metal systemd service on Strix, deployed and owned
@@ -1046,6 +1048,36 @@ arches-%:
 			PYTORCH_ROCM_ARCH="$$a" BUILDER=$(BUILDER); \
 	done
 
+# The pattern rule above covers any target, which is flexible and
+# invisible. A pattern has no name, so it reaches neither `make help`
+# — which matches `^[a-zA-Z0-9_-]+:.*?## ` — nor shell completion,
+# which reads explicit targets out of the make database. The result is
+# a wrapper nobody can discover and the shell will not finish for you.
+#
+# So the ones worth reaching for get a real target each, over one
+# macro. An explicit target cannot delegate to the pattern rule by
+# name — `arches-push-all` would match itself and recurse — so the
+# loop lives here and both forms run the same thing.
+define arches_fanout
+@set -e; for a in $(ARCHES); do \
+	printf '\n\033[36m== %s  PYTORCH_ROCM_ARCH=%s\033[0m\n' "$(1)" "$$a"; \
+	$(MAKE_BIN) --no-print-directory "$(1)" \
+		PYTORCH_ROCM_ARCH="$$a" BUILDER=$(BUILDER); \
+done
+endef
+
+arches-push-all: ## Build and push every target, for every arch in ARCHES
+	$(call arches_fanout,push-all)
+
+arches-push-wheels: ## Build and push just the wheels, every arch
+	$(call arches_fanout,push-wheels)
+
+arches-perf-warm: ## Instrumented warm build, every arch in ARCHES
+	$(call arches_fanout,perf-warm)
+
+arches-perf-cold: ## Instrumented cold build, every arch in ARCHES
+	$(call arches_fanout,perf-cold)
+
 arches-list: ## Show the archs the arches-* wrappers fan out over
 	@printf 'ARCHES = %s\n' "$(ARCHES)"
 	@for a in $(ARCHES); do \
@@ -1054,6 +1086,11 @@ arches-list: ## Show the archs the arches-* wrappers fan out over
 	done
 	@printf '\nusage: make arches-push-all        # every target, every arch\n'
 	@printf '       make arches-push-wheels     # just the wheel artifacts\n'
+	@printf '       make arches-perf-warm       # instrumented, caches live\n'
+	@printf '       make arches-perf-cold       # instrumented, from nothing\n'
+	@printf '\nThose four are real targets, so help lists them and the shell\n'
+	@printf 'completes them. Any other make target also works through the\n'
+	@printf 'arches-%% pattern rule, undiscoverably:\n'
 	@printf '       make arches-build-pytorch ARCHES=gfx1201\n'
 
 # ─── Per-arch pip index ──────────────────────────────────────────
