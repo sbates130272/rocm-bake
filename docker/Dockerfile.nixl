@@ -157,7 +157,15 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # on the later expansions — with an empty ARG the command reaching the
 # container is literally `-j""`. Compute into a name BuildKit does not
 # know about and read the ARG exactly once.
-RUN njobs="${MAX_JOBS}"; \
+# sccache reads its credentials from the environment. On the fleet
+# there is no secret and the WebDAV store needs none; on S3 this is
+# the only way they reach the RUN sandbox, which has no ~/.aws and
+# cannot route to the container credential endpoint. The secret is a
+# tmpfs file for the life of this instruction, so it never lands in
+# image history or a published layer.
+RUN --mount=type=secret,id=aws,required=false \
+    if [ -s /run/secrets/aws ]; then set -a; . /run/secrets/aws; set +a; fi; \
+    njobs="${MAX_JOBS}"; \
     if [ -z "${njobs}" ]; then \
         cores=$(nproc); \
         njobs=$(awk -v per="${MEM_PER_JOB_GB}" '/^MemAvailable:/ {print int($2/1024/1024/per)}' /proc/meminfo); \
@@ -230,7 +238,15 @@ RUN sed -i 's/"torch==2\.11\.\*"/"torch"/' pyproject.toml && \
 # base, a warning NIXL cannot see coming ends the build at [87/108].
 # Dropped rather than silenced per-warning: the next newer system
 # library will deprecate something else.
-RUN njobs="${MAX_JOBS}"; \
+# sccache reads its credentials from the environment. On the fleet
+# there is no secret and the WebDAV store needs none; on S3 this is
+# the only way they reach the RUN sandbox, which has no ~/.aws and
+# cannot route to the container credential endpoint. The secret is a
+# tmpfs file for the life of this instruction, so it never lands in
+# image history or a published layer.
+RUN --mount=type=secret,id=aws,required=false \
+    if [ -s /run/secrets/aws ]; then set -a; . /run/secrets/aws; set +a; fi; \
+    njobs="${MAX_JOBS}"; \
     [ -n "${njobs}" ] || njobs=$(nproc); \
     CC="sccache gcc" CXX="sccache g++" \
     meson setup build \
@@ -258,7 +274,15 @@ RUN njobs="${MAX_JOBS}"; \
 # base image's glibc. libamdhip64 is excluded because it belongs to the
 # ROCm installation in the consuming image, not to NIXL; libcore and
 # libpull are transitive and vary across base images.
-RUN ./contrib/tomlutil.py --wheel-name nixl-rocm pyproject.toml && \
+# sccache reads its credentials from the environment. On the fleet
+# there is no secret and the WebDAV store needs none; on S3 this is
+# the only way they reach the RUN sandbox, which has no ~/.aws and
+# cannot route to the container credential endpoint. The secret is a
+# tmpfs file for the life of this instruction, so it never lands in
+# image history or a published layer.
+RUN --mount=type=secret,id=aws,required=false \
+    if [ -s /run/secrets/aws ]; then set -a; . /run/secrets/aws; set +a; fi; \
+    ./contrib/tomlutil.py --wheel-name nixl-rocm pyproject.toml && \
     CC="sccache gcc" CXX="sccache g++" \
     python -m build --wheel --no-isolation --outdir /tmp/nixl_wheels \
         -C setup-args=-Ducx_path=${UCX_HOME} \
