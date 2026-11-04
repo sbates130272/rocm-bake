@@ -184,6 +184,7 @@ variable "SDE_NIXL"    { default = "" }
 variable "SDE_VLLM"    { default = "" }
 variable "SDE_LMCACHE" { default = "" }
 variable "SDE_CUPY"    { default = "" }
+variable "SDE_TORCHVISION" { default = "" }
 
 EPOCH_ROCM    = SDE_ROCM    != "" ? SDE_ROCM    : SDE_EPOCH
 EPOCH_BASE    = SDE_BASE    != "" ? SDE_BASE    : SDE_EPOCH
@@ -195,6 +196,7 @@ EPOCH_NIXL    = SDE_NIXL    != "" ? SDE_NIXL    : SDE_EPOCH
 EPOCH_VLLM    = SDE_VLLM    != "" ? SDE_VLLM    : SDE_EPOCH
 EPOCH_LMCACHE = SDE_LMCACHE != "" ? SDE_LMCACHE : SDE_EPOCH
 EPOCH_CUPY    = SDE_CUPY    != "" ? SDE_CUPY    : SDE_EPOCH
+EPOCH_TORCHVISION = SDE_TORCHVISION != "" ? SDE_TORCHVISION : SDE_EPOCH
 
 # Empty means each build derives its own job count from the node it
 # lands on, sized by memory rather than cores. Set it to pin one.
@@ -260,6 +262,19 @@ variable "AITER_REF" {
   default = "v0.1.28"
 }
 
+# torchvision, built from source because PyPI publishes it only as a
+# CUDA build — the one such thing in this pipeline, and not optional:
+# vLLM pulls timm, timm pulls torchvision, and transformers imports
+# torchvision.io at module scope. See Dockerfile.torchvision.
+#
+# 0.29.2 is the newest tag and the right one for torch 2.15: since
+# 0.29 torchvision is ABI-stable against torch and its setup.py asks
+# only for `torch >= 2.14`, so there is no torch== pin to fight and no
+# need for a version that moves in lockstep with PYTORCH_VERSION.
+variable "TORCHVISION_REF" {
+  default = "v0.29.2"
+}
+
 # ─── Input wiring ────────────────────────────────────────────────
 # Targets take their inputs from sibling targets through `target:`
 # named contexts. That is bake's dependency mechanism, and the only one
@@ -302,6 +317,7 @@ PUB_AITER   = "${REGISTRY}/${REGISTRY_NAME}/aiter-wheel:${PYTORCH_VERSION}-${ROC
 PUB_NIXL    = "${REGISTRY}/${REGISTRY_NAME}/nixl-wheel:${NIXL_REF}-${ROCM_VERSION}-${ARCH_TAG}"
 PUB_LMCACHE = "${REGISTRY}/${REGISTRY_NAME}/lmcache-wheel:${LMCACHE_REF}-${ROCM_VERSION}-${ARCH_TAG}"
 PUB_CUPY    = "${REGISTRY}/${REGISTRY_NAME}/cupy-wheel:${CUPY_REF}-${ROCM_VERSION}-${ARCH_TAG}"
+PUB_TORCHVISION = "${REGISTRY}/${REGISTRY_NAME}/torchvision-wheel:${TORCHVISION_REF}-${ROCM_VERSION}-${ARCH_TAG}"
 
 USE_PUB = PUBLISHED_INPUTS != ""
 
@@ -451,10 +467,19 @@ BASE_LABELS = {
 # RUN missed the cache across those two indexes, while the same digest
 # under a different tag hit.
 #
-# Applied to every image that is a parent or a named context — base,
-# pytorch, triton-wheel — and inherited by pytorch-wheel from pytorch.
-# pytorch-run and aiter-wheel keep their provenance: nothing builds
-# FROM them, so their digests may churn freely.
+# Applied to every image another target inherits a LAYER STACK from —
+# rocm-runtime, pytorch-src, pytorch-base, pytorch (and pytorch-wheel by
+# inheritance), triton-wheel. A churned digest there invalidates
+# everything built on top.
+#
+# The wheel artifacts keep their provenance: pytorch-run, aiter-wheel,
+# torchvision-wheel, cupy-wheel, nixl-wheel, lmcache-wheel. The older
+# note here said "nothing builds FROM them", which was never quite
+# true — Dockerfile.vllm does say `FROM ${AITER_WHEEL_IMAGE}`, and the
+# same for nixl, lmcache and torchvision. Those stages exist only to be
+# bind-mounted from, and each is a `scratch` image holding one wheel, so
+# a churned digest re-runs the `pip install` that was going to run
+# anyway. There is no layer stack underneath to lose.
 NO_PROVENANCE = ["type=provenance,disabled=true"]
 
 # Shared compiler cache on Strix (nginx WebDAV, durable on disk).
@@ -561,6 +586,7 @@ group "default" {
   targets = [
     "rocm-runtime", "pytorch-src", "pytorch-base", "pytorch",
     "pytorch-wheel", "triton-wheel", "aiter-wheel",
+    "torchvision-wheel",
     "cupy-wheel", "nixl-wheel", "vllm", "vllm-wheel",
     "lmcache", "lmcache-wheel",
   ]
@@ -571,7 +597,7 @@ group "default" {
 group "wheels" {
   targets = [
     "pytorch-wheel", "triton-wheel", "aiter-wheel", "nixl-wheel",
-    "cupy-wheel", "vllm-wheel", "lmcache-wheel",
+    "torchvision-wheel", "cupy-wheel", "vllm-wheel", "lmcache-wheel",
   ]
 }
 
@@ -586,7 +612,7 @@ group "wheels" {
 #
 # This group stays as a way to build the serving stack on its own.
 group "serving" {
-  targets = ["cupy-wheel", "nixl-wheel", "vllm", "vllm-wheel", "lmcache", "lmcache-wheel"]
+  targets = ["torchvision-wheel", "cupy-wheel", "nixl-wheel", "vllm", "vllm-wheel", "lmcache", "lmcache-wheel"]
 }
 
 # There was an `attrs = { cache-from/cache-to }` block here pointing at
@@ -1021,6 +1047,69 @@ target "aiter-wheel" {
   output = ["type=image,compression=zstd"]
 }
 
+# ─── torchvision wheel ───────────────────────────────────────────
+# Builds FROM the pytorch image, like aiter-wheel, and for the same
+# reason: setup.py imports torch to find the HIP toolchain and to
+# decide it is building for ROCm at all.
+#
+# Unlike aiter-wheel this one is a vLLM input rather than an optional
+# accelerator — timm pulls torchvision and transformers imports it at
+# module scope, so without this target the published vLLM image
+# carries PyPI's CUDA build and `import torchvision` fails on ROCm.
+# Dockerfile.vllm takes it as a context.
+target "torchvision-wheel" {
+  dockerfile = "docker/Dockerfile.torchvision"
+  # Pinned, not left to the last stage in the file — see aiter-wheel.
+  target     = "wheel"
+  platforms  = ["linux/amd64"]
+
+  tags = compact([
+    "${REGISTRY}/${REGISTRY_NAME}/torchvision-wheel:${TORCHVISION_REF}-${ROCM_VERSION}-${ARCH_TAG}",
+    "${REGISTRY}/${REGISTRY_NAME}/torchvision-wheel:latest",
+    VCS_REF != "" ? "${REGISTRY}/${REGISTRY_NAME}/torchvision-wheel:${TORCHVISION_REF}-${ROCM_VERSION}-${ARCH_TAG}-g${VCS_REF}" : "",
+  ])
+
+  labels = merge(OCI_LABELS, {
+    "org.opencontainers.image.title"       = "torchvision wheel"
+    "org.opencontainers.image.description" = "torchvision ${TORCHVISION_REF} built against PyTorch ${PYTORCH_VERSION}, ${PYTORCH_ROCM_ARCH}"
+    "org.opencontainers.image.version"     = "${TORCHVISION_REF}-${ROCM_VERSION}-${ARCH_TAG}"
+  })
+
+  cache-from = [
+    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/torchvision-wheel-cache:latest${CACHE_ARCH},mode=max,registry.insecure=${REGISTRY_INSECURE}",
+    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/torchvision-wheel-cache:latest${CACHE_ARCH}-ref,mode=max,registry.insecure=${REGISTRY_INSECURE}",
+  ]
+  cache-to   = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/torchvision-wheel-cache:latest${CACHE_ARCH}${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=${REGISTRY_INSECURE},ignore-error=true"]
+
+  # No transitional un-arch-scoped cache ref, unlike the targets above:
+  # this repo has never been published without ${CACHE_ARCH}, so there
+  # is no pre-scoping cache to read and pointing at one would only cost
+  # a registry round trip per build.
+
+  contexts = USE_PUB ? {} : {
+    pytorch-img = "target:pytorch"
+  }
+
+  args = {
+    BUILDKIT_BUILD_NAME = "rocm-pytorch-build/torchvision-wheel/${PYTORCH_ROCM_ARCH}/${RUN_ID}"
+    SOURCE_DATE_EPOCH   = EPOCH_TORCHVISION
+    PYTORCH_IMAGE       = USE_PUB ? PUB_PYTORCH : "pytorch-img"
+    TORCHVISION_REF     = TORCHVISION_REF
+    PYTORCH_ROCM_ARCH   = PYTORCH_ROCM_ARCH
+    ROCM_VERSION        = ROCM_VERSION
+    SCCACHE_VERSION     = SCCACHE_VERSION
+    SCCACHE_WEBDAV_ENDPOINT = WEBDAV_ENDPOINT
+    SCCACHE_WEBDAV_KEY_PREFIX = SCCACHE_WEBDAV_KEY_PREFIX
+    # Empty on the fleet, which is how WebDAV above stays the backend.
+    SCCACHE_BUCKET       = SCCACHE_BUCKET
+    SCCACHE_REGION       = SCCACHE_REGION
+    SCCACHE_S3_KEY_PREFIX = SCCACHE_S3_KEY_PREFIX
+    MAX_JOBS            = MAX_JOBS
+  }
+
+  output = ["type=image,compression=zstd"]
+}
+
 # ─── Minimal runtime image ───────────────────────────────────────
 target "pytorch-run" {
   dockerfile = "docker/Dockerfile.runtime"
@@ -1219,8 +1308,8 @@ target "nixl-wheel" {
 # ─── vLLM ────────────────────────────────────────────────────────
 # The serving image. Named contexts resolve to targets rather than
 # registry refs, so a single bake invocation can build pytorch, triton,
-# aiter and nixl and hand each result straight in — same reasoning as
-# aiter-wheel.
+# aiter, nixl and torchvision and hand each result straight in — same
+# reasoning as aiter-wheel.
 target "vllm" {
   dockerfile = "docker/Dockerfile.vllm"
   platforms  = ["linux/amd64"]
@@ -1254,6 +1343,7 @@ target "vllm" {
     aiter-wheels   = "target:aiter-wheel"
     nixl-wheels    = "target:nixl-wheel"
     lmcache-wheels = "target:lmcache-wheel"
+    torchvision-wheels = "target:torchvision-wheel"
   }
 
   args = {
@@ -1263,6 +1353,7 @@ target "vllm" {
     TRITON_WHEEL_IMAGE      = USE_PUB ? PUB_TRITON : "triton-wheels"
     AITER_WHEEL_IMAGE       = USE_PUB ? PUB_AITER : "aiter-wheels"
     NIXL_WHEEL_IMAGE        = USE_PUB ? PUB_NIXL : "nixl-wheels"
+    TORCHVISION_WHEEL_IMAGE = USE_PUB ? PUB_TORCHVISION : "torchvision-wheels"
     LMCACHE_WHEEL_IMAGE     = USE_PUB ? PUB_LMCACHE : "lmcache-wheels"
     VLLM_REF                = VLLM_REF
     # Same ref the aiter-wheel target built from: Dockerfile.vllm fetches

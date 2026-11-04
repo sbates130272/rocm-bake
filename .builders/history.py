@@ -168,6 +168,9 @@ OUR_IMAGES = {
     # were filtered here and, before the prefix was normalised, again
     # by the "rocm-pytorch-build/" test in ours().
     "nixl-wheel", "vllm", "vllm-wheel", "lmcache", "lmcache-wheel",
+    # cupy-wheel was missing here too, so its builds were filtered out
+    # of the layer-reuse panel the same way the serving stack once was.
+    "torchvision-wheel", "cupy-wheel",
 }
 
 

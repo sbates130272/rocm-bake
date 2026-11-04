@@ -440,18 +440,22 @@ RUN --mount=type=bind,from=torchwheels,source=/wheels,target=/wheels \
 
 # torchaudio, torchdata and torchvision are deliberately NOT installed.
 #
-# PyPI publishes them as CUDA builds, and they are the only thing in
-# this image that is. torchvision's extension fails to load against a
-# ROCm torch, which is not a latent problem — it is why serving has to
-# swap in a CPU torchvision at container start, and why
-# Dockerfile.vllm cannot import vLLM's own LMCache connector in a
-# verification step (transformers' image_utils imports torchvision at
-# module scope).
+# PyPI publishes them as CUDA builds, and they were the only thing in
+# this image that was. This step shipped several hundred MB of unusable
+# code, and did it under `|| true`, which is what kept the breakage
+# quiet.
 #
-# So this step shipped several hundred MB of unusable code, and did it
-# under `|| true`, which is what kept the breakage quiet. Restore it —
-# or better, a `torchvision-wheel` target — once there is a torchvision
-# built against our torch.
+# torchvision has since been answered properly: docker/Dockerfile.torchvision
+# builds it against this torch and Dockerfile.vllm installs that wheel,
+# which is what let vLLM's LMCache connector import check be restored.
+# It is still not installed *here*, and cannot be: torchvision-wheel
+# builds FROM this image, so installing it would be a cycle. Anything
+# that needs torchvision takes the wheel as a context, the way vllm
+# does.
+#
+# torchaudio and torchdata have no such target and nothing in this
+# stack imports them. Give them one the same way if that changes;
+# do not restore the PyPI install.
 
 # Triton, from our own wheel rather than PyPI. A source-built torch
 # wheel declares no triton dependency — upstream's published ROCm

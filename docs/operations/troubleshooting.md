@@ -186,9 +186,20 @@ image nobody has built.
 
 ### `import torchvision` Fails
 
-Known and not fixed here. torchvision is a CUDA wheel in these images;
-nothing in the text-model serving path touches it, but vision and video
-models will fail at serve time. See
+This should no longer happen: `torchvision-wheel` builds torchvision
+against this torch and `Dockerfile.vllm` installs it. If it does, the
+ROCm wheel has been replaced by PyPI's CUDA build somewhere — check
+what is actually installed:
+
+```bash
+python -c "import torchvision; print(torchvision.__version__)"
+```
+
+A version with no `+rocm` local segment is the CUDA wheel.
+`/etc/pip-constraints.txt` exists to make that resolution fail loudly
+rather than succeed, so also check that `PIP_CONSTRAINT` is still set
+in the container and that the constraints file still has a
+`torchvision==` line. See
 [Serving stack](../architecture/serving.md#three-upstream-constraints).
 
 ## Everything Is Slow And Nothing Is Obviously Broken

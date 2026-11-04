@@ -165,9 +165,13 @@ layer; the `*-wheel` images still publish it.
 ### Dependencies That Cannot Run Here
 
 The PyPI builds of `torchvision`, `torchaudio` and `torchdata` are CUDA
-builds, the only such thing here. On ROCm `torchvision`'s extension
-fails to load — why `Dockerfile.vllm` cannot import vLLM's own LMCache
-connector in a verification step. The optional-extras step that pulled
-them in carried `|| true`; it is gone from `Dockerfile.pytorch`, but
-vLLM's `timm` still reaches torchvision. See
+builds, the only such thing here, and on ROCm their extensions fail to
+load. The optional-extras step that pulled them in carried `|| true`
+and is gone from `Dockerfile.pytorch`.
+
+`torchvision` was the one that mattered, because vLLM's `timm` reaches
+it whether or not anything here asks for it. It now has its own target
+— `torchvision-wheel`, built against this torch — so the serving image
+carries a working one. `torchaudio` and `torchdata` still have none and
+nothing imports them. See
 [Serving stack](../architecture/serving.md).

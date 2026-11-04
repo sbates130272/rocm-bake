@@ -61,9 +61,19 @@ by inheritance:
 NO_PROVENANCE = ["type=provenance,disabled=true"]
 ```
 
-`pytorch-run`, `aiter-wheel`, `cupy-wheel`, `nixl-wheel`, `vllm` and
-`lmcache` keep theirs. Nothing builds `FROM` them, so their digests may
-churn freely.
+`pytorch-run`, `aiter-wheel`, `torchvision-wheel`, `cupy-wheel`,
+`nixl-wheel`, `vllm` and `lmcache` keep theirs — nothing inherits a
+layer stack from them, so their digests may churn freely.
+
+That is a weaker claim than "nothing builds `FROM` them", and the
+weaker one is the true one: `Dockerfile.vllm` does say
+`FROM ${AITER_WHEEL_IMAGE}` and the same for nixl, lmcache and
+torchvision. Those stages exist only to be bind-mounted from, and each
+is a `scratch` image holding one wheel — so a churned digest re-runs
+the `pip install` that was going to run anyway, rather than
+invalidating a chain of expensive layers underneath it. The cost that
+made `NO_PROVENANCE` worth having on `pytorch-base` is not present
+here.
 
 ## Labels
 

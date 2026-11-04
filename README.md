@@ -42,6 +42,7 @@ default — `PERF_BIND=` narrows it, `make perf-serve-stop` ends it.
 | Python | [python.org](https://www.python.org/) | `PYTHON_VERSION` | `3.14` |
 | Triton | [triton-lang/triton](https://github.com/triton-lang/triton) | `TRITON_VERSION` | `3.9.0` |
 | AITER | [ROCm/aiter](https://github.com/ROCm/aiter) | `AITER_REF` | `v0.1.28` |
+| torchvision | [pytorch/vision](https://github.com/pytorch/vision) | `TORCHVISION_REF` | `v0.29.2` |
 | NIXL | [ai-dynamo/nixl](https://github.com/ai-dynamo/nixl) | `NIXL_REF` | `v1.5.2` |
 | UCX | [openucx/ucx](https://github.com/openucx/ucx) | `UCX_REF` | `v1.22.0` |
 | vLLM | [vllm-project/vllm](https://github.com/vllm-project/vllm) | `VLLM_REF` | `v0.33.0` |
@@ -120,14 +121,15 @@ compiler cache on S3 — one measured night is $13.94. See
 ```text
 rocm-runtime ─► pytorch-base ─┬─► triton-wheel ─┬─► pytorch ─┬─► pytorch-run
                               │                 │            ├─► nixl-wheel
-                              │                 │            └─► aiter-wheel
+                              │                 │            ├─► aiter-wheel
+                              │                 │            └─► torchvision-wheel
                               │                 ├─► pytorch-wheel
                               │                 └─► pytorch-test
                               └─► cupy-wheel
 
 lmcache, lmcache-wheel  ◄─ cupy-wheel, nixl-wheel, pytorch, triton-wheel
 vllm,    vllm-wheel     ◄─ aiter-wheel, lmcache-wheel, nixl-wheel,
-                           pytorch, triton-wheel
+                           torchvision-wheel, pytorch, triton-wheel
 ```
 
 `rocm-runtime` is AMD's ROCm SDK cut down to the one GPU architecture
@@ -135,7 +137,7 @@ being built for and flattened into a single layer: 8.67 GB becomes
 1.54 GB, and every image downstream inherits the difference. See
 [Image sizes](https://sbates130272.github.io/rocm-bake/reference/image-sizes/).
 
-Fourteen targets, three groups (`default`, `wheels`, `serving`). Bake
+Sixteen targets, three groups (`default`, `wheels`, `serving`). Bake
 derives the DAG from each target's `contexts`, so asking for `vllm`
 alone builds everything it needs.
 

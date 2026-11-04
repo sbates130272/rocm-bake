@@ -1,6 +1,6 @@
 # Build Targets And Tags
 
-Fourteen targets. Every published repository is under
+Sixteen targets. Every published repository is under
 `snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/`, elided below.
 
 Each target emits **three** tags: a versioned one, `:latest`, and an
@@ -9,6 +9,7 @@ immutable `-g<sha>` tag whenever `VCS_REF` is non-empty.
 | Target | Repository | Versioned tag |
 | --- | --- | --- |
 | `rocm-runtime` | `rocm-runtime` | `${ROCM_VERSION}-${ARCH}` |
+| `pytorch-src` | `pytorch-src` | `${PYTORCH_VERSION}` (no arch, no ROCm) |
 | `pytorch-base` | `base` | `${ROCM_VERSION}-${PYTHON_VERSION}-${ARCH}` |
 | `pytorch` | `pytorch` | `${PYTORCH_VERSION}-${ROCM_VERSION}-${ARCH}` |
 | `pytorch-wheel` | `pytorch-wheel` | `${PYTORCH_VERSION}-${ROCM_VERSION}-${ARCH}` |
@@ -16,6 +17,7 @@ immutable `-g<sha>` tag whenever `VCS_REF` is non-empty.
 | `pytorch-test` | `pytorch` | `${PYTORCH_VERSION}-${ROCM_VERSION}-${ARCH}-test` |
 | `triton-wheel` | `triton-wheel` | `${TRITON_VERSION}-${ROCM_VERSION}` |
 | `aiter-wheel` | `aiter-wheel` | `${PYTORCH_VERSION}-${ROCM_VERSION}-${ARCH}` |
+| `torchvision-wheel` | `torchvision-wheel` | `${TORCHVISION_REF}-${ROCM_VERSION}-${ARCH}` |
 | `cupy-wheel` | `cupy-wheel` | `${CUPY_REF}-${ROCM_VERSION}-${ARCH}` |
 | `nixl-wheel` | `nixl-wheel` | `${NIXL_REF}-${ROCM_VERSION}-${ARCH}` |
 | `vllm` | `vllm` | `${VLLM_REF}-${ROCM_VERSION}-${ARCH}` |
@@ -28,11 +30,13 @@ With the current defaults that resolves to:
 ```
 rocm-runtime:10.1.0-full-gfx950
 base:10.1.0-full-3.14-gfx950
+pytorch-src:2.15.0
 pytorch:2.15.0-10.1.0-full-gfx950
 pytorch-wheel:2.15.0-10.1.0-full-gfx950
 runtime:2.15.0-10.1.0-full-gfx950
 triton-wheel:3.9.0-10.1.0-full
 aiter-wheel:2.15.0-10.1.0-full-gfx950
+torchvision-wheel:v0.29.2-10.1.0-full-gfx950
 cupy-wheel:v14.2.0-10.1.0-full-gfx950
 nixl-wheel:v1.5.2-10.1.0-full-gfx950
 vllm:v0.33.0-10.1.0-full-gfx950
@@ -66,9 +70,9 @@ base would overwrite a `gfx1201` one exactly as `runtime` once did.
 
 | Group | Members |
 | --- | --- |
-| `default` | `rocm-runtime`, `pytorch-base`, `pytorch`, `pytorch-wheel`, `triton-wheel`, `aiter-wheel`, `cupy-wheel`, `nixl-wheel`, `vllm`, `vllm-wheel`, `lmcache`, `lmcache-wheel` |
-| `wheels` | `pytorch-wheel`, `triton-wheel`, `aiter-wheel`, `nixl-wheel`, `cupy-wheel`, `vllm-wheel`, `lmcache-wheel` |
-| `serving` | `cupy-wheel`, `nixl-wheel`, `vllm`, `vllm-wheel`, `lmcache`, `lmcache-wheel` |
+| `default` | `rocm-runtime`, `pytorch-src`, `pytorch-base`, `pytorch`, `pytorch-wheel`, `triton-wheel`, `aiter-wheel`, `torchvision-wheel`, `cupy-wheel`, `nixl-wheel`, `vllm`, `vllm-wheel`, `lmcache`, `lmcache-wheel` |
+| `wheels` | `pytorch-wheel`, `triton-wheel`, `aiter-wheel`, `nixl-wheel`, `torchvision-wheel`, `cupy-wheel`, `vllm-wheel`, `lmcache-wheel` |
+| `serving` | `torchvision-wheel`, `cupy-wheel`, `nixl-wheel`, `vllm`, `vllm-wheel`, `lmcache`, `lmcache-wheel` |
 
 There is no `all` group. `pytorch-test` and `pytorch-run` are
 deliberately outside `default` —
@@ -90,6 +94,7 @@ repository root.
 | `Dockerfile.runtime` | `pytorch-run` |
 | `Dockerfile.triton` | `triton-wheel` |
 | `Dockerfile.aiter` | `aiter-wheel` |
+| `Dockerfile.torchvision` | `torchvision-wheel` |
 | `Dockerfile.cupy` | `cupy-wheel` |
 | `Dockerfile.nixl` | `nixl-wheel` |
 | `Dockerfile.vllm` | `vllm`, `vllm-wheel` |

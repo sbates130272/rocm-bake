@@ -68,6 +68,7 @@ the vertex whose command contains that marker:
 | `pytorch` | `/opt/pytorch/sccache-stats.txt` |
 | `triton-wheel` | `/wheels-triton-sccache-stats.txt` |
 | `aiter-wheel` | `/wheels-aiter-sccache-stats.txt` |
+| `torchvision-wheel` | `/wheels-torchvision-sccache-stats.txt` |
 
 Having found the step number, it reads that step's stats lines. With no
 marker present it falls back to the last stats block in the log, which

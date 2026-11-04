@@ -49,6 +49,15 @@ build nixl-wheel       180
 build aiter-wheel       72
 build lmcache-wheel     66
 
+# NOT YET MEASURED. 400 is a placeholder and deliberately on the high
+# side. torchvision compiles ~25 ops/hip/*.hip files for one
+# architecture — far less than triton or vLLM, more than AITER at
+# PREBUILD_KERNELS=2, which JIT-defers most of its work. Placed too
+# cheap it sorts last in ready_targets and lands on the weakest node,
+# and `vllm` waits on it. Re-measure with `make perf-warm` then
+# `make perf-report`.
+build torchvision-wheel 400
+
 # The image targets. These were absent until 2026-10-30, and the
 # absence was not harmless: cost_of falls back to build=1 for a target
 # with no row, so the scheduler believed `pytorch` cost one second.
@@ -122,3 +131,7 @@ cache lmcache-wheel    615890669
 cache cupy-wheel       402995659
 cache nixl-wheel       372131035
 cache pytorch-wheel   5046000000
+# NOT YET MEASURED, like the build row above. 400MB is the cupy-wheel
+# figure, chosen because the two are the closest in shape: one
+# moderate HIP compile over a base this build does not re-export.
+cache torchvision-wheel 400000000
