@@ -68,6 +68,46 @@ export REGISTRY REGISTRY_NAME
 
 log() { printf '%s %s\n' "$(date -u +%H:%M:%S)" "$*" >&2; }
 
+# sccache: WebDAV on the fleet, S3 off it. Empty SCCACHE_BUCKET leaves
+# the Dockerfiles on WebDAV, which is what makes this inert on SNOC.
+export SCCACHE_BUCKET="${SCCACHE_BUCKET:-}"
+export SCCACHE_REGION="${SCCACHE_REGION:-}"
+export SCCACHE_S3_KEY_PREFIX="${SCCACHE_S3_KEY_PREFIX:-rocm-pytorch}"
+
+# Credentials travel as a BuildKit secret, never as a build arg: an
+# arg is recorded in image history and would publish them with every
+# push. The file is 0600, lives only for this run, and is shredded on
+# exit however the script leaves.
+SECRET_ARGS=()
+CREDS_FILE=""
+cleanup_creds() {
+    [ -n "${CREDS_FILE}" ] && [ -f "${CREDS_FILE}" ] \
+        && shred -u "${CREDS_FILE}" 2>/dev/null
+    return 0
+}
+trap cleanup_creds EXIT INT TERM
+
+if [ -n "${SCCACHE_BUCKET}" ]; then
+    [ -n "${SCCACHE_REGION}" ] || {
+        echo "nightly: SCCACHE_BUCKET is set but SCCACHE_REGION is not" >&2
+        exit 1
+    }
+    CREDS_FILE="$(mktemp)"
+    chmod 600 "${CREDS_FILE}"
+    if aws configure export-credentials --format env-no-export \
+         > "${CREDS_FILE}" 2>/dev/null && [ -s "${CREDS_FILE}" ]; then
+        SECRET_ARGS=(--set "*.secrets=id=aws,src=${CREDS_FILE}")
+        log "sccache: S3 ${SCCACHE_BUCKET} (${SCCACHE_REGION}), credentials via secret mount"
+    else
+        echo "nightly: SCCACHE_BUCKET is set but no AWS credentials resolved;" \
+             "the build would fail at sccache server start" >&2
+        exit 1
+    fi
+else
+    log "sccache: WebDAV (no SCCACHE_BUCKET set)"
+fi
+
+
 # The default group, unless told otherwise. Read out of the bake file
 # rather than listed here, so a target added there is built here.
 if [ -n "${TARGETS_ARG}" ]; then
@@ -171,6 +211,7 @@ phase() {
     log "${name}: starting"
     start=$(date +%s)
     docker buildx bake --builder "${BUILDER_NAME}" \
+        "${SECRET_ARGS[@]+"${SECRET_ARGS[@]}"}" \
         -f rocm-bake.hcl "$@" "${TARGETS[@]}" >"${logf}" 2>&1
     rc=$?
     end=$(date +%s)
