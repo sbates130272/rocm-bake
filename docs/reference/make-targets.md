@@ -170,12 +170,23 @@ See [Performance](../performance/index.md).
 | `perf-warm` | The same instrumentation on a *warm* build — caches on, pushes |
 | `perf-report` | Render the newest run as markdown plus SVG charts |
 | `perf-serve` | Serve the newest run's interactive chart on `:8090` |
+| `perf-serve-stop` | Stop it and free `PERF_PORT` |
+| `perf-serve-status` | Whether one is running, and where |
 | `perf-runs` | List collected runs, newest last |
+| `perf-publish` | Commit a run onto `gh-pages`; `PUSH=1` to push |
 
 The fleet flat out, rather than one target in isolation. Both build and
 push whatever the registry is missing first, so neither needs a manual
 bootstrap. `PERF_ARCH`, `PERF_TARGETS` and `PERF_BIND` configure them;
 see [Instrumented fleet runs](../performance/perf-runs.md).
+
+`perf-serve` and the published
+**[data/perf/](https://sbates130272.github.io/rocm-bake/data/perf/)**
+page are the same tool: `perf-publish` puts the chart `perf-serve`
+renders onto `gh-pages`, with a selector added across runs. Serve
+locally while a run is in flight — the page regenerates every 30 s and
+re-resolves which run is newest, so it picks up a run that started
+after the server did. Published runs are frozen and stop polling.
 
 ## Versions
 

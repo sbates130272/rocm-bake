@@ -28,7 +28,8 @@ comparable with each other — see [Live reports](reports.md).
 -   __[Fleet Runs ↗](https://sbates130272.github.io/rocm-bake/data/perf/)__
 
     Every wheel across all three SNOC nodes at once, instrumented.
-    Newest run, with a selector for every earlier one.
+    Newest run, with a selector for every earlier one. The same chart
+    serves a run still in flight — `make perf-serve`.
 
 -   __[Nightly Builds ↗](https://sbates130272.github.io/rocm-bake/data/nightly/)__
 
