@@ -18,6 +18,25 @@ Every pinned version is on the
 `make list-vars` prints what is in effect; `make version-check`
 compares it against upstream and against the published wheels.
 
+## Live Reports
+
+Two lanes publish measurements continuously. They are **not**
+comparable with each other — see [Live reports](reports.md).
+
+<div class="grid cards" markdown>
+
+-   __[Fleet Runs ↗](https://sbates130272.github.io/rocm-bake/data/perf/)__
+
+    Every wheel across all three SNOC nodes at once, instrumented.
+    Newest run, with a selector for every earlier one.
+
+-   __[Nightly Builds ↗](https://sbates130272.github.io/rocm-bake/data/nightly/)__
+
+    One warm bake per architecture on AWS CodeBuild, 02:17 UTC,
+    published to ECR.
+
+</div>
+
 ## Where To Start
 
 <div class="grid cards" markdown>
@@ -73,7 +92,7 @@ and owned outside this repository. The build targets inspect them and
 never start, stop or configure them.
 
 A second lane builds on AWS CodeBuild each night — no fleet, no
-instances to own. See [Building on AWS](operations/aws.md).
+instances to own, $13.94 a run. See [Building on AWS](operations/aws.md).
 
 ## Conventions
 

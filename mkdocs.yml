@@ -84,27 +84,31 @@ plugins:
 
 nav:
   - Home: index.md
-  - Quick start: quickstart.md
+  - Quick Start: quickstart.md
+  - Live Reports:
+      - reports.md
+      - Fleet Runs (SNOC) ↗: https://sbates130272.github.io/rocm-bake/data/perf/
+      - Nightly Builds (AWS) ↗: https://sbates130272.github.io/rocm-bake/data/nightly/
   - Architecture:
       - architecture/index.md
-      - The fleet: architecture/fleet.md
-      - Build graph: architecture/build-graph.md
+      - The Fleet: architecture/fleet.md
+      - Build Graph: architecture/build-graph.md
       - Caching: architecture/caching.md
       - Reproducibility: architecture/reproducibility.md
-      - Multiple GFX targets: architecture/multi-arch.md
-      - Serving stack: architecture/serving.md
+      - Multiple GFX Targets: architecture/multi-arch.md
+      - Serving Stack: architecture/serving.md
   - Performance:
       - performance/index.md
       - Methodology: performance/methodology.md
-      - Instrumented fleet runs: performance/perf-runs.md
+      - Instrumented Fleet Runs: performance/perf-runs.md
       - Telemetry: performance/telemetry.md
   - Reference:
       - reference/make-targets.md
-      - Bake variables: reference/bake-variables.md
-      - Build targets: reference/build-targets.md
-      - Image sizes: reference/image-sizes.md
+      - Bake Variables: reference/bake-variables.md
+      - Build Targets: reference/build-targets.md
+      - Image Sizes: reference/image-sizes.md
   - Operations:
       - operations/index.md
-      - CI runners: operations/runners.md
-      - Building on AWS: operations/aws.md
+      - CI Runners: operations/runners.md
+      - Building On AWS: operations/aws.md
       - Troubleshooting: operations/troubleshooting.md

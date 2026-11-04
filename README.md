@@ -4,7 +4,25 @@ Reproducible builds of PyTorch, Triton, AITER, CuPy, NIXL, vLLM and
 LMCache against ROCm, on a three-node BuildKit fleet, with every
 artifact published to a local OCI registry.
 
-**📖 Full documentation: <https://sbates130272.github.io/rocm-bake/>**
+**Full documentation: <https://sbates130272.github.io/rocm-bake/>**
+
+## Live Reports
+
+Two lanes publish measurements continuously, to the `gh-pages` branch.
+They are **not** comparable with each other.
+
+| | What it measures | Published |
+| --- | --- | --- |
+| **[Fleet runs][perf]** | Every wheel across all three SNOC nodes at once, instrumented — CPU, compiler-cache and registry traffic sampled throughout | on demand, from a build node |
+| **[Nightly builds][nightly]** | One warm bake per architecture on AWS CodeBuild, published to ECR — phase wall clock and cache errors | 02:17 UTC, from CI |
+
+A fleet run is a parallel build across three nodes sharing a compiler
+cache; a nightly is sequential bakes on one rented machine. Details:
+[Live reports][reports].
+
+[perf]: https://sbates130272.github.io/rocm-bake/data/perf/
+[nightly]: https://sbates130272.github.io/rocm-bake/data/nightly/
+[reports]: https://sbates130272.github.io/rocm-bake/reports/
 
 ## Versions
 
@@ -165,6 +183,8 @@ quote one as if it were the other.
 Measured results, why `warm` is an assertion rather than a number, and
 what a fleet run found:
 [Performance](https://sbates130272.github.io/rocm-bake/performance/).
+The live numbers are at **[data/perf/][perf]** and
+**[data/nightly/][nightly]**.
 
 ## Repository layout
 
@@ -191,9 +211,10 @@ make docs-build    # into dist/site; fails on a broken internal link
 ```
 
 Benchmark results are **not** committed to this branch. They are pushed
-onto `gh-pages` separately by `make bench-publish`, run from a build
-node, because that is the only place the numbers exist. The docs
-workflow preserves `data/` when it deploys.
+onto `gh-pages` separately by `make bench-publish` and `make
+perf-publish`, run from a build node, because that is the only place
+the numbers exist; the nightly's are written there by CI. The docs
+workflow preserves `data/` when it deploys. See [Live reports][reports].
 
 ## License
 
