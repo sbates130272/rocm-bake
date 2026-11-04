@@ -51,7 +51,7 @@ if [ "${#alive[@]}" -eq 0 ]; then
     exit 0
 fi
 
-# Record when we stopped, so `make watch` can tell a deliberate stop
+# Record when we stopped, so `make build-watch` can tell a deliberate stop
 # from a failure. buildkit files a client disconnect as status "Error"
 # with no detail, which made a stopped build look broken in the panel.
 # history.py relabels only records that were in flight at this instant.

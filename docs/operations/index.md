@@ -6,7 +6,7 @@ Day-to-day running of the fleet.
 
 ```bash
 make push-all BUILDER=snoc-pool    # build and publish everything, scheduled
-make watch                         # follow it from a second terminal
+make build-watch                   # follow it from a second terminal
 make layer-summary                 # how much of each image was rebuilt
 make cache-summary                 # is the compiler cache taking objects?
 ```

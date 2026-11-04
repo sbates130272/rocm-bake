@@ -72,7 +72,7 @@ make zot-check                     # is the registry up?
 make fleet-apply                   # bring every node to the manifest's state
 make builder-setup                 # a buildx builder per node
 make push-all BUILDER=snoc-pool    # build and publish everything
-make watch                         # follow it from a second terminal
+make build-watch                   # follow it from a second terminal
 ```
 
 The step-by-step version is in the

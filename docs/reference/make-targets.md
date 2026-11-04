@@ -70,14 +70,14 @@ change, and adopting one costs that node's content store:
 
 | Target | |
 | --- | --- |
-| `watch` | Live: history across every builder, a tail of each running build, layer reuse and cache deltas |
+| `build-watch` | Live: history across every builder, a tail of each running build, layer reuse and cache deltas |
 | `build-status` | Build records on `$(BUILDER)`, with the node each ran on |
 | `build-logs` | What a build's steps printed — `BUILD=<id>`, default most recent |
 | `build-inspect` | Duration, step count, cached steps, VCS revision |
 | `build-stop` | Cancel builds started from this repository |
 
 ```bash
-make watch WATCH_BUILDERS=snoc-think WATCH_LINES=40 WATCH_INTERVAL=2
+make build-watch WATCH_BUILDERS=snoc-think WATCH_LINES=40 WATCH_INTERVAL=2
 ```
 
 !!! tip "Two logs, easy to confuse"
