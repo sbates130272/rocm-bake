@@ -31,6 +31,8 @@ PROJECT="${CODEBUILD_PROJECT:-rocm-bake-nightly}"
 ROLE_NAME="${ROLE_NAME:-rocm-bake-codebuild-role}"
 REPO_SLUG="${REPO_SLUG:-sbates130272/rocm-bake}"
 REGISTRY_NAME="${REGISTRY_NAME:-rocm-pytorch}"
+# Account-suffixed because S3 bucket names are globally unique.
+SCCACHE_BUCKET="${SCCACHE_BUCKET:-}"
 CONNECTION_ARN=""
 DRY=0
 
@@ -62,6 +64,7 @@ ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/nu
     echo "codebuild-setup: no working AWS credentials" >&2; exit 1; }
 ECR_REGISTRY="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
 ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${ROLE_NAME}"
+SCCACHE_BUCKET="${SCCACHE_BUCKET:-rocm-bake-sccache-${ACCOUNT_ID}}"
 
 cat <<EOF
 account     ${ACCOUNT_ID}
@@ -69,6 +72,7 @@ region      ${REGION}
 project     ${PROJECT}
 role        ${ROLE_NAME}
 registry    ${ECR_REGISTRY}
+sccache     s3://${SCCACHE_BUCKET}
 connection  ${CONNECTION_ARN}
 $([ "${DRY}" = 1 ] && echo 'mode        DRY RUN — nothing will be created')
 EOF
@@ -157,6 +161,33 @@ for name in "${REPOS[@]}"; do
         || echo "      (could not set lifecycle policy)"
 done
 
+# ── 2b. the sccache bucket ───────────────────────────────────────
+# Objects are content-addressed and numerous, so no versioning (it
+# would double the object count for no benefit — a cache entry is
+# never updated in place) and an expiry, since an object nothing has
+# asked for in a month is not earning its storage.
+say "sccache bucket"
+if aws s3api head-bucket --bucket "${SCCACHE_BUCKET}" --region "${REGION}" \
+    >/dev/null 2>&1; then
+    echo "   exists  s3://${SCCACHE_BUCKET}"
+else
+    echo "   create  s3://${SCCACHE_BUCKET}"
+    run aws s3api create-bucket --bucket "${SCCACHE_BUCKET}" --region "${REGION}" \
+        --create-bucket-configuration "LocationConstraint=${REGION}" \
+        || echo "      (create failed — the name may be taken globally)"
+fi
+
+echo "   blocking public access"
+run aws s3api put-public-access-block --bucket "${SCCACHE_BUCKET}" \
+    --public-access-block-configuration \
+    'BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true' \
+    || echo "      (could not block public access)"
+
+echo "   setting a 30-day expiry"
+run aws s3api put-bucket-lifecycle-configuration --bucket "${SCCACHE_BUCKET}" \
+    --lifecycle-configuration '{"Rules":[{"ID":"expire-cold-objects","Status":"Enabled","Filter":{"Prefix":""},"Expiration":{"Days":30}}]}' \
+    || echo "      (could not set the lifecycle policy)"
+
 # ── 3. the service role ──────────────────────────────────────────
 say "IAM service role"
 TRUST=$(cat <<EOF
@@ -220,6 +251,18 @@ POLICY=$(cat <<EOF
       "Effect": "Allow",
       "Action": "ecr:CreateRepository",
       "Resource": "*"
+    },
+    {
+      "Sid": "SccacheObjects",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject"],
+      "Resource": "arn:aws:s3:::${SCCACHE_BUCKET}/*"
+    },
+    {
+      "Sid": "SccacheListBucket",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::${SCCACHE_BUCKET}"
     },
     {
       "Sid": "UseTheGitHubConnection",
@@ -299,6 +342,7 @@ cat <<EOF
   gh variable set CODEBUILD_PROJECT --repo ${REPO_SLUG} --body '${PROJECT}'
   gh variable set AWS_REGION        --repo ${REPO_SLUG} --body '${REGION}'
   gh variable set ECR_REGISTRY      --repo ${REPO_SLUG} --body '${ECR_REGISTRY}'
+  gh variable set SCCACHE_BUCKET    --repo ${REPO_SLUG} --body '${SCCACHE_BUCKET}'
   gh variable set NIGHTLY_ARCHES    --repo ${REPO_SLUG} --body 'gfx1201'
   gh variable set NIGHTLY_ENABLED   --repo ${REPO_SLUG} --body 'true'
 

@@ -140,6 +140,12 @@ jobs:
           # here fails every cache export rather than falling back.
           REGISTRY_INSECURE: "false"
           CACHE_TAG_SUFFIX: -nightly
+          # sccache on S3 rather than the fleet's tailnet WebDAV store,
+          # which this machine cannot reach. Unset SCCACHE_BUCKET and
+          # the build falls back to WebDAV and fails at server start —
+          # loudly, which is the right failure.
+          SCCACHE_BUCKET: ${{ vars.SCCACHE_BUCKET }}
+          SCCACHE_REGION: ${{ vars.AWS_REGION }}
         run: |
           .builders/nightly.sh \
             --arch "${{ matrix.arch }}" \
