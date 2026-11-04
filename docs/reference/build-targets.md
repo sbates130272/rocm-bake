@@ -1,4 +1,4 @@
-# Build targets and tags
+# Build Targets And Tags
 
 Fourteen targets. Every published repository is under
 `snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/`, elided below.
@@ -44,26 +44,23 @@ lmcache-wheel:v0.5.6-10.1.0-full-gfx950
 `make zot-tags REPO=rocm-pytorch/pytorch` lists what is actually
 published.
 
-## Three tags that are not what you would guess
+## Three Tags That Are Not What You Would Guess
 
 **`triton-wheel` carries no architecture and is version-prefixed.**
 Triton is a compiler and publishes one noarch wheel, so the tag is
-`3.9.0-10.1.0-full`, not `10.1.0-full-gfx950`. `wheelhouse.py` parses it
-without a gfx component for the same reason.
+`3.9.0-10.1.0-full`. `wheelhouse.py` parses it without a gfx component.
 
 **`pytorch-run` publishes to `runtime`, with the architecture.** It
-takes no `PYTORCH_ROCM_ARCH` argument — it compiles nothing — but it
-`COPY`s the torch wheel out of `pytorch`, so what it ships is as
-architecture-specific as that wheel is. Without the architecture in the
-tag a `gfx1201` runtime overwrote the `gfx950` one and only the digest
-told them apart.
+compiles nothing and takes no `PYTORCH_ROCM_ARCH`, but it `COPY`s the
+torch wheel out of `pytorch`, so what it ships is as
+architecture-specific as that wheel. Without the architecture in the tag
+a `gfx1201` runtime overwrote the `gfx950` one.
 
 **`base` carries the architecture now, and did not used to.** It builds
-FROM `rocm-runtime`, which holds kernel libraries for one card only —
-so the apt and pip layers on top are architecture-independent while
-what is underneath them is not. Without the architecture in the tag,
-and in the cache ref, a `gfx950` base would overwrite a `gfx1201` one
-exactly as `runtime` once did. See [Image sizes](image-sizes.md).
+FROM `rocm-runtime`, which holds kernel libraries for one card only, so
+the apt and pip layers on top are architecture-independent while what is
+underneath them is not. Without the architecture in the tag a `gfx950`
+base would overwrite a `gfx1201` one exactly as `runtime` once did.
 
 ## Groups
 
@@ -75,20 +72,16 @@ exactly as `runtime` once did. See [Image sizes](image-sizes.md).
 
 There is no `all` group. `pytorch-test` and `pytorch-run` are
 deliberately outside `default` —
-[why](../architecture/build-graph.md#groups).
-
-`wheels` is separate because each of its members builds `FROM` an image
-that must already be published, so the group cannot run against a cold
-registry.
-
-`WHEEL_REPOS` in the Makefile must match the `wheels` group;
-`check-defaults.py` fails CI if it drifts.
+[why](../architecture/build-graph.md#groups). `wheels` is separate
+because each of its members builds `FROM` an image that must already be
+published, so the group cannot run against a cold registry.
+`WHEEL_REPOS` in the Makefile must match it; `check-defaults.py` fails
+CI if it drifts.
 
 ## Dockerfiles
 
 Every Dockerfile lives in `docker/`, and the build context is always the
-repository root, so `rocm-bake.hcl` names them as
-`docker/Dockerfile.<image>`.
+repository root.
 
 | File | Produces |
 | --- | --- |
@@ -103,10 +96,9 @@ repository root, so `rocm-bake.hcl` names them as
 | `Dockerfile.lmcache` | `lmcache`, `lmcache-wheel` |
 
 A wheel target is the same Dockerfile built to its `wheel` stage, which
-is why `pytorch-wheel` inherits from `pytorch`, `vllm-wheel` from
-`vllm`, and `lmcache-wheel` from `lmcache`.
+is why each `*-wheel` inherits from its image target.
 
-## Image lifecycle
+## Image Lifecycle
 
 ```mermaid
 flowchart LR
@@ -116,10 +108,9 @@ flowchart LR
     pt --> rt["<b>runtime</b><br/>torch wheel installed<br/>no build tools"]
 ```
 
-## Cache repositories
+## Cache Repositories
 
 Each target exports its layers to a `*-cache` repository, listed in
-[Caching](../architecture/caching.md#2-the-layer-cache-in-zot). Note
-that `make clean-cache` only removes `base-cache`, `pytorch-cache`,
-`runtime-cache` and `cache` locally — it does not cover the other six
-repositories, and the registry itself must be pruned separately.
+[Caching](../architecture/caching.md#2-the-layer-cache-in-zot). `make
+clean-cache` removes only four of them, locally; the registry must be
+pruned separately.

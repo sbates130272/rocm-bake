@@ -1,18 +1,13 @@
-# Bake variables
+# Bake Variables
 
 `rocm-bake.hcl` declares 52 variables and is the single source for every
-value a build reads. The Makefile parses the `variable` blocks at make
-parse time and reads the defaults out, so `make build-pytorch` and a
-bare `docker buildx bake pytorch` always agree.
+value a build reads. The Makefile parses the `variable` blocks at parse
+time and reads the defaults out, so `make build-pytorch` and a bare
+`docker buildx bake pytorch` always agree; `check-defaults.py` fails CI
+if they drift. `make list-vars` prints what is actually in effect, and
+is authoritative if this page has aged.
 
-`make list-vars` prints the values actually in effect and is
-authoritative if this page has aged. `.builders/check-defaults.py` fails
-CI if a default is re-declared in the Makefile, or if the Makefile reads
-a variable that `rocm-bake.hcl` does not define.
-
-Change a default by editing its `variable` block.
-
-## Versions and refs
+## Versions And Refs
 
 <!-- BEGIN BAKE_VERSIONS -->
 
@@ -62,7 +57,7 @@ every `cache-from` and `cache-to` in the file, and leaving it `true`
 against an HTTPS registry fails the cache export rather than falling
 back, which `ignore-error=true` then swallows.
 
-## Architecture and build shape
+## Architecture And Build Shape
 
 | Variable | Default | |
 | --- | --- | --- |
@@ -80,7 +75,7 @@ everywhere unless pinned. See
 [Multiple GFX targets](../architecture/multi-arch.md) for what the
 architecture still does decide.
 
-## Compiler cache
+## Compiler Cache
 
 | Variable | Default | |
 | --- | --- | --- |
@@ -95,22 +90,20 @@ architecture still does decide.
 | `SCCACHE_VERSION` | `0.19.0` | 0.8.0 is the floor for caching `hipcc -x hip` |
 | `REQUIRE_SCCACHE` | `1` | Refuse to compile when the store is unreachable |
 
-### WebDAV on the fleet, S3 off it
+### WebDAV On The Fleet, S3 Off It
 
 The WebDAV store is nginx on the services node, reached over the
-tailnet. A rented build machine has neither, so it needs a store that
-outlives the machine — hence S3.
+tailnet; a rented machine has neither, so it needs a store that outlives
+it — hence S3. See [Building on AWS](../operations/aws.md).
 
-The two coexist rather than replacing each other. sccache ranks S3
-above WebDAV and treats an empty `SCCACHE_BUCKET` as unset, so the S3
-variables are inert on SNOC. Verified against sccache 0.19.0 with a
-deliberately unresolvable WebDAV endpoint: unset and `""` both select
-WebDAV, a non-empty bucket selects S3.
+The two coexist. sccache ranks S3 above WebDAV and treats an empty
+`SCCACHE_BUCKET` as unset, so the S3 variables are inert on SNOC.
+Verified against sccache 0.19.0: unset and `""` both select WebDAV, a
+non-empty bucket selects S3.
 
 **Credentials are not variables.** They reach the build as a BuildKit
-secret mounted at `/run/secrets/aws` for the life of the instruction,
-so they never become a build arg and never land in image history or a
-published tag:
+secret mounted for the life of the instruction, so they never become a
+build arg and never land in image history or a published tag:
 
 ```bash
 aws configure export-credentials --format env-no-export > /tmp/awscreds
@@ -121,32 +114,27 @@ shred -u /tmp/awscreds
 
 !!! warning "A readable-but-unwritable bucket caches nothing, silently"
     `REQUIRE_SCCACHE=1` catches bad credentials and a missing bucket —
-    sccache probes the store at server start and aborts, so the build
-    fails in seconds rather than after an hour of uncached compiles.
-    What it cannot catch is a policy that grants reads but not writes.
-    Grant `s3:ListBucket` too: without it a missing key returns `403`
-    rather than `404`, and the probe fails for the wrong reason.
+    sccache probes at server start and aborts. What it cannot catch is
+    a policy granting reads but not writes. Grant `s3:ListBucket` too:
+    without it a missing key returns `403` rather than `404`, and the
+    probe fails for the wrong reason.
 
 !!! note "Session credentials expire"
-    Credentials sourced from the environment carry no expiry hint for
-    sccache to refresh against. A build longer than the session turns
-    every later cache operation into a `403`, *after* the preflight has
-    passed — so it degrades quietly. Use an `sts:assume-role` with an
-    explicit long `--duration-seconds` rather than a snapshot of
-    ambient container credentials.
+    Credentials from the environment carry no expiry hint for sccache
+    to refresh against, so a build longer than the session turns every
+    later cache operation into a `403` *after* the preflight passed.
+    Prefer an `sts:assume-role` with an explicit long
+    `--duration-seconds`.
 | `FORCE_RECACHE` | `false` | `true` recompiles everything, ignoring sccache |
 
 !!! warning "There is deliberately no `SCCACHE_SERVER_PORT`"
     Build containers reach their sccache server over a unix socket,
     because the builders run with `network=host` and a fixed port would
     be shared fleet-wide. See
-    [Caching](../architecture/caching.md#3-the-compiler-cache). The
-    host-level daemon in `deploy-sccache.sh` does use a port, which is
-    fine — it is not in a container, and builds do not use it.
+    [Caching](../architecture/caching.md#3-the-compiler-cache).
 
-!!! note
-    Setting `SCCACHE_WEBDAV_ENDPOINT` yourself only affects a bare bake.
-    The Makefile exports its own resolved-address form unconditionally.
+    Setting `SCCACHE_WEBDAV_ENDPOINT` yourself only affects a bare bake
+    — the Makefile exports its own resolved form unconditionally.
 
 ## Reproducibility
 
@@ -157,13 +145,13 @@ shred -u /tmp/awscreds
 | `VCS_REF` | `""` | Supplied by the Makefile; gets a `-dirty` suffix |
 | `BUILD_DATE` | `""` | Supplied by the Makefile as the commit's own timestamp |
 
-The ten per-image variables are `SDE_ROCM`, `SDE_BASE`,
-`SDE_PYTORCH`, `SDE_TRITON`, `SDE_AITER`, `SDE_RUNTIME`, `SDE_NIXL`,
-`SDE_VLLM`, `SDE_LMCACHE` and `SDE_CUPY`. See
+The ten per-image variables are `SDE_ROCM`, `SDE_BASE`, `SDE_PYTORCH`,
+`SDE_TRITON`, `SDE_AITER`, `SDE_RUNTIME`, `SDE_NIXL`, `SDE_VLLM`,
+`SDE_LMCACHE` and `SDE_CUPY`. See
 [Reproducibility](../architecture/reproducibility.md) for why the epoch
-is a constant rather than a date from git history.
+is a constant.
 
-## Caching and scheduling
+## Caching And Scheduling
 
 | Variable | Default | |
 | --- | --- | --- |
@@ -171,7 +159,7 @@ is a constant rather than a date from git history.
 | `PUBLISHED_INPUTS` | `""` | `1` resolves sibling inputs from the registry instead of `target:` contexts |
 | `RUN_ID` | `dev` | Stamped into every BuildKit history record name |
 
-## Overriding without editing
+## Overriding Without Editing
 
 ```bash
 # A different PyTorch version

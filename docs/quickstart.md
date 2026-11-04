@@ -1,15 +1,14 @@
-# Quick start
+# Quick Start
 
 From nothing to a published PyTorch image. On a fleet that is already
 set up, skip to [step 5](#step-5-build).
 
 ## Prerequisites
 
-The fleet below is `manifests/snoc.yml`, which is what `FLEET`
-defaults to. Everything here reads that file, so a different fleet is
-a different manifest rather than a different set of instructions — see
-[The fleet](architecture/fleet.md) and
-[A fleet on AWS](operations/aws.md).
+The fleet below is `manifests/snoc.yml`, which is what `FLEET` defaults
+to. Everything here reads that file, so a different fleet is a different
+manifest rather than a different set of instructions — see
+[The fleet](architecture/fleet.md).
 
 - All nodes on the same Tailscale network.
 - `snoc-strix`: a `gfx1151` GPU, Docker 27+. Runs the Zot registry, the
@@ -25,12 +24,10 @@ docker buildx version
 ```
 
 !!! warning "The tailnet must bypass the corporate proxy"
-    `HTTP_PROXY` and `HTTPS_PROXY` are set in this environment but
-    `no_proxy` is not, so every proxy-aware tool — curl, Python's
-    urllib, and the Go binaries including `docker` — tries to reach
-    `snoc-*` through ZScaler and fails. The Makefile exports a
-    `NO_PROXY_LIST` for its own targets, but anything you run by hand
-    needs the same in your shell profile:
+    Every proxy-aware tool — curl, urllib, and the Go binaries
+    including `docker` — tries to reach `snoc-*` through ZScaler and
+    fails. The Makefile exports `NO_PROXY_LIST` for its own targets;
+    anything run by hand needs the same in your shell profile:
 
     ```bash
     export no_proxy=localhost,127.0.0.1,::1,.ts.net,.local,10.0.0.0/8,100.64.0.0/10
@@ -46,31 +43,24 @@ cd rocm-bake
 
 ## Step 2 — Check Zot
 
-Zot is the local OCI registry. It holds the published images, the
-BuildKit layer cache as OCI artifacts, and a pull-through mirror of
-Docker Hub, GHCR and Quay. It already runs on Strix as a bare-metal
-systemd service (`zot.service`, configured in `/etc/zot/config.json`),
-deployed and owned outside this repository.
+Zot is the local OCI registry: published images, the BuildKit layer
+cache as OCI artifacts, and a pull-through mirror of Docker Hub, GHCR
+and Quay. It runs on Strix as a bare-metal systemd service, deployed
+outside this repository.
 
 !!! danger "Do not start a second one"
-    Other services on the fleet pull through the same registry. Nothing
-    in this repository starts, stops or configures Zot — the `zot-*`
-    targets only inspect it.
+    Other services pull through the same registry. Nothing here starts,
+    stops or configures Zot — the `zot-*` targets only inspect it.
 
 ```bash
 make zot-check      # is it active and answering?
 make zot-catalog    # what does it hold?
 ```
 
-Anonymous read is open, so every pull, pull-through and cache read works
-unauthenticated. Only pushing needs the `ci` account from
-`/etc/zot/htpasswd`.
-
-Store that credential with `pass`, which is GPG-encrypted at rest and
-works over SSH. The `secretservice` helper does not: it fails with
-`Cannot create an item in a locked collection` whenever the
-gnome-keyring login collection has not been unlocked by a graphical
-session.
+Anonymous read is open; only pushing needs the `ci` account. Store that
+credential with `pass`, which is GPG-encrypted at rest and works over
+SSH — the `secretservice` helper fails with `Cannot create an item in a
+locked collection` unless gnome-keyring has been unlocked graphically.
 
 ```bash
 sudo apt-get install -y pass golang-docker-credential-helpers
@@ -80,13 +70,12 @@ docker login snoc-strix.fold-leaffish.ts.net:8080 -u ci
 docker-credential-pass list        # verify it landed
 ```
 
-One login on Strix covers the whole fleet: buildx sends registry auth
-from your local Docker config to the builder as a session attachment, so
-builds pushing from think or gaming use it too.
+One login on Strix covers the fleet: buildx sends registry auth to the
+builder as a session attachment.
 
 Zot also needs a raised HTTP read timeout, or pushing the ROCm base
 fails — its largest layer is 8.67 GB and cannot cross a 1 Gb/s link
-inside Zot's 60-second default. In `/etc/zot/config.json`:
+inside Zot's 60-second default:
 
 ```json
 "http": {
@@ -95,12 +84,12 @@ inside Zot's 60-second default. In `/etc/zot/config.json`:
 }
 ```
 
-then `sudo systemctl restart zot`. See
+then `sudo systemctl restart zot`.
 [Troubleshooting](operations/troubleshooting.md#push-dies-at-exactly-60-seconds)
-for what the failure looks like if you skip this.
+has what the failure looks like.
 
 The registry serves plain HTTP over the tailnet, so the Docker daemon
-needs it in `/etc/docker/daemon.json` (already set on Strix):
+needs it in `/etc/docker/daemon.json`:
 
 ```json
 {
@@ -110,9 +99,9 @@ needs it in `/etc/docker/daemon.json` (already set on Strix):
 ```
 
 `make fleet-apply` writes that file on every build node, from the
-manifest's registry, so it does not have to be edited by hand on each.
+manifest's registry.
 
-## Step 3 — Create the builders
+## Step 3 — Create The Builders
 
 ```bash
 make list-nodes             # which fleet this is, and what it declares
@@ -121,40 +110,30 @@ make builder-snoc-think     # or just one of them
 make builder-status         # what exists now
 ```
 
-There is no list of builders in the Makefile: `builder-setup` expands
-the node list from `manifests/$(FLEET).yml`, and `builder-<node>` is a
-pattern rule over the names in it. See
-[The fleet](architecture/fleet.md).
+There is no list of builders in the Makefile — `builder-setup` expands
+the manifest's node list. The remote nodes join over SSH to their Docker
+daemons, so neither needs buildkitd, TLS certificates or the plugin.
 
-The remote nodes join over SSH to their Docker daemons: buildx creates
-and owns a buildkit container on each, so neither needs buildkitd, TLS
-certificates, or the buildx plugin installed.
-
-Every builder is created with a `buildkitd.toml` rendered for that node
-from `.builders/buildkitd.toml.in` — the registry, the search domain
-and the resolvers all come from the manifest — and with
+Every builder gets a `buildkitd.toml` rendered for that node and
 `--driver-opt network=host`. Both are load-bearing:
 
-- the config carries plain HTTP to Zot, the pull-through mirrors, and a
-  `[dns]` block, because BuildKit writes its own `/etc/resolv.conf` for
-  the build sandbox and defaults it to `8.8.8.8` — without the block a
-  `RUN` step cannot resolve any tailnet name;
-- `network=host` gives the builder container the host's resolver,
-  MagicDNS included. Docker strips loopback nameservers when it writes a
-  bridged container's `resolv.conf`.
+- the config carries plain HTTP to Zot, the pull-through mirrors and a
+  `[dns]` block — BuildKit writes its own `resolv.conf` and defaults it
+  to `8.8.8.8`, so without the block a `RUN` step cannot resolve any
+  tailnet name;
+- `network=host` gives the builder the host's resolver, MagicDNS
+  included, which Docker strips from a bridged container's.
 
 !!! warning "Both are fixed at create time"
-    An existing builder does not pick up a later manifest or template
-    change. To adopt one — and lose that node's BuildKit content
-    store, which is the cost:
+    An existing builder does not pick up a later change. Adopting one
+    costs that node's BuildKit content store:
     `docker buildx rm snoc-strix && make builder-snoc-strix`.
 
-## Step 4 — Deploy the shared compiler cache
+## Step 4 — Deploy The Shared Compiler Cache
 
-Every build container runs its own sccache server, and all of them share
-one object store: nginx with the WebDAV modules, serving a plain
-directory tree on Strix at `:8081`. An object compiled on any node is a
-hit on the others.
+Every build container runs its own sccache server, all sharing one
+object store: nginx with the WebDAV modules on Strix at `:8081`. An
+object compiled on any node is a hit on the others.
 
 ```bash
 sudo ./.builders/deploy-webdav.sh
@@ -162,30 +141,20 @@ make cache-check                 # can every node reach it?
 make cache-summary               # endpoint, size, disk, deltas, hit rates
 ```
 
-The port and the storage path come from the manifest, so the deployer
-and the builders cannot disagree about where the store is. `make
-fleet-apply` runs this same script through the `sccache_store` role on
-whichever node the manifest marks `cache`, and `make fleet-check` then
-asks every node whether it can *write* to it — not just reach it,
-which is the question `cache-check` asks. A node that can only read
-compiles everything it is given and shares none of it, which looks
-exactly like a slow node rather than a broken one.
+The port and path come from the manifest, so the deployer and the
+builders cannot disagree about where the store is. `make fleet-check`
+asks every node whether it can *write* to it, not just reach it: a node
+that can only read compiles everything and shares none of it, which
+looks exactly like a slow node.
 
 !!! info "Why a durable store, and why WebDAV"
-    The store has to survive a reboot. An in-RAM store loses the whole
-    fleet's compiler cache on a power cycle, and an overflow tier does
-    not help — it is not durable storage and is never read back at
-    startup. A plain directory tree survives, can be backed up with
-    rsync, and is bounded only by the filesystem.
-
+    An in-RAM store loses the whole fleet's compiler cache on a power
+    cycle; a plain directory tree survives and backs up with rsync.
     WebDAV rather than S3/MinIO because `dl.min.io` is blocked by the
-    corporate proxy and MinIO is not packaged, whereas `nginx-extras`
-    is a normal apt install and sccache speaks WebDAV natively.
+    corporate proxy while `nginx-extras` is a normal apt install. Off
+    the fleet, [the nightly](operations/aws.md) uses S3.
 
 There is nothing to install on the other nodes.
-`.builders/deploy-sccache.sh` installs a *node-level* sccache daemon on
-port 4226; builds do not use it, and it is only for compiling on a host
-directly.
 
 ## Step 5 — Build
 
@@ -195,23 +164,22 @@ make build-all                        # every target, one builder
 make push-all BUILDER=snoc-pool       # scheduled across all three nodes
 ```
 
-`BUILDER=snoc-pool` is a sentinel, not a buildx builder: it routes the
-request through [the balancer](architecture/build-graph.md#the-balancer),
-which runs one bake per target on a chosen node and hands results
-between them through Zot.
+`BUILDER=snoc-pool` is a sentinel, not a buildx builder: it routes
+through [the balancer](architecture/build-graph.md#the-balancer), one
+bake per target, results handed between nodes through Zot.
 
 Each `make build-*` runs through `telemetry/build.sh`, which records
 duration, layer-cache hit ratio and sccache counters, then exits with
-the build's own status. `TELEMETRY=0 make build-pytorch` skips it.
+the build's own status. `TELEMETRY=0` skips it.
 
 The build refuses to start when the compiler-cache store is unreachable,
-rather than silently spending an hour recompiling everything:
+rather than silently recompiling everything:
 
 ```bash
 docker buildx bake -f rocm-bake.hcl --set '*.args.REQUIRE_SCCACHE=0' pytorch
 ```
 
-### Watch it
+### Watch It
 
 From a second terminal:
 
@@ -230,9 +198,9 @@ make builder-logs     # buildkitd's own log: registry, DNS, cache failures
 make build-stop       # cancel builds started from this repo
 ```
 
-`build-logs` is what the build's steps printed. `builder-logs` is the
-daemon underneath, and that is where a registry fault, a DNS fault or a
-cache fault shows up — often while the build itself merely looks slow.
+`build-logs` is what the steps printed; `builder-logs` is the daemon
+underneath, where a registry, DNS or cache fault shows up while the
+build merely looks slow.
 
 ## Step 6 — Verify
 
@@ -240,11 +208,9 @@ cache fault shows up — often while the build itself merely looks slow.
 make gpu-test GPU_HOST=snoc-thinkstation PYTORCH_ROCM_ARCH=gfx1201
 ```
 
-`gpu-test` runs the published image on a machine with a real GPU and
-checks per-dtype numerics. It exists because a BuildKit `RUN` step has
-no `/dev/kfd`, so nothing inside the build graph can prove the image
-works — and an incorrect `HSA_OVERRIDE_GFX_VERSION` once shipped
-undetected in every image.
+It checks per-dtype numerics on real hardware, and exists because a
+BuildKit `RUN` step has no `/dev/kfd` — an incorrect
+`HSA_OVERRIDE_GFX_VERSION` once shipped undetected in every image.
 
 By hand:
 
@@ -260,17 +226,17 @@ print(torch.cuda.is_available())   # True
 print(torch.cuda.get_device_name(0))
 ```
 
-## Step 7 — Measure it
+## Step 7 — Measure It
 
 ```bash
 make bench BENCH_SCENARIO=cold BUILDER=snoc-think
 make bench-report
 ```
 
-See [Performance](performance/index.md) for what the four scenarios
-mean and how to read the numbers.
+See [Performance](performance/index.md) for what the four scenarios mean
+and how to read the numbers.
 
-## Where next
+## Where Next
 
 - [Architecture](architecture/index.md) — the fleet, the build graph,
   and the caches
