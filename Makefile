@@ -267,6 +267,7 @@ BAKE_PRINT = docker buildx bake -f rocm-bake.hcl
         push-triton-wheel fetch-triton-wheel \
         push-nixl-wheel build-nixl-wheel fetch-nixl-wheel \
         push-cupy-wheel build-cupy-wheel fetch-cupy-wheel \
+        push-torchvision-wheel build-torchvision-wheel fetch-torchvision-wheel \
         build-vllm push-vllm push-vllm-wheel build-vllm-wheel fetch-vllm-wheel \
         build-lmcache push-lmcache push-lmcache-wheel build-lmcache-wheel \
         fetch-lmcache-wheel \
@@ -319,7 +320,7 @@ zot-tags: ## List tags for a repo (REPO=rocm-pytorch/base)
 # here — the same way the serving stack was absent from the layer
 # panel. Keep in step with the `wheels` group in rocm-bake.hcl.
 WHEEL_REPOS ?= pytorch-wheel triton-wheel aiter-wheel \
-               nixl-wheel cupy-wheel vllm-wheel lmcache-wheel
+               nixl-wheel torchvision-wheel cupy-wheel vllm-wheel lmcache-wheel
 
 # How many tags zot-wheels shows per repo, newest first. Every build
 # adds a tag and nothing removes them, so the full list is mostly
@@ -357,7 +358,8 @@ IMAGE_REPOS ?= rocm-runtime base pytorch runtime vllm lmcache
 # their sibling's cache repo and so are deliberately absent.
 CACHE_REPOS ?= rocm-runtime-cache base-cache pytorch-cache runtime-cache \
                vllm-cache lmcache-cache triton-wheel-cache \
-               aiter-wheel-cache cupy-wheel-cache nixl-wheel-cache
+               aiter-wheel-cache cupy-wheel-cache nixl-wheel-cache \
+               torchvision-wheel-cache
 
 # IMAGE_ARCH, not PYTORCH_ROCM_ARCH directly, so one table can be asked
 # for while a build for another architecture is in flight. Scoping to
@@ -924,6 +926,9 @@ build-triton-wheel: builder-ensure ## Build the Triton wheel image (no push)
 build-aiter-wheel: builder-ensure ## Build the AITER wheel image (no push)
 	$(call bake,aiter-wheel)
 
+build-torchvision-wheel: builder-ensure ## Build the torchvision wheel image (no push)
+	$(call bake,torchvision-wheel)
+
 # Not offered for the pool. Scheduling across nodes makes every target
 # its own bake invocation, so they cannot hand results to each other
 # through `target:` contexts — stage 2 would build against whatever is
@@ -992,7 +997,7 @@ _push-all: builder-ensure
 # registry — so naming only the group would either rebuild nothing
 # usable or, worse, schedule wheels against an image no run creates.
 # balance.sh orders them from the bake graph; nothing here says when.
-push-wheels: ## Push the wheel artifacts (torch, triton, aiter, nixl, vllm, lmcache)
+push-wheels: ## Push every wheel artifact (the `wheels` bake group)
 	@if [ "$(BUILDER)" = "$(POOL_BUILDER)" ]; then \
 		BALANCE_STREAM=$(BALANCE_STREAM) \
 		TARGETS="$$(python3 -I .builders/depgraph.py --group wheels) pytorch pytorch-base" \
@@ -1386,6 +1391,19 @@ push-aiter-wheel: builder-ensure ## * Build and push the AITER wheel image to Zo
 fetch-aiter-wheel: ## Fetch the AITER wheel from Zot into ./dist
 	@mkdir -p dist
 	@printf 'FROM %s/%s/aiter-wheel:latest\n' "$(REGISTRY)" "$(REGISTRY_NAME)" \
+		| docker buildx build --builder $(BUILDER) \
+			--output type=local,dest=dist -
+	@ls -la dist/wheels/
+
+# torchvision is not an optional extra either: PyPI ships only CUDA
+# builds, timm pulls it in, and transformers imports torchvision.io at
+# module scope. See Dockerfile.torchvision.
+push-torchvision-wheel: builder-ensure ## * Build and push the torchvision wheel image to Zot
+	$(call bake,torchvision-wheel,--push,pub)
+
+fetch-torchvision-wheel: ## Fetch the torchvision wheel from Zot into ./dist
+	@mkdir -p dist
+	@printf 'FROM %s/%s/torchvision-wheel:latest\n' "$(REGISTRY)" "$(REGISTRY_NAME)" \
 		| docker buildx build --builder $(BUILDER) \
 			--output type=local,dest=dist -
 	@ls -la dist/wheels/
@@ -1924,6 +1942,7 @@ list-vars: ## Show the variables these targets read, and their values
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' PYTHON_VERSION "$(PYTHON_VERSION)"
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' TRITON_REF "$(call bake_default,TRITON_REF)  (bake)"
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' AITER_REF "$(call bake_default,AITER_REF)  (bake)"
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' TORCHVISION_REF "$(call bake_default,TORCHVISION_REF)  (bake)"
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' NIXL_REF "$(NIXL_REF)"
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' UCX_REF "$(UCX_REF)  (built inside the nixl wheel)"
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' VLLM_REF "$(VLLM_REF)"
@@ -1948,7 +1967,7 @@ list-vars: ## Show the variables these targets read, and their values
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' SDE_EPOCH \
 		"$(call bake_default,SDE_EPOCH)  ($(shell date -u -d @$(call bake_default,SDE_EPOCH) '+%Y-%m-%d %H:%M' 2>/dev/null))  (bake)"
 	@printf '  %s\n' 'pinned into every image config; SDE_<IMAGE> overrides one'
-	@for v in $(foreach i,BASE PYTORCH TRITON AITER RUNTIME NIXL VLLM LMCACHE CUPY,$(if $(SDE_$(i)),SDE_$(i)=$(SDE_$(i)))); do \
+	@for v in $(foreach i,ROCM BASE PYTORCH TRITON AITER RUNTIME NIXL VLLM LMCACHE CUPY TORCHVISION,$(if $(SDE_$(i)),SDE_$(i)=$(SDE_$(i)))); do \
 		printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' "$${v%%=*}" "$${v#*=}  (overridden)"; \
 	done
 	@printf '\n$(C_BOLD)Serving$(C_OFF)  (make serve-vllm / serve-stack / serve-test)\n'

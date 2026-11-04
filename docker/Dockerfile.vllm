@@ -20,6 +20,14 @@ ARG PYTORCH_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/pytorch:late
 ARG TRITON_WHEEL_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/triton-wheel:latest
 ARG AITER_WHEEL_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/aiter-wheel:latest
 ARG NIXL_WHEEL_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/nixl-wheel:latest
+# torchvision is a dependency of this image whether or not anything
+# here asks for it: requirements/build/rocm.txt's replacement below
+# installs timm, timm requires torchvision, and transformers'
+# image_utils does `from torchvision.io import ...` at module scope.
+# PyPI only publishes CUDA builds, so left to pip this image gets a
+# torchvision whose _C_stable.so links libtorch_cuda and cannot load.
+# Dockerfile.torchvision builds the ROCm one; this is where it lands.
+ARG TORCHVISION_WHEEL_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/torchvision-wheel:latest
 # LMCache is a dependency of vLLM, not an optional companion. vLLM ships
 # its own connector, vllm/distributed/kv_transfer/kv_connector/v1/
 # lmcache_mp_connector.py, and that module imports lmcache.utils and
@@ -32,6 +40,7 @@ ARG LMCACHE_WHEEL_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/lmcach
 FROM ${TRITON_WHEEL_IMAGE} AS tritonwheels
 FROM ${AITER_WHEEL_IMAGE} AS aiterwheels
 FROM ${NIXL_WHEEL_IMAGE} AS nixlwheels
+FROM ${TORCHVISION_WHEEL_IMAGE} AS torchvisionwheels
 FROM ${LMCACHE_WHEEL_IMAGE} AS lmcachewheels
 
 # ─── Build environment: torch + the accelerator wheels ───────────
@@ -60,19 +69,42 @@ ENV ROCM_PATH=/opt/rocm \
 # a gigabyte of wheels that had already been installed. Mounted, they
 # exist for this RUN only.
 #
-# The wheels remain recoverable from triton-wheel, aiter-wheel and
-# nixl-wheel, which is what those targets are for.
+# The wheels remain recoverable from triton-wheel, aiter-wheel,
+# nixl-wheel and torchvision-wheel, which is what those targets are for.
 #
 # Order matters only in that triton must not be resolved from PyPI:
 # upstream triton has no ROCm 10.1 build and installing it would shadow
 # ours. --no-deps on the triton wheels keeps pip from "helpfully"
 # pulling a published triton as a transitive dependency.
+#
+# torchvision is --no-deps as insurance, not because a plain install is
+# known to break. Measured on this image: `pip install --dry-run` of the
+# wheel resolves cleanly — "Requirement already satisfied: torch>=2.14.0
+# ... (2.15.0a0+git31a77fc)" — so pip does count our source build's
+# pre-release version as satisfying torchvision's `torch >= 2.14`, and
+# would install nothing but torchvision itself.
+#
+# The guard is here anyway because of *where* this sits. If that
+# resolution ever did reach PyPI for a final torch, it would replace the
+# ROCm one with a CUDA build, and nothing would catch it:
+# /etc/pip-constraints.txt is what makes that failure loud for every
+# later install in this file, and it is generated from `pip list`, so it
+# cannot exist until torchvision is already in. This is the one
+# torchvision install with no net under it.
+#
+# Its two real dependencies are installed by hand right after. Both are
+# already in the PyTorch image (numpy 2.5.4, pillow 13.0.0 as measured),
+# so this is a no-op today and exists so that --no-deps does not quietly
+# become wrong if the base image stops carrying them.
 RUN --mount=type=bind,from=tritonwheels,source=/wheels,target=/w/triton \
     --mount=type=bind,from=aiterwheels,source=/wheels,target=/w/aiter \
     --mount=type=bind,from=nixlwheels,source=/wheels,target=/w/nixl \
+    --mount=type=bind,from=torchvisionwheels,source=/wheels,target=/w/torchvision \
     pip install --no-cache-dir --no-deps /w/triton/*.whl && \
     pip install --no-cache-dir /w/aiter/*.whl && \
-    pip install --no-cache-dir /w/nixl/*.whl
+    pip install --no-cache-dir /w/nixl/*.whl && \
+    pip install --no-cache-dir --no-deps /w/torchvision/*.whl && \
+    pip install --no-cache-dir numpy "pillow>=5.3.0,!=8.3.*"
 
 # AITER's wheel metadata does not carry its runtime dependencies — its
 # setup.py never folds requirements.txt into install_requires, so pip
@@ -97,15 +129,28 @@ RUN curl -fsSL \
 
 RUN python -c "import triton; print('triton', triton.__version__)" && \
     python -c "import aiter; print('aiter ok')" && \
-    python -c "from nixl._api import nixl_agent; print('nixl ok')"
+    python -c "from nixl._api import nixl_agent; print('nixl ok')" && \
+    python -c "import torchvision; print('torchvision', torchvision.__version__)" && \
+    python -c "\
+from torchvision.io import ImageReadMode, decode_image;\
+import torchvision.io.image as _tvi;\
+assert _tvi._has_image_ops(), 'torchvision image extension did not load';\
+print('torchvision.io ok — what transformers imports')"
 
-# A pip constraint pinning torch and triton to exactly what is installed.
-# Several entries in vLLM's requirement files, and in the transitive
-# closure below them, name torch or triton — and the versions they name
-# exist on PyPI as CUDA builds. Without this, one `pip install` deep in
-# the dependency graph silently replaces the ROCm torch this whole
-# pipeline exists to produce, and the failure surfaces much later as a
-# missing HIP runtime. With it, that resolution fails loudly instead.
+# A pip constraint pinning torch, torchvision and triton to exactly what
+# is installed. Several entries in vLLM's requirement files, and in the
+# transitive closure below them, name one of the three — and the
+# versions they name exist on PyPI as CUDA builds. Without this, one
+# `pip install` deep in the dependency graph silently replaces the ROCm
+# torch this whole pipeline exists to produce, and the failure surfaces
+# much later as a missing HIP runtime. With it, that resolution fails
+# loudly instead.
+#
+# torchvision is the one with a named culprit: requirements/build/rocm.txt's
+# replacement below installs `timm>=1.0.17`, which depends on
+# torchvision unconditionally. Our wheel versions itself
+# `0.29.2+rocm10.1.0`, a local segment PyPI cannot offer, so the pin is
+# unsatisfiable from anywhere but this image — which is the point.
 # Written with pip rather than a python heredoc: hadolint cannot parse
 # `RUN cmd <<'EOF'` and fails the lint job on a parse error, which no
 # --ignore can suppress. `pip list --format=freeze` always emits
@@ -113,7 +158,7 @@ RUN python -c "import triton; print('triton', triton.__version__)" && \
 # a locally-installed wheel, which is not a usable constraint). No pipe,
 # so a pip failure cannot be masked by a succeeding grep.
 RUN pip list --format=freeze > /tmp/pip-freeze.txt && \
-    grep -E '^(torch|triton)==' /tmp/pip-freeze.txt > /etc/pip-constraints.txt && \
+    grep -E '^(torch|torchvision|triton)==' /tmp/pip-freeze.txt > /etc/pip-constraints.txt && \
     rm /tmp/pip-freeze.txt && \
     cat /etc/pip-constraints.txt
 ENV PIP_CONSTRAINT=/etc/pip-constraints.txt
@@ -299,6 +344,11 @@ RUN cp requirements/rocm.txt /tmp/rocm.txt.orig && \
 # with the toolchain entries kept and the framework pins dropped. cmake is
 # capped below 4 for the same reason upstream caps it — vLLM's ROCm CMake
 # path does not survive the 4.x policy changes.
+#
+# timm is the entry that reaches torchvision. It is satisfied here, not
+# resolved: `deps` already installed the torchvision-wheel build, and
+# PIP_CONSTRAINT pins it, so timm finds its dependency present rather
+# than fetching PyPI's CUDA build over it.
 RUN pip install --no-cache-dir \
         "cmake>=3.26.1,<4" ninja "packaging>=24.2" \
         "setuptools>=78.1.1,<80.0.0" "setuptools-scm>=8" \
@@ -461,27 +511,23 @@ RUN --mount=type=bind,from=lmcachewheels,source=/wheels,target=/w/lmcache \
     python -c "import lmcache; print('LMCache', lmcache.__version__)" && \
     python -c "import torch; assert torch.version.hip, 'torch lost its HIP build'"
 
-# What this Dockerfile actually controls: the two modules vLLM's
-# connector imports at top level. Checking those proves the wheel is
-# installed and importable, which is the point of the step above.
+# The connector module itself, not just the two lmcache modules it
+# imports. This is the assertion that matters — it is the exact import
+# `--kv-transfer-config '{"kv_connector":"LMCacheMPConnector"}'`
+# performs at startup, so a failure here is a failure to serve.
 #
-# Importing vllm...lmcache_mp_connector itself would be the stronger
-# test and cannot pass here. It pulls in transformers, which imports
-# torchvision from image_utils, and the torchvision in this image is
-# the PyPI CUDA build that cannot load on ROCm:
+# It was weakened to the two leaf imports for a long time because this
+# import pulls in transformers, transformers' image_utils does
 #
-#     transformers/image_utils.py:54
-#       from torchvision.io import ImageReadMode, decode_image
-#     torchvision/__init__.py:8 -> fails
+#     from torchvision.io import ImageReadMode, decode_image
 #
-# That is a defect in Dockerfile.pytorch's optional-extras step, not in
-# anything here, and it is why serving currently needs the CPU
-# torchvision swapped in at container start. Restore the stronger
-# assertion once a HIP torchvision wheel is built against our torch.
+# at module scope, and the torchvision in this image was PyPI's CUDA
+# build, which cannot load on ROCm. torchvision-wheel is what fixed
+# that; this is the check that proves it, and it will fail loudly if
+# the ROCm torchvision is ever lost to a PyPI resolution.
 RUN python -c "\
-from lmcache.utils import init_logger;\
-from lmcache.integration.vllm.utils import mla_enabled;\
-print('lmcache client imports OK — what vllm lmcache_mp_connector needs')"
+from vllm.distributed.kv_transfer.kv_connector.v1 import lmcache_mp_connector;\
+print('vllm LMCacheMPConnector imports OK')"
 
 # ─── Wheel-only image ────────────────────────────────────────────
 FROM scratch AS wheel

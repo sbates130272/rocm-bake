@@ -103,7 +103,8 @@ names do not match their bake target:
 | `build-triton-wheel` / `push-triton-wheel` | `triton-wheel` (noarch) |
 
 The rest are the obvious ones: `pytorch`, `rocm-runtime`,
-`pytorch-src`, `aiter-wheel`, `cupy-wheel`, `nixl-wheel`, `vllm`,
+`pytorch-src`, `aiter-wheel`, `torchvision-wheel`, `cupy-wheel`,
+`nixl-wheel`, `vllm`,
 `vllm-wheel`, `lmcache`, `lmcache-wheel`. Group targets are
 `build-serving`/`push-serving`, `build-all`/`push-all` (the `default`
 group) and `push-wheels`.

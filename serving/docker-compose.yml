@@ -206,31 +206,47 @@ services:
       lmcache:
         condition: service_started
     entrypoint: ["/bin/bash", "-c"]
-    # One install before serving, working around an image defect:
+    # Nothing is installed here any more. Both things that used to be:
     #
-    #  torchvision  docker/Dockerfile.pytorch installs the PyPI (CUDA) build,
-    #               whose extension cannot load on ROCm. Present-but-
-    #               broken is worse than absent: transformers imports it
-    #               eagerly and `torchvision::nms does not exist` kills
-    #               the vllm CLI, while removing it makes vllm's model
+    #  torchvision  used to be uninstalled and replaced with the CPU
+    #               wheel from download.pytorch.org, because
+    #               Dockerfile.pytorch installed PyPI's CUDA build and
+    #               its extension cannot load on ROCm. Present-but-broken
+    #               was worse than absent: transformers imports it
+    #               eagerly and `torchvision::nms does not exist` killed
+    #               the vllm CLI, while removing it made vllm's model
     #               registry fail on minimax_m3's unconditional
     #               `from torchvision.transforms import InterpolationMode`.
-    #               The CPU wheel satisfies both; --no-deps stops it
-    #               pulling a CPU torch over the ROCm one.
-    #               Real fix: a HIP torchvision wheel built against our
-    #               torch, as a bake target.
+    #               The image now carries a HIP torchvision built against
+    #               our torch (docker/Dockerfile.torchvision), so the swap
+    #               would *undo* the fix — it would put a CPU build back
+    #               over a working GPU one. Replaced by the assertion
+    #               below, which covers both failing imports.
     #
-    # lmcache is NOT installed here any more: docker/Dockerfile.vllm carries it
-    # at build time. vLLM ships the MP connector itself but imports
-    # lmcache.utils from it, so it is a real dependency of the image
-    # rather than something to bolt on at startup. Installing it at run
-    # time also silently moved packages vLLM pins (grpcio 1.78 -> 1.85).
+    #  lmcache      docker/Dockerfile.vllm carries it at build time. vLLM
+    #               ships the MP connector itself but imports
+    #               lmcache.utils from it, so it is a real dependency of
+    #               the image rather than something to bolt on at
+    #               startup. Installing it at run time also silently
+    #               moved packages vLLM pins (grpcio 1.78 -> 1.85).
     command:
       - |
         set -e
-        pip uninstall -y torchvision torchaudio torchdata >/dev/null 2>&1 || true
-        pip install --no-cache-dir --no-deps -q \
-          --index-url https://download.pytorch.org/whl/cpu torchvision
+        python - <<'PY'
+        import torch, torchvision
+        import torchvision.io.image as tvi
+        from torchvision.io import ImageReadMode, decode_image
+        from torchvision.transforms import InterpolationMode
+        assert torch.ops.torchvision.nms, "torchvision::nms did not register"
+        assert torch.version.hip, "torch is not a HIP build"
+        # Not covered by the imports above: they succeed even when the
+        # image extension failed to dlopen, because torchvision swallows
+        # that error. Without this, a torchvision that cannot decode a
+        # single image passes every check and fails on the first
+        # multimodal request instead.
+        assert tvi._has_image_ops(), "torchvision image extension did not load"
+        print(f"torchvision {torchvision.__version__} on torch {torch.__version__}")
+        PY
         # KV_OFFLOAD=0 runs the same container, same namespaces, same
         # everything — just without the connector. That makes the A/B
         # honest: the connector is the only variable, rather than

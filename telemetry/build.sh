@@ -157,6 +157,8 @@ for ref in ${REFS}; do
                                                legacy="/wheels-sccache-stats.txt" ;;
         */aiter-wheel/*|*Dockerfile.aiter*)    marker="/wheels-aiter-sccache-stats.txt"
                                                legacy="/wheels-sccache-stats.txt" ;;
+        */torchvision-wheel/*|*Dockerfile.torchvision*)
+                                               marker="/wheels-torchvision-sccache-stats.txt" ;;
         *) marker="" ;;
     esac
 

@@ -41,6 +41,7 @@ them.
 | `pytorch`, `pytorch-wheel` | `pytorch-cache` |
 | `triton-wheel` | `triton-wheel-cache` |
 | `aiter-wheel` | `aiter-wheel-cache` |
+| `torchvision-wheel` | `torchvision-wheel-cache` |
 | `pytorch-run` | `runtime-cache` |
 | `cupy-wheel` | `cupy-wheel-cache` |
 | `nixl-wheel` | `nixl-wheel-cache` |

@@ -1,0 +1,339 @@
+# syntax=docker/dockerfile:1
+# torchvision (github.com/pytorch/vision) built as a standalone wheel,
+# against this repo's ROCm PyTorch.
+#
+# Why this exists. torchvision is the one package in this pipeline that
+# PyPI publishes only as a CUDA build, and it is not optional: vLLM
+# pulls timm, timm pulls torchvision, and transformers' image_utils
+# does `from torchvision.io import ImageReadMode, decode_image` at
+# module scope. So the published vLLM image carried a torchvision whose
+# _C_stable.so links libtorch_cuda and cannot load on ROCm — present
+# but broken, which is worse than absent. Dockerfile.pytorch's
+# optional-extras note and Dockerfile.vllm's weakened LMCache
+# verification both point here.
+#
+# Why it builds FROM the PyTorch image rather than the ROCm base: the
+# same reason as Dockerfile.aiter and Dockerfile.vllm. setup.py imports
+# torch at module scope — `IS_ROCM` is `torch.version.hip is not None`,
+# the extension classes come from torch.utils.cpp_extension, and the
+# hipify pass is torch's. torch has to be installed before the build
+# starts, not resolved alongside it.
+#
+# The result is a thin image whose only payload is /wheels/*.whl, same
+# shape as aiter-wheel and cupy-wheel: an OCI image buildx can push and
+# `contexts` can consume, with no second artifact store.
+
+ARG PYTORCH_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/pytorch:latest
+
+FROM ${PYTORCH_IMAGE} AS builder
+
+ARG TORCHVISION_REF=v0.29.2
+ARG PYTORCH_ROCM_ARCH=gfx950
+ARG ROCM_VERSION=10.1.0-full
+ARG SCCACHE_WEBDAV_ENDPOINT=http://snoc-strix.fold-leaffish.ts.net:8081
+
+# sccache on S3, for builds that are not on the fleet. Empty selects
+# the WebDAV store above: sccache treats an empty SCCACHE_BUCKET as
+# unset, so these are inert on SNOC. Credentials are NOT args — they
+# arrive as a BuildKit secret, so they stay out of image history.
+ARG SCCACHE_BUCKET=
+ARG SCCACHE_REGION=
+ARG SCCACHE_S3_KEY_PREFIX=rocm-pytorch
+# Key namespace within the shared store, and a unix socket rather than
+# a TCP port — the builders run with --driver-opt network=host, so a
+# fixed port is shared by every container on the node and two builds'
+# sccache servers cross. See the long note in Dockerfile.aiter.
+ARG SCCACHE_WEBDAV_KEY_PREFIX=rocm-pytorch
+ARG SCCACHE_VERSION=0.19.0
+# Pinned by content, not just by version tag: a release asset can be
+# replaced after publication. See Dockerfile.aiter.
+ARG SCCACHE_SHA256=aa73c7270c997894038c0d8f0d297865f57569e1687883322bc431713d4bb9dd
+# Empty means "derive from the node"; set it to pin a job count.
+ARG MAX_JOBS=
+# Memory budget per compile job, used to derive MAX_JOBS. These are
+# hipcc compiles of ops/hip/*.hip, closer to pytorch's cc1plus than to
+# AITER's light kernel compiles, so the shared 2GB convention applies.
+ARG MEM_PER_JOB_GB=2
+
+LABEL org.opencontainers.image.source="https://github.com/pytorch/vision"
+LABEL org.opencontainers.image.description="torchvision ${TORCHVISION_REF} for ROCm ${ROCM_VERSION}, ${PYTORCH_ROCM_ARCH}"
+
+# FORCE_CUDA is the whole reason this needs an explicit opt-in, and
+# getting it wrong is silent. setup.py decides whether to compile
+# device code with
+#
+#   BUILD_CUDA_SOURCES = (torch.cuda.is_available()
+#                         and (CUDA_HOME is not None or IS_ROCM)) or FORCE_CUDA
+#
+# and a BuildKit RUN has no /dev/kfd, so torch.cuda.is_available() is
+# False here. Without FORCE_CUDA the build succeeds and produces a
+# CPU-only wheel: torchvision imports fine, and then
+# `torchvision::nms does not exist` at the first call on a real GPU.
+# Exactly the trap AITER falls into when it shells out to rocminfo and
+# CuPy falls into with HCC_AMDGPU_TARGET unset — the arch check at the
+# end of this file is what turns it back into a build failure.
+#
+# PYTORCH_ROCM_ARCH is read by torch's own cpp_extension
+# (_get_rocm_arch_flags), which otherwise calls torch.cuda.get_arch_list()
+# and gets nothing for the same reason.
+#
+# TORCHVISION_USE_* are left at their defaults (all on) deliberately:
+# the image extension is the half transformers actually imports.
+ENV FORCE_CUDA=1 \
+    PYTORCH_ROCM_ARCH=${PYTORCH_ROCM_ARCH} \
+    ROCM_PATH=/opt/rocm \
+    SCCACHE_WEBDAV_ENDPOINT=${SCCACHE_WEBDAV_ENDPOINT} \
+    SCCACHE_BUCKET=${SCCACHE_BUCKET} \
+    SCCACHE_REGION=${SCCACHE_REGION} \
+    SCCACHE_S3_KEY_PREFIX=${SCCACHE_S3_KEY_PREFIX} \
+    SCCACHE_SERVER_UDS=/tmp/sccache.sock \
+    SCCACHE_WEBDAV_KEY_PREFIX=${SCCACHE_WEBDAV_KEY_PREFIX} \
+    SCCACHE_IGNORE_CLIENT_VERSION=1 \
+    SCCACHE_CONF=/etc/sccache.toml
+
+# hipcc's own launcher hook, which is the only way these compiles reach
+# sccache. torchvision builds through torch.utils.cpp_extension, which
+# writes a ninja file calling hipcc by absolute path — there is no
+# CMake in this build at all, so CMAKE_*_COMPILER_LAUNCHER would do
+# nothing. Same finding, and the same fix, as Dockerfile.aiter.
+ENV HIP_CLANG_LAUNCHER=/usr/local/bin/sccache
+
+# sccache lives in Dockerfile.pytorch's *builder* stage and never
+# reaches `final`, which is what this image is FROM.
+ADD --checksum=sha256:${SCCACHE_SHA256} \
+    "https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+    /tmp/sccache.tar.gz
+RUN tar xzf /tmp/sccache.tar.gz -C /usr/local/bin --strip-components=1 \
+        "sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache" && \
+    rm /tmp/sccache.tar.gz && chmod +x /usr/local/bin/sccache && sccache --version
+
+# Each RUN is a fresh container, so a build step has to start its own
+# sccache server, and startup probes the remote store. That probe is
+# bounded by a 10s timeout compiled into sccache — no environment
+# variable exists for it, only this config file field.
+RUN printf 'server_startup_timeout_ms = 60000\n' > /etc/sccache.toml
+
+# The image codecs. Dockerfile.base installs none of these, and their
+# absence is not an error: setup.py's find_libpng/find_library emit a
+# `warnings.warn("Building torchvision without JPEG support")` and
+# build an image_stable extension with the decoders compiled out. That
+# wheel then fails on the one import this whole target exists to make
+# work —
+#
+#     transformers/image_utils.py:54
+#       from torchvision.io import ImageReadMode, decode_image
+#
+# — so a warning here is a build failure, and the grep after the build
+# is what makes it one. libpng-config comes from libpng-dev, jpeglib.h
+# from libjpeg-dev, webp/decode.h from libwebp-dev.
+#
+# These are build-time only. Having them HERE is not enough, because the
+# -dev packages also drag in the runtime .so files that image_stable.so
+# then links against, and no consuming image has those — see the
+# auditwheel step below, which is what makes the wheel carry them.
+#
+# patchelf is auditwheel's backend.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libpng-dev \
+        libjpeg-dev \
+        libwebp-dev \
+        patchelf \
+    && rm -rf /var/lib/apt/lists/*
+
+# A tag, never a branch. A moving ref would be served from the layer
+# cache indefinitely once built, so an "update" would silently be a
+# no-op. Shallow: setup.py only needs version.txt and HEAD's sha.
+#
+# No submodules: unlike PyTorch and AITER, torchvision vendors its
+# third-party C sources (giflib) directly in torchvision/csrc.
+RUN git clone --depth 1 --branch ${TORCHVISION_REF} \
+    https://github.com/pytorch/vision.git /opt/vision
+
+WORKDIR /opt/vision
+
+# No hipify patch step and no CK pin to work around: setup.py's
+# ensure_hipified() runs torch.utils.hipify over torchvision/csrc/ops/cuda/*
+# into ops/hip/ on its own whenever IS_ROCM, and the ops are plain HIP
+# with no Composable Kernel in the tree.
+#
+# Not build dependencies — setup.py imports neither, and the PyTorch
+# image already carries both (numpy 2.5.4, pillow 13.0.0). They are here
+# because the verification step at the bottom uses Pillow to write the
+# image fixtures it decodes, and because naming them keeps that check
+# working if the base image ever stops shipping them.
+#
+# auditwheel is for the repair step further down.
+RUN pip install --no-cache-dir numpy "pillow>=5.3.0,!=8.3.*" auditwheel
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# `setup.py bdist_wheel`, not `python -m build`, for the same reason as
+# every other wheel here: a PEP 517 front end builds in an isolated
+# environment with no torch, and setup.py imports torch on line 15.
+#
+# BUILD_VERSION replaces setup.py's default of version.txt + the HEAD
+# sha. The sha form is reproducible too, but says nothing about what
+# the wheel was built against — and Dockerfile.vllm folds this version
+# into /etc/pip-constraints.txt, where a local segment PyPI cannot
+# satisfy is precisely the point: any later resolution that tries to
+# replace this wheel with a CUDA build fails loudly instead of quietly
+# succeeding.
+#
+# sccache reads its credentials from the environment. On the fleet
+# there is no secret and the WebDAV store needs none; on S3 this is the
+# only way they reach the RUN sandbox. The secret is a tmpfs file for
+# the life of this instruction, so it never lands in image history.
+RUN --mount=type=secret,id=aws,required=false \
+    if [ -s /run/secrets/aws ]; then set -a; . /run/secrets/aws; set +a; fi; \
+    export BUILD_VERSION="${TORCHVISION_REF#v}+rocm${ROCM_VERSION%%-*}"; \
+    echo "BUILD_VERSION=${BUILD_VERSION}"; \
+    if [ -z "${MAX_JOBS}" ]; then \
+        cores=$(nproc); \
+        jobs=$(awk -v per="${MEM_PER_JOB_GB}" '/^MemAvailable:/ {print int($2/1024/1024/per)}' /proc/meminfo); \
+        [ -n "${jobs}" ] || jobs=${cores}; \
+        [ "${jobs}" -ge 1 ] || jobs=1; \
+        [ "${jobs}" -le "${cores}" ] || jobs=${cores}; \
+        export MAX_JOBS=${jobs}; \
+        echo "MAX_JOBS=${MAX_JOBS} (from ${cores} cores, $(awk '/^MemAvailable:/ {printf "%.0fGB", $2/1048576}' /proc/meminfo) available, ${MEM_PER_JOB_GB}GB/job)"; \
+    else \
+        echo "MAX_JOBS=${MAX_JOBS} (pinned via build arg)"; \
+    fi; \
+    python setup.py bdist_wheel --dist-dir=/raw-wheels \
+    2>&1 | tee /wheels-build.log \
+    && sccache --show-stats | tee /wheels-torchvision-sccache-stats.txt
+
+SHELL ["/bin/sh", "-c"]
+
+# Bundle the image codecs into the wheel. Without this the target ships
+# the very defect it exists to remove, just moved from one extension to
+# the other.
+#
+# image_stable.so links -lpng -ljpeg -lwebp with no RUNPATH, so it comes
+# out with DT_NEEDED on libpng16.so.16, libjpeg.so.8 and libwebp.so.7.
+# Those arrive here from the -dev packages above and exist in no
+# consuming image: `ldconfig -p` in the PyTorch image finds zero of the
+# three. In Dockerfile.vllm, whose `deps` and `final` stages are both
+# FROM that image, `ldd image_stable.so` therefore reports all three
+# "not found".
+#
+# That failure is silent by construction. torchvision's extension.py
+# catches the OSError from dlopen and only warns when
+# TORCHVISION_WARN_WHEN_EXTENSION_LOADING_FAILS is set, so
+# `import torchvision` and even `from torchvision.io import decode_image`
+# both succeed — the import binds a Python function whose extension is
+# missing. The first actual decode then raises
+#
+#     RuntimeError: Couldn't load the image extension.
+#
+# Measured, not inferred: built without this step, a probe image got
+# `_has_image_ops() == False` and that RuntimeError, while every check
+# this Dockerfile and Dockerfile.vllm made still passed.
+#
+# auditwheel copies the three (plus libsharpyuv, which libwebp needs)
+# into torchvision.libs/ and rewrites RUNPATH, which is exactly what
+# download.pytorch.org's own wheels do and why the CPU torchvision that
+# serving used to swap in could decode images at all.
+#
+# Everything torch and ROCm is excluded: those belong to the consuming
+# image, not in a 1 MB wheel. Same reasoning as Dockerfile.nixl's
+# --exclude libamdhip64. No --plat, also like nixl: auditwheel picks the
+# lowest manylinux policy the symbols allow rather than a guess that may
+# sit below the base image's glibc. The result retags
+# linux_x86_64 -> manylinux_2_39_x86_64.
+#
+# patchelf rewriting an ELF that carries HIP fatbins is the obvious
+# hazard here, and it was tested rather than assumed: the repaired
+# _C_stable.so still carries all 7 gfx950 offload bundles, and the arch
+# check below runs on the repaired wheel, so a regression fails the
+# build.
+RUN auditwheel repair \
+        --exclude 'libtorch*' \
+        --exclude 'libc10*' \
+        --exclude 'libamdhip64*' \
+        --wheel-dir /wheels \
+        /raw-wheels/*.whl \
+    && rm -rf /raw-wheels
+
+# setup.py prints its configuration before it builds, and every one of
+# these lines is a decision that fails silently if it went the other
+# way. `warnings.warn("Building torchvision without JPEG support")` is
+# not an error to setuptools; it is to us.
+RUN set -eu; \
+    for want in \
+        "IS_ROCM = True" \
+        "BUILD_CUDA_SOURCES = True" \
+        "Building torchvision with PNG image support" \
+        "Building torchvision with JPEG image support" \
+        "Building torchvision with WEBP support" \
+    ; do \
+        grep -qF "${want}" /wheels-build.log || { \
+            echo "build log does not say: ${want}" >&2; exit 1; }; \
+    done; \
+    echo "torchvision build configuration verified"
+
+# The ROCm extension must actually carry code objects for the arch this
+# was built for. A mismatched PYTORCH_ROCM_ARCH — or a FORCE_CUDA that
+# did not take — produces a wheel that imports cleanly and then fails
+# at the first kernel launch on a real GPU, which is a long way from
+# here. Same check as Dockerfile.vllm's.
+RUN --mount=type=tmpfs,target=/tmp/tv-wheel \
+    set -eu; \
+    python -m zipfile -e /wheels/*.whl /tmp/tv-wheel; \
+    so=$(find /tmp/tv-wheel -type f -name '_C_stable*.so' | head -1); \
+    test -n "${so}"; \
+    echo "checking offload bundles in ${so}"; \
+    /opt/rocm/llvm/bin/llvm-objdump --offloading "${so}" \
+        | grep -oE 'gfx[0-9a-z]+' | sort -u | tee /wheels-arch.txt; \
+    for arch in $(echo "${PYTORCH_ROCM_ARCH}" | tr ';' ' '); do \
+        grep -qx "${arch}" /wheels-arch.txt || { \
+            echo "wheel has no code objects for ${arch}" >&2; exit 1; }; \
+    done
+
+# The import that Dockerfile.vllm could not make, made here. This needs
+# no GPU: the ops are registered when _C_stable.so is dlopened, so a
+# wheel linked against libtorch_cuda fails this on a ROCm host exactly
+# as it does in serving. torchvision.io is the half transformers wants;
+# torchvision.ops.nms is the op whose absence killed the vllm CLI.
+#
+# The imports alone are NOT a sufficient check and this step used to
+# stop there. `from torchvision.io import decode_image` succeeds against
+# a wheel whose image extension cannot load — that is the whole failure
+# mode the auditwheel step above exists to prevent, and it sailed
+# through this check. So: assert _has_image_ops() directly, and then
+# actually decode one image per codec. Pillow writes the fixtures
+# because a hand-written PNG is how this check got a false negative
+# once already (libpng rejected a bad IDAT CRC and segfaulted).
+#
+# `cd /` first, and not cosmetically: WORKDIR is the clone, which has a
+# torchvision/ package directory in it. Python puts the script's
+# directory first on sys.path, so importing from here would pick up the
+# source tree — which has no compiled extension — and test nothing.
+RUN pip install --no-cache-dir --no-deps /wheels/*.whl && \
+    cd / && python -c "\
+import io, torch, torchvision;\
+from PIL import Image;\
+from torchvision.io import ImageReadMode, decode_image;\
+from torchvision.transforms import InterpolationMode;\
+import torchvision.io.image as _tvi;\
+print('torchvision', torchvision.__version__, 'on torch', torch.__version__);\
+assert torch.ops.torchvision.nms, 'torchvision::nms did not register';\
+assert _tvi._has_image_ops(), 'image extension did not load — codecs not bundled?';\
+im = Image.new('RGB', (8, 4), (10, 20, 30));\
+[(lambda b: (im.save(b, format=f), print(' ', f, 'decodes ->', tuple(decode_image(torch.frombuffer(bytearray(b.getvalue()), dtype=torch.uint8)).shape))))(io.BytesIO()) for f in ('PNG', 'JPEG', 'WEBP')];\
+print('torchvision ops, io and all three codecs OK')"
+
+RUN ls -la /wheels/
+
+# ─── Wheel-only image ────────────────────────────────────────────
+# scratch, not the PyTorch image: this exists to be consumed by
+# `COPY --from=`, so it should carry the wheel and nothing else.
+FROM scratch AS wheel
+
+ARG PYTORCH_ROCM_ARCH
+ARG TORCHVISION_REF
+LABEL org.opencontainers.image.source="https://github.com/pytorch/vision"
+LABEL org.opencontainers.image.description="torchvision ${TORCHVISION_REF} wheel for ${PYTORCH_ROCM_ARCH}"
+
+COPY --from=builder /wheels/ /wheels/
+COPY --from=builder /wheels-build.log /wheels-torchvision-sccache-stats.txt \
+     /wheels-arch.txt /

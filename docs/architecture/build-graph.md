@@ -1,6 +1,6 @@
 # Build Graph
 
-`rocm-bake.hcl` declares fourteen buildable targets. Bake derives the
+`rocm-bake.hcl` declares sixteen buildable targets. Bake derives the
 DAG from the `contexts` each names and orders it itself, so asking for
 `vllm` alone builds everything beneath it in dependency order.
 
@@ -8,6 +8,7 @@ DAG from the `contexts` each names and orders it itself, so asking for
 flowchart TD
     rocm["rocm-runtime<br/><i>rocm/dev-ubuntu-26.04:10.1.0-full,<br/>pruned to one arch</i>"]
     base["pytorch-base"]
+    src["pytorch-src<br/><i>source only, noarch</i>"]
     triton["triton-wheel<br/><i>noarch</i>"]
     cupy["cupy-wheel"]
     pt["pytorch"]
@@ -15,6 +16,7 @@ flowchart TD
     run["pytorch-run"]
     test["pytorch-test"]
     aiter["aiter-wheel"]
+    tv["torchvision-wheel"]
     nixl["nixl-wheel<br/><i>+ UCX from source</i>"]
     lmc["lmcache"]
     lmcw["lmcache-wheel"]
@@ -22,6 +24,8 @@ flowchart TD
     vllmw["vllm-wheel"]
 
     rocm --> base
+    src --> pt
+    src --> ptw
     rocm --> run
     base --> triton
     base --> cupy
@@ -32,6 +36,7 @@ flowchart TD
     pt --> test
     pt --> aiter
     triton --> aiter
+    pt --> tv
     pt --> nixl
     pt --> lmc
     triton --> lmc
@@ -43,10 +48,11 @@ flowchart TD
     aiter --> vllm
     nixl --> vllm
     lmcw --> vllm
+    tv --> vllm
     vllm --> vllmw
 ```
 
-Four edges are not obvious from the names.
+Five edges are not obvious from the names.
 
 **`triton-wheel` builds from the base, not from `pytorch`.** Triton
 needs `cmake<4` while PyTorch pulls cmake 4.x, so they cannot share an
@@ -66,13 +72,22 @@ first — and on the scheduled path, be *published* first.
 **`lmcache` takes no AITER context**: its extension is cache movement,
 not GEMMs.
 
+**`vllm` consumes `torchvision-wheel`**, which looks like an optional
+extra and is not. vLLM's build requirements pull `timm`, `timm`
+requires torchvision, and `transformers`' `image_utils` imports
+`torchvision.io` at module scope. PyPI publishes only CUDA builds of
+it, so without this edge the serving image carries a torchvision that
+cannot load on ROCm. It hangs off `pytorch` because its `setup.py`
+imports torch to decide it is building for ROCm at all — which is also
+why it cannot be installed into `pytorch` itself.
+
 ## Groups
 
 | Group | Members |
 | --- | --- |
-| `default` | `rocm-runtime`, `pytorch-base`, `pytorch`, `pytorch-wheel`, `triton-wheel`, `aiter-wheel`, `cupy-wheel`, `nixl-wheel`, `vllm`, `vllm-wheel`, `lmcache`, `lmcache-wheel` |
-| `wheels` | `pytorch-wheel`, `triton-wheel`, `aiter-wheel`, `nixl-wheel`, `cupy-wheel`, `vllm-wheel`, `lmcache-wheel` |
-| `serving` | `cupy-wheel`, `nixl-wheel`, `vllm`, `vllm-wheel`, `lmcache`, `lmcache-wheel` |
+| `default` | `rocm-runtime`, `pytorch-src`, `pytorch-base`, `pytorch`, `pytorch-wheel`, `triton-wheel`, `aiter-wheel`, `torchvision-wheel`, `cupy-wheel`, `nixl-wheel`, `vllm`, `vllm-wheel`, `lmcache`, `lmcache-wheel` |
+| `wheels` | `pytorch-wheel`, `triton-wheel`, `aiter-wheel`, `nixl-wheel`, `torchvision-wheel`, `cupy-wheel`, `vllm-wheel`, `lmcache-wheel` |
+| `serving` | `torchvision-wheel`, `cupy-wheel`, `nixl-wheel`, `vllm`, `vllm-wheel`, `lmcache`, `lmcache-wheel` |
 
 There is no `all` group. Two targets are deliberately outside `default`:
 
@@ -161,7 +176,8 @@ rather than killing a target at step 1 after work is committed.
 depgraph: these images are needed but not published, and nothing in
 this run builds them:
   …/rocm-pytorch/pytorch:2.15.0-10.1.0-full-gfx1250
-      needed by: aiter-wheel, lmcache-wheel, nixl-wheel, vllm-wheel
+      needed by: aiter-wheel, lmcache-wheel, nixl-wheel,
+                 torchvision-wheel, vllm-wheel
    build it with: make push-pytorch
 ```
 

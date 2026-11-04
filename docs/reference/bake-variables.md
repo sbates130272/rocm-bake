@@ -19,6 +19,7 @@ is authoritative if this page has aged.
 | `TRITON_VERSION` | `3.9.0` |
 | `TRITON_REF` | `aad2a60d958f945420c5c40936b37d411fb02e89` |
 | `AITER_REF` | `v0.1.28` |
+| `TORCHVISION_REF` | `v0.29.2` |
 | `NIXL_REF` | `v1.5.2` |
 | `UCX_REF` | `v1.22.0` |
 | `VLLM_REF` | `v0.33.0` |
@@ -141,13 +142,13 @@ shred -u /tmp/awscreds
 | Variable | Default | |
 | --- | --- | --- |
 | `SDE_EPOCH` | `1700000000` | `SOURCE_DATE_EPOCH` pinned into every image config |
-| `SDE_BASE` … `SDE_CUPY` | `""` | Per-image overrides; empty means use `SDE_EPOCH` |
+| `SDE_BASE` … `SDE_TORCHVISION` | `""` | Per-image overrides; empty means use `SDE_EPOCH` |
 | `VCS_REF` | `""` | Supplied by the Makefile; gets a `-dirty` suffix |
 | `BUILD_DATE` | `""` | Supplied by the Makefile as the commit's own timestamp |
 
-The ten per-image variables are `SDE_ROCM`, `SDE_BASE`, `SDE_PYTORCH`,
-`SDE_TRITON`, `SDE_AITER`, `SDE_RUNTIME`, `SDE_NIXL`, `SDE_VLLM`,
-`SDE_LMCACHE` and `SDE_CUPY`. See
+The eleven per-image variables are `SDE_ROCM`, `SDE_BASE`,
+`SDE_PYTORCH`, `SDE_TRITON`, `SDE_AITER`, `SDE_RUNTIME`, `SDE_NIXL`,
+`SDE_VLLM`, `SDE_LMCACHE`, `SDE_CUPY` and `SDE_TORCHVISION`. See
 [Reproducibility](../architecture/reproducibility.md) for why the epoch
 is a constant.
 
