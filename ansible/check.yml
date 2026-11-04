@@ -4,7 +4,7 @@
 # fleet mid-build.
 #
 #   ansible-playbook check.yml
-#   FLEET=aws ansible-playbook check.yml
+#   FLEET=<profile> ansible-playbook check.yml
 #
 # This supersedes `make cache-check`, which asked one of these
 # questions of a hardcoded list of two hostnames.

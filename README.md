@@ -4,7 +4,32 @@ Reproducible builds of PyTorch, Triton, AITER, CuPy, NIXL, vLLM and
 LMCache against ROCm, on a three-node BuildKit fleet, with every
 artifact published to a local OCI registry.
 
-**📖 Full documentation: <https://sbates130272.github.io/rocm-bake/>**
+**Full documentation: <https://sbates130272.github.io/rocm-bake/>**
+
+## Live Reports
+
+Two lanes publish measurements continuously, to the `gh-pages` branch.
+They are **not** comparable with each other.
+
+| | What it measures | Published | Older runs |
+| --- | --- | --- | --- |
+| **[Fleet runs][perf]** | Every wheel across all three SNOC nodes at once, instrumented — CPU, compiler-cache and registry traffic sampled throughout | on demand, from a build node | interactive chart, selector over every run |
+| **[Nightly builds][nightly]** | One warm bake per architecture on AWS CodeBuild, published to ECR — phase wall clock and cache errors | 02:17 UTC, from CI | table of every run |
+
+A fleet run is a parallel build across three nodes sharing a compiler
+cache; a nightly is sequential bakes on one rented machine. Both keep
+every run published, each behind a `<stamp>/` permalink — but only the
+fleet page charts, because a rented machine has nothing to sample.
+Details: [Live reports][reports].
+
+For fleet runs, `make perf-serve` is the same chart on `:8090` for a
+run that is still going, regenerating every 30 s; `make perf-publish
+PUSH=1` is what puts it on the web. It binds every interface by
+default — `PERF_BIND=` narrows it, `make perf-serve-stop` ends it.
+
+[perf]: https://sbates130272.github.io/rocm-bake/data/perf/
+[nightly]: https://sbates130272.github.io/rocm-bake/data/nightly/
+[reports]: https://sbates130272.github.io/rocm-bake/reports/
 
 ## Versions
 
@@ -79,15 +104,16 @@ the report and the Ansible inventory all read it through
 make list-nodes                   # the manifest in effect
 make fleet-apply                  # make every node match it (Ansible)
 make fleet-check                  # ask each node whether it can do its job
-FLEET=aws make list-nodes         # a second profile, build-only
 ```
 
 Details, including what each capability means and why `arch` is not the
 same claim as the `gpu` capability:
 [The fleet](https://sbates130272.github.io/rocm-bake/architecture/fleet/).
-A sized EC2 configuration, and what changes when every uplink is the
-same speed:
-[A fleet on AWS](https://sbates130272.github.io/rocm-bake/operations/aws/).
+
+The fleet is driven by hand and registers no CI runner. The nightly
+builds on AWS CodeBuild instead, publishing to ECR and sharing a
+compiler cache on S3 — one measured night is $13.94. See
+[Building on AWS](https://sbates130272.github.io/rocm-bake/operations/aws/).
 
 ## Build targets
 
@@ -164,6 +190,8 @@ quote one as if it were the other.
 Measured results, why `warm` is an assertion rather than a number, and
 what a fleet run found:
 [Performance](https://sbates130272.github.io/rocm-bake/performance/).
+The live numbers are at **[data/perf/][perf]** and
+**[data/nightly/][nightly]**.
 
 ## Repository layout
 
@@ -190,9 +218,10 @@ make docs-build    # into dist/site; fails on a broken internal link
 ```
 
 Benchmark results are **not** committed to this branch. They are pushed
-onto `gh-pages` separately by `make bench-publish`, run from a build
-node, because that is the only place the numbers exist. The docs
-workflow preserves `data/` when it deploys.
+onto `gh-pages` separately by `make bench-publish` and `make
+perf-publish`, run from a build node, because that is the only place
+the numbers exist; the nightly's are written there by CI. The docs
+workflow preserves `data/` when it deploys. See [Live reports][reports].
 
 ## License
 

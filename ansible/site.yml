@@ -3,7 +3,7 @@
 # claims. Run from the ansible/ directory:
 #
 #   ansible-playbook site.yml                  the fleet FLEET names
-#   FLEET=aws ansible-playbook site.yml        another one
+#   FLEET=<profile> ansible-playbook site.yml   another manifest
 #   ansible-playbook site.yml --check          what would change
 #   ansible-playbook site.yml --limit snoc-gaming
 #

@@ -1,12 +1,9 @@
-# Make targets
+# Make Targets
 
 `make help` is authoritative and prints the live list with the values
-currently in effect. This page is a map of the groups and the ones worth
-knowing about; a target missing here is not a target that does not
-exist.
-
-Targets marked `*` in `make help` build **and push** to the registry,
-which needs the `ci` login.
+currently in effect. This page is a map of the groups; a target missing
+here is not a target that does not exist. Targets marked `*` in `make
+help` build **and push** to the registry, which needs the `ci` login.
 
 ```bash
 make help          # every target, grouped
@@ -28,13 +25,12 @@ make list-vars     # every variable these targets read, with its value
 | `image-publish` | Commit that onto `gh-pages`; `PUSH=1` to push |
 | `zot-disk` | What the registry actually occupies, deduplicated — registry host only |
 
-Nothing here starts, stops or configures Zot. It is a bare-metal
-systemd service owned outside this repository.
+Nothing here starts, stops or configures Zot — it is a bare-metal
+systemd service owned outside this repository. `image-sizes` and
+`zot-disk` answer different questions and disagree by a factor of two:
+see [Image sizes](image-sizes.md).
 
-`image-sizes` and `zot-disk` answer different questions and disagree by
-a factor of two: see [Image sizes](image-sizes.md).
-
-## Compiler cache
+## Compiler Cache
 
 | Target | |
 | --- | --- |
@@ -59,41 +55,29 @@ a factor of two: see [Image sizes](image-sizes.md).
 | `builder-logs` | buildkitd's **own** log: registry auth, GC, connection failures |
 | `builder-restart` | Restart buildkitd on `$(BUILDER)`, clearing a wedged build |
 
-`builder-ensure` gates every build target on `builder-health`, which is
-why a build fails fast against a dead node rather than hanging.
+`builder-ensure` gates every build target on `builder-health`, so a
+build fails fast against a dead node rather than hanging.
+`builder-restart` drops only that node's in-memory build state.
 
-`builder-restart` drops that node's in-memory build state. The registry
-layer cache and the shared compiler cache are untouched, so the next
-build still picks up where it can.
+`builder-<node>` is a pattern rule over the manifest's node names, so a
+new node needs no Makefile edit. The buildkitd config is baked in at
+create time — an existing builder does not pick up a later manifest
+change, and adopting one costs that node's content store:
+`docker buildx rm snoc-think && make builder-snoc-think`. See
+[The fleet](../architecture/fleet.md).
 
-`builder-<node>` is a pattern rule over the node names in
-`manifests/$(FLEET).yml`, so a node added to the manifest needs no
-Makefile edit. The buildkitd config is rendered per node from that
-manifest and baked into the builder at create time — an existing
-builder does not pick up a later manifest change. To adopt one, and
-lose that node's content store in the process:
-
-```bash
-docker buildx rm snoc-think && make builder-snoc-think
-```
-
-See [The fleet](../architecture/fleet.md) for the manifest itself, and
-[A fleet on AWS](../operations/aws.md) for a second profile.
-
-## Watching a build
+## Watching A Build
 
 | Target | |
 | --- | --- |
-| `watch` | Live: history across all `snoc-*` builders, a tail of each running build, layer reuse and cache deltas |
+| `watch` | Live: history across every builder, a tail of each running build, layer reuse and cache deltas |
 | `build-status` | Build records on `$(BUILDER)`, with the node each ran on |
 | `build-logs` | What a build's steps printed — `BUILD=<id>`, default most recent |
 | `build-inspect` | Duration, step count, cached steps, VCS revision |
 | `build-stop` | Cancel builds started from this repository |
 
 ```bash
-make watch
-make watch WATCH_BUILDERS=snoc-think
-make watch WATCH_LINES=40 WATCH_INTERVAL=2
+make watch WATCH_BUILDERS=snoc-think WATCH_LINES=40 WATCH_INTERVAL=2
 ```
 
 !!! tip "Two logs, easy to confuse"
@@ -104,41 +88,31 @@ make watch WATCH_LINES=40 WATCH_INTERVAL=2
 
 `build-stop` works off a PID file (`/tmp/.rocm-build.pids`) that every
 bake invocation and the balancer write to. Matching command lines with
-`pgrep -f` was unreliable: it killed the invoking shell, and it killed
-the sibling project's builds.
+`pgrep -f` killed the invoking shell, and the sibling project's builds.
 
-## Build and push
+## Build And Push
 
-| Build (no push) | Push | Target |
-| --- | --- | --- |
-| `build-pytorch-src` | `push-pytorch-src` | `pytorch-src` |
-| `build-rocm-runtime` | `push-rocm-runtime` | `rocm-runtime` |
-| `build-base` | `push-base` | `pytorch-base` |
-| `build-pytorch` | `push-pytorch` | `pytorch` |
-| `build-runtime` | `push-runtime` | `pytorch-run` |
-| `build-torch-wheel` | `push-torch-wheel` | `pytorch-wheel` |
-| `build-triton-wheel` | `push-triton-wheel` | `triton-wheel` |
-| `build-aiter-wheel` | `push-aiter-wheel` | `aiter-wheel` |
-| `build-cupy-wheel` | `push-cupy-wheel` | `cupy-wheel` |
-| `build-nixl-wheel` | `push-nixl-wheel` | `nixl-wheel` |
-| `build-vllm` | `push-vllm` | `vllm` |
-| `build-vllm-wheel` | `push-vllm-wheel` | `vllm-wheel` |
-| `build-lmcache` | `push-lmcache` | `lmcache` |
-| `build-lmcache-wheel` | `push-lmcache-wheel` | `lmcache-wheel` |
-| `build-serving` | `push-serving` | the `serving` group |
-| `build-all` | `push-all` | the `default` group |
-| — | `push-wheels` | the `wheels` group |
+Every target has a `build-<name>` form and a `push-<name>` form. Four
+names do not match their bake target:
 
-Every wheel has a `build-` form as well as a `push-` form. The build-only
-targets exist because the benchmark harness needs them: it dispatches
-through `make build-<name>`, and a `push-` target writes to the registry,
-which the credential helper cannot do unattended. Without them a cold
-measurement stopped at the first wheel that had no build-only target.
+| Make | Bake target |
+| --- | --- |
+| `build-base` / `push-base` | `pytorch-base` |
+| `build-runtime` / `push-runtime` | `pytorch-run` |
+| `build-torch-wheel` / `push-torch-wheel` | `pytorch-wheel` |
+| `build-triton-wheel` / `push-triton-wheel` | `triton-wheel` (noarch) |
 
-`fetch-torch-wheel`, `fetch-triton-wheel`, `fetch-aiter-wheel`,
-`fetch-cupy-wheel`, `fetch-nixl-wheel`, `fetch-vllm-wheel` and
-`fetch-lmcache-wheel` pull a published wheel artifact into `./dist`.
+The rest are the obvious ones: `pytorch`, `rocm-runtime`,
+`pytorch-src`, `aiter-wheel`, `cupy-wheel`, `nixl-wheel`, `vllm`,
+`vllm-wheel`, `lmcache`, `lmcache-wheel`. Group targets are
+`build-serving`/`push-serving`, `build-all`/`push-all` (the `default`
+group) and `push-wheels`.
 
+The build-only forms exist because the benchmark harness dispatches
+through `make build-<name>`, and a `push-` target writes to the
+registry, which the credential helper cannot do unattended.
+
+`fetch-<name>-wheel` pulls a published wheel artifact into `./dist`.
 `build-cold` builds `COLD_TARGET` (default `pytorch`) with neither
 layer cache nor compiler-cache hits.
 
@@ -149,7 +123,7 @@ layer cache nor compiler-cache hits.
     `build-all BUILDER=snoc-think` (single builder, no push). See
     [the balancer](../architecture/build-graph.md#the-balancer).
 
-## Multiple architectures
+## Multiple Architectures
 
 | Target | |
 | --- | --- |
@@ -158,10 +132,9 @@ layer cache nor compiler-cache hits.
 | `wheel-index` | Fetch each architecture's wheels and build a PEP 503 index |
 | `wheel-index-check` | Install each generated index into a throwaway venv |
 
-`arches-%` is a pattern rule and takes any target name, not only the
-documented examples.
+`arches-%` takes any target name, not only the documented examples.
 
-## Test and serve
+## Test And Serve
 
 | Target | |
 | --- | --- |
@@ -170,12 +143,8 @@ documented examples.
 | `serve-vllm` | vLLM alone on `GPU_HOST`, no KV offload |
 | `serve-stack` | vLLM plus the LMCache MP server |
 | `serve-wait` | Block until `/health` answers |
-| `serve-test` | Prove the KV cache is actually working |
-| `serve-test-baseline` | The same for a `serve-vllm` stack |
-| `serve-test-l2` | Prove the disk tier serves blocks — needs `KV_TIER=file` |
-| `serve-logs` | Both containers, merged, live |
-| `serve-logs-cache` | The same, filtered to hit/miss/store lines |
-| `serve-logs-sorted` | A snapshot merged in timestamp order |
+| `serve-test` | Prove the KV cache is actually working (`-baseline`, `-l2` variants) |
+| `serve-logs` | Both containers, merged, live (`-cache`, `-sorted` variants) |
 | `serve-status` | What is running on `GPU_HOST` |
 | `serve-down` | Stop and remove |
 
@@ -192,7 +161,7 @@ See [Serving stack](../architecture/serving.md).
 
 See [Performance](../performance/index.md).
 
-## Performance runs
+## Performance Runs
 
 | Target | |
 | --- | --- |
@@ -201,25 +170,23 @@ See [Performance](../performance/index.md).
 | `perf-warm` | The same instrumentation on a *warm* build — caches on, pushes |
 | `perf-report` | Render the newest run as markdown plus SVG charts |
 | `perf-serve` | Serve the newest run's interactive chart on `:8090` |
+| `perf-serve-stop` | Stop it and free `PERF_PORT` |
+| `perf-serve-status` | Whether one is running, and where |
 | `perf-runs` | List collected runs, newest last |
+| `perf-publish` | Commit a run onto `gh-pages`; `PUSH=1` to push |
 
-A different question from `bench`: the fleet flat out rather than one
-target in isolation. `perf-cold` is a build from nothing; `perf-warm`
-is the build you actually run, where the cost is almost entirely export
-rather than compute. See
-[Instrumented fleet runs](../performance/perf-runs.md).
+The fleet flat out, rather than one target in isolation. Both build and
+push whatever the registry is missing first, so neither needs a manual
+bootstrap. `PERF_ARCH`, `PERF_TARGETS` and `PERF_BIND` configure them;
+see [Instrumented fleet runs](../performance/perf-runs.md).
 
-Both build and push whatever the registry is missing before they
-measure — on a new architecture that is `rocm-runtime` and
-`pytorch-base` — so neither needs a manual bootstrap. That step is
-warm and unsampled even under `perf-cold`; `perf-plan` reports it and
-builds nothing.
-
-`PERF_ARCH` selects the architecture, `PERF_TARGETS` overrides what is
-built (default: bake's `wheels` group plus `pytorch`; ordering comes
-from the bake graph, so a subset still schedules correctly), and
-`PERF_BIND` narrows what `perf-serve` listens on — it binds every
-interface by default.
+`perf-serve` and the published
+**[data/perf/](https://sbates130272.github.io/rocm-bake/data/perf/)**
+page are the same tool: `perf-publish` puts the chart `perf-serve`
+renders onto `gh-pages`, with a selector added across runs. Serve
+locally while a run is in flight — the page regenerates every 30 s and
+re-resolves which run is newest, so it picks up a run that started
+after the server did. Published runs are frozen and stop polling.
 
 ## Versions
 
@@ -229,14 +196,11 @@ interface by default.
 | `version-scrub` | Regenerate the version tables from `rocm-bake.hcl` |
 | `version-scrub-check` | Fail if those generated tables are stale |
 
-`version-check` needs the network: `gh` for api.github.com and the
-tailnet for the registry. `version-scrub` reads `rocm-bake.hcl` and
-nothing else, which is what lets `version-scrub-check` gate every pull
-request in `lint.yml`.
-
-The tables it generates live between `<!-- BEGIN VERSIONS -->` markers
-in `README.md` and in [Bake variables](bake-variables.md). Bump a
-version in `rocm-bake.hcl`, run `make version-scrub`, commit both.
+`version-check` needs the network. `version-scrub` reads
+`rocm-bake.hcl` and nothing else, which is what lets
+`version-scrub-check` gate every pull request; the tables it generates
+live between `<!-- BEGIN VERSIONS -->` markers in `README.md` and in
+[Bake variables](bake-variables.md).
 
 ## Documentation
 
@@ -257,7 +221,7 @@ version in `rocm-bake.hcl`, run `make version-scrub`, commit both.
 | `clean-cache` | Drop locally-pulled cache images; Zot garbage-collects its own store |
 | `setup` | `zot-check` then `builder-setup` |
 
-## Variables worth knowing
+## Variables Worth Knowing
 
 | Variable | Default | |
 | --- | --- | --- |
