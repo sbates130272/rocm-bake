@@ -58,12 +58,61 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Rebuilding an unchanged tree costs an hour of 72 vCPU and tells
+  # you what last night already did. So a scheduled run stops here
+  # unless main has moved since the last nightly that succeeded.
+  #
+  # Against the last SUCCESSFUL run, deliberately: comparing against
+  # the last run of any kind would mean a night that failed is never
+  # retried, and a transient failure would freeze the nightly until
+  # someone pushed something.
+  #
+  # workflow_dispatch always proceeds — asking for a run by hand is
+  # the statement that you want one.
+  changed:
+    name: Has main moved?
+    runs-on: ubuntu-latest
+    if: vars.NIGHTLY_ENABLED == 'true'
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "dispatched by hand — running regardless"
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Scheduled runs only. A workflow_dispatch is an experiment —
+          # often one cheap target with --no-push — and letting one
+          # count as "this commit has been built" would suppress the
+          # real nightly at that SHA.
+          last=$(gh api "repos/${{ github.repository }}/actions/workflows/nightly.yml/runs?event=schedule" \
+                   --jq '[.workflow_runs[]
+                         | select(.conclusion == "success")][0].head_sha // empty' \
+                 2>/dev/null || true)
+          echo "last successful scheduled nightly: ${last:-none}"
+          echo "current HEAD:            ${{ github.sha }}"
+          if [ -z "$last" ]; then
+            echo "no successful nightly on record — running"
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          elif [ "$last" = "${{ github.sha }}" ]; then
+            echo "::notice::main is unchanged since the last successful nightly; skipping"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "main has moved — running"
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
   # Resolved once, so the matrix and the report agree and a dispatch
   # override is visible in the log rather than implied.
   arches:
     name: Which architectures
+    needs: changed
     runs-on: ubuntu-latest
-    if: vars.NIGHTLY_ENABLED == 'true'
+    if: needs.changed.outputs.run == 'true'
     outputs:
       list: ${{ steps.pick.outputs.list }}
     steps:
