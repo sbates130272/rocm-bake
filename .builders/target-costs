@@ -49,14 +49,25 @@ build nixl-wheel       180
 build aiter-wheel       72
 build lmcache-wheel     66
 
-# NOT YET MEASURED. 400 is a placeholder and deliberately on the high
-# side. torchvision compiles ~25 ops/hip/*.hip files for one
-# architecture — far less than triton or vLLM, more than AITER at
-# PREBUILD_KERNELS=2, which JIT-defers most of its work. Placed too
-# cheap it sorts last in ready_targets and lands on the weakest node,
-# and `vllm` waits on it. Re-measure with `make perf-warm` then
-# `make perf-report`.
-build torchvision-wheel 400
+# Measured 2026-11-04, run 20261104T164632Z (gfx1201). Build work only:
+# the 18 kind=step spans sum to 25.0s and the last completes 26.6s after
+# the first starts. The placeholder here was 400, guessed high on the
+# theory that ~25 HIP files would dominate; they do not. Only 7 are HIP
+# (ops/hip/*.hip), the rest are C++, and most of even this is apt, the
+# shallow clone, pip and the verification steps rather than compilation.
+#
+# NOT that run's reported_seconds, which is 75.4s. The difference is
+# 48.8s of registry transfer, and putting it in this row would be wrong
+# twice over. The cold run that produced every other build row,
+# 20261029T204149Z, carries no transfer spans at all — perf-cold passes
+# --no-push — so those rows are pure build work and 75 would not be
+# comparable to them. And cost_of already charges the export separately
+# as c/(n*1048576) from the cache row below, so the 48.8s would be
+# counted a second time, on a link it was not even measured over.
+#
+# That is a trap for anyone re-measuring from a warm run: reported_seconds
+# is the whole vertex span, push included. Take the kind=step spans.
+build torchvision-wheel  27
 
 # The image targets. These were absent until 2026-10-30, and the
 # absence was not harmless: cost_of falls back to build=1 for a target
@@ -131,7 +142,16 @@ cache lmcache-wheel    615890669
 cache cupy-wheel       402995659
 cache nixl-wheel       372131035
 cache pytorch-wheel   5046000000
-# NOT YET MEASURED, like the build row above. 400MB is the cupy-wheel
-# figure, chosen because the two are the closest in shape: one
-# moderate HIP compile over a base this build does not re-export.
-cache torchvision-wheel 400000000
+# Measured 2026-11-04, run 20261104T164632Z: 2,595,074,525 bytes over
+# 64 uploads, summed from the Content-Length of every PUT/PATCH/POST to
+# a torchvision-wheel path in that run's zot.jsonl. Same method the
+# header describes.
+#
+# The placeholder was 400MB, borrowed from cupy-wheel on the theory
+# that the two were the closest in shape. They are not: this is 6.2x
+# that, and the pairing with a 75s build makes torchvision-wheel the
+# most export-heavy-per-second-of-compile target in the table. That is
+# precisely the profile the header's triton-wheel story warns about, so
+# it is the row most likely to move a placement now that best_node_for
+# actually reads these.
+cache torchvision-wheel 2595074525

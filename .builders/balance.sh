@@ -242,8 +242,30 @@ cost_of() {
             "${COSTS_FILE}" 2>/dev/null)
     net=$(awk -v n="$node" '$1 == "netmb" && $2 == n {print $3; exit}' \
           "${NETMB_FILE}" 2>/dev/null)
-    # No figure for this node means no reason to penalise it; fall back
-    # to the build term rather than inventing a link speed.
+    # A node with no netmb row used to fall through to the build term,
+    # on the reasoning that there was "no reason to penalise it". That
+    # was safe while cost_of was only ever called with one argument and
+    # its result merely ordered targets. Under best_node_for's minimum
+    # it inverts: zero transfer cost is the lowest cost obtainable, so
+    # an unmeasured node would win every cache-heavy target precisely
+    # because nothing is known about it.
+    #
+    # Reachable without anything looking wrong. link_mbps is optional —
+    # fleet.py emits a netmb row only `if "link_mbps" in n`, and
+    # REQUIRED_NODE_KEYS does not include it — so adding a build node
+    # and forgetting the link speed would silently make it the
+    # preferred home for the largest exports in the table.
+    #
+    # Charge the slowest link we do know about instead. Pessimistic by
+    # construction, and it cannot make an unmeasured node preferable to
+    # a measured one.
+    if [ -z "${net}" ]; then
+        net=$(awk '$1 == "netmb" {print $3}' "${NETMB_FILE}" 2>/dev/null \
+              | sort -n | head -1)
+    fi
+    # Still nothing means no netmb file at all (fleet.py failed; it runs
+    # under `|| true`). Then every node is equally unknown, the transfer
+    # term cannot discriminate, and the build term is the honest answer.
     [ -n "${cache}" ] && [ -n "${net}" ] || { echo "${build}"; return; }
     awk -v b="${build}" -v c="${cache}" -v n="${net}" \
         'BEGIN{printf "%d", b + c/(n*1048576)}'
@@ -329,7 +351,7 @@ ready_targets() {
         for d in $(blocking_deps "$t"); do
             [ "${STATE[$d]}" = "done" ] || { ok=0; break; }
         done
-        [ "$ok" = 1 ] && printf '%s %s\n' "$(cost_of "$t")" "$t"
+        [ "$ok" = 1 ] && printf '%s %s\n' "$(worst_cost_of "$t")" "$t"
     done | sort -rn | awk '{print $2}'
 }
 
@@ -338,6 +360,82 @@ free_nodes() {
     for n in "${ranked[@]}"; do
         [ -z "${BUSY[$n]:-}" ] && printf '%s\n' "$n"
     done
+}
+
+# The free node that would finish <target> soonest — the second half of
+# LPT. ready_targets orders the work; this places it.
+#
+# Until this existed the placement was `free_nodes | head -1`, i.e. the
+# highest-SCORED free node. Score is a property of the node alone
+# (memory, cores, load), so the pairing never entered into it and
+# cost_of was only ever called as `cost_of "$t"`. With no node argument
+# it returns the build term and returns early, which made the whole
+# second half of that function dead code: the `cache <target> <bytes>`
+# rows in target-costs, the `netmb` figures fleet.py derives from each
+# node's link_mbps, and the b + c/(n*1048576) arithmetic over them.
+#
+# The consequence was the exact placement target-costs was written to
+# stop. A target shipping 2.5GB of layer cache and one shipping 17KB
+# were indistinguishable, so the largest export could land on the node
+# behind WiFi — measured once at ~28 minutes of upload against ~4
+# minutes of build.
+#
+# Ties keep the first candidate, and free_nodes walks `ranked` in score
+# order, so when no cache row exists for a target this degrades exactly
+# to the old highest-scored-node behaviour rather than to something new.
+best_node_for() {
+    local t="$1" n c best="" bestc=""
+    for n in $(free_nodes); do
+        c=$(cost_of "$t" "$n")
+        if [ -z "${bestc}" ] || [ "$c" -lt "$bestc" ]; then
+            bestc="$c"; best="$n"
+        fi
+    done
+    printf '%s' "${best}"
+}
+
+# The sort key for ready_targets: the WORST this target could cost on
+# any node in the fleet.
+#
+# The build term alone will not do, now that placement reads both. LPT
+# hands the first-sorted target the best node, so the key has to be the
+# thing that measures how much the choice matters — and for a target
+# whose cost is dominated by its export, the build term says nothing
+# about that. torchvision-wheel is the case in point: 27s of build and
+# 2.6GB of cache is 28s on snoc-strix and 695s on snoc-gaming. Sorted
+# on 27 it goes nearly last and takes whatever node is left.
+#
+# Worked against the real wave 6 (nixl, torchvision, aiter), costs in
+# seconds as strix/think/gaming:
+#
+#   nixl-wheel         180 / 184 / 276
+#   torchvision-wheel   28 /  54 / 695
+#   aiter-wheel         73 /  88 / 464
+#
+#   by build term  nixl, aiter, torchvision -> 180, 88, 695  = 695
+#   by min cost    nixl, aiter, torchvision -> 180, 88, 695  = 695
+#   by max cost    torchvision, aiter, nixl ->  28, 88, 276  = 276
+#
+# Max, because the target most sensitive to where it lands is the one
+# that must choose first. Min and the bare build term both sort the
+# link-bound target last and hand it the WiFi node, which is the exact
+# placement target-costs exists to prevent.
+#
+# Over `ranked` rather than free_nodes: this is a property of the
+# target given the fleet, and a key that shifted as nodes filled would
+# reorder a list already being consumed.
+worst_cost_of() {
+    local t="$1" n c max=""
+    for n in "${ranked[@]}"; do
+        c=$(cost_of "$t" "$n")
+        if [ -z "${max}" ] || [ "$c" -gt "$max" ]; then
+            max="$c"
+        fi
+    done
+    # No ranked nodes yet (or none at all) — fall back to the build term
+    # so the ordering is still defined.
+    [ -n "${max}" ] || max=$(cost_of "$t")
+    printf '%s' "${max}"
 }
 
 launch() {
@@ -391,7 +489,7 @@ run_dag() {
                 # Dockerfile mid-loop is invisible to it, and both were
                 # launched anyway. Measured: all three pairs overlapped.
                 df_busy "$t" && continue
-                node=$(free_nodes | head -1)
+                node=$(best_node_for "$t")
                 [ -n "$node" ] || break
                 launch "$t" "$node"
                 placed=1
@@ -469,6 +567,13 @@ plan_dag() {
         wave=$((wave + 1))
         echo "── wave ${wave}"
         i=0
+        # Every node idle at the top of a wave, then marked busy as the
+        # wave fills — which is what lets best_node_for below see the
+        # same shrinking candidate set run_dag sees. Round-robin over
+        # `ranked` stood here before, and once run_dag began placing by
+        # cost that made the plan describe a placement the real run
+        # would not use.
+        for n in "${ranked[@]}"; do BUSY[$n]=""; done
         # One target per Dockerfile per wave, matching run_dag's mutual
         # exclusion. Without this the plan shows pytorch and
         # pytorch-wheel side by side in one wave, which is exactly the
@@ -485,7 +590,13 @@ plan_dag() {
                 seen_df="${seen_df} $f"
                 owner[$f]="$target"
             fi
-            node="${ranked[$((i % ${#ranked[@]}))]}"
+            node=$(best_node_for "$target")
+            # A wave can hold more targets than there are nodes. Once
+            # every node is busy the plan stops being able to say where
+            # the rest go, and saying nothing is better than naming a
+            # node the run will not pick.
+            [ -n "$node" ] || { defer[$target]="no free node this wave"; continue; }
+            BUSY[$node]=1
             i=$((i + 1))
             # Appended, never spliced: read_placement anchors on
             # "<target> -> <node>" followed by whitespace, so anything
