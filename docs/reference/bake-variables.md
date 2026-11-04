@@ -1,6 +1,6 @@
 # Bake variables
 
-`rocm-bake.hcl` declares 47 variables and is the single source for every
+`rocm-bake.hcl` declares 49 variables and is the single source for every
 value a build reads. The Makefile parses the `variable` blocks at make
 parse time and reads the defaults out, so `make build-pytorch` and a
 bare `docker buildx bake pytorch` always agree.

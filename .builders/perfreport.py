@@ -1252,7 +1252,15 @@ def main():
             charts.append(("writes.svg", "Cache bytes written (cumulative)"))
 
     # ── markdown ─────────────────────────────────────────────────
-    md = [f"# Cold parallel wheel build — {meta.get('stamp', run.name)}", ""]
+    # The mode is in the title because the two are not comparable and
+    # the page says so three paragraphs later. This read "Cold" for
+    # every run — correct when cold was the only mode, wrong since
+    # run.json started carrying one, and worst on gh-pages where the
+    # title is all a reader sees before quoting the number.
+    _mode = str(meta.get("mode", "")).strip().lower()
+    _kind = {"cold": "Cold", "warm": "Warm"}.get(_mode, "Instrumented")
+    md = [f"# {_kind} parallel wheel build — {meta.get('stamp', run.name)}",
+          ""]
     md.append(f"- **started** {fmt_start(meta, run)}")
     md.append(f"- **arch** `{meta.get('arch', '?')}` "
               f"· **commit** `{meta.get('vcs_ref', '?')}`"
