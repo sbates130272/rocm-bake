@@ -403,11 +403,11 @@ image-publish: ## Publish image sizes onto gh-pages (PUSH=1 to push)
 		|| git -C "$$dir" commit -s \
 			-m "data: refresh published image sizes"; \
 	if [ "$(PUSH)" = 1 ]; then \
-		git -C "$$dir" push origin $(GH_PAGES_BRANCH); \
+		git -C "$$dir" push origin HEAD:$(GH_PAGES_BRANCH); \
 	else \
 		echo; \
 		echo "Committed locally. To publish:"; \
-		echo "  git -C $$dir push origin $(GH_PAGES_BRANCH)"; \
+		echo "  git -C $$dir push origin HEAD:$(GH_PAGES_BRANCH)"; \
 		echo "or re-run with PUSH=1."; \
 	fi
 
@@ -1311,11 +1311,11 @@ perf-publish: ## Publish a perf run onto gh-pages (PERF_RUN=, PUSH=1 to push)
 		|| git -C $(GH_PAGES_DIR) commit -s \
 			-m "data: add perf run $$stamp"; \
 	if [ "$(PUSH)" = 1 ]; then \
-		git -C $(GH_PAGES_DIR) push origin $(GH_PAGES_BRANCH); \
+		git -C $(GH_PAGES_DIR) push origin HEAD:$(GH_PAGES_BRANCH); \
 	else \
 		echo; \
 		echo "Committed locally. To publish:"; \
-		echo "  git -C $(GH_PAGES_DIR) push origin $(GH_PAGES_BRANCH)"; \
+		echo "  git -C $(GH_PAGES_DIR) push origin HEAD:$(GH_PAGES_BRANCH)"; \
 		echo "or re-run with PUSH=1."; \
 	fi
 
@@ -1742,11 +1742,11 @@ bench-publish: bench-data ## Publish the benchmark data onto gh-pages (PUSH=1 to
 		|| git -C $(GH_PAGES_DIR) commit -s \
 			-m "data: refresh build benchmarks from $(BUILDER)"
 	@if [ "$(PUSH)" = 1 ]; then \
-		git -C $(GH_PAGES_DIR) push origin $(GH_PAGES_BRANCH); \
+		git -C $(GH_PAGES_DIR) push origin HEAD:$(GH_PAGES_BRANCH); \
 	else \
 		echo; \
 		echo "Committed locally. To publish:"; \
-		echo "  git -C $(GH_PAGES_DIR) push origin $(GH_PAGES_BRANCH)"; \
+		echo "  git -C $(GH_PAGES_DIR) push origin HEAD:$(GH_PAGES_BRANCH)"; \
 		echo "or re-run with PUSH=1."; \
 	fi
 
