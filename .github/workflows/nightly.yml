@@ -33,8 +33,14 @@ on:
         description: 'Space-separated arch list (default: ARCHES in the Makefile)'
         required: false
         default: ''
-      skip_cold:
-        description: 'Skip the cold build — warm only'
+      # Opt IN to cold, rather than opting out. A scheduled run sends no
+      # inputs at all, so a `skip_cold` defaulting to false meant every
+      # night paid for both halves — and the cold half pushes nothing
+      # and deletes its own sccache prefix, so it is bought purely as a
+      # measurement. Warm is what the nightly is for; cold is a thing
+      # you ask for.
+      run_cold:
+        description: 'Also run the cold build (roughly doubles cost)'
         type: boolean
         required: false
         default: false
@@ -201,7 +207,7 @@ jobs:
             --out "/tmp/nightly-${{ matrix.arch }}" \
             --ensure-ecr \
             ${{ inputs.targets && format('--targets ''{0}''', inputs.targets) || '' }} \
-            ${{ inputs.skip_cold && '--skip-cold' || '' }} \
+            ${{ (inputs.run_cold || vars.NIGHTLY_COLD == 'true') && '' || '--skip-cold' }} \
             ${{ inputs.push == false && '--no-push' || '' }}
 
       # The report travels as an artifact. The job that ran the build
