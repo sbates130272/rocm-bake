@@ -269,6 +269,7 @@ BAKE_PRINT = docker buildx bake -f rocm-bake.hcl
         push-cupy-wheel build-cupy-wheel fetch-cupy-wheel \
         push-torchvision-wheel build-torchvision-wheel fetch-torchvision-wheel \
         push-atom-wheel build-atom-wheel fetch-atom-wheel \
+        wheels-publish wheels-publish-dry \
         build-vllm push-vllm push-vllm-wheel build-vllm-wheel fetch-vllm-wheel \
         build-lmcache push-lmcache push-lmcache-wheel build-lmcache-wheel \
         fetch-lmcache-wheel \
@@ -1177,6 +1178,30 @@ wheel-index: ## Fetch each arch's wheels and build a pip index (ARCHES=)
 # throughout. See docker/Dockerfile.lmcache, which carries the full
 # rationale. wheelindex.py names every wheel this applies to rather
 # than letting the flag hide them.
+# Publish one arch publicly: wheels to a GitHub release, index to
+# gh-pages. The split is forced — a wheel is 300-500MB and GitHub
+# refuses anything over 100MB in git, so the index (28KB) can live on
+# gh-pages and the binaries cannot. See .builders/wheelpublish.sh.
+#
+# One release per arch, because wheel filenames are arch-independent:
+# two arches' torch wheels are the same string and would collide as
+# assets in one release. That is the same problem the per-arch index
+# path exists to solve.
+#
+# Not in push-all and not in any group: publishing is a decision, not a
+# side effect of a build. Run wheel-index first — this publishes what
+# that fetched rather than fetching again, so what goes public is
+# exactly what you just inspected.
+wheels-publish: ## * Publish one arch's wheels publicly (ARCH=gfx950)
+	@[ -n "$(ARCH)" ] || { echo "set ARCH=<gfx...> — one arch per release"; exit 2; }
+	@.builders/wheelpublish.sh --arch "$(ARCH)" \
+		--rocm "$(ROCM_VERSION)" $(WHEELS_PUBLISH_ARGS)
+
+wheels-publish-dry: ## Show what wheels-publish would do (ARCH=gfx950)
+	@[ -n "$(ARCH)" ] || { echo "set ARCH=<gfx...>"; exit 2; }
+	@.builders/wheelpublish.sh --arch "$(ARCH)" \
+		--rocm "$(ROCM_VERSION)" --dry-run $(WHEELS_PUBLISH_ARGS)
+
 wheel-index-check: ## Install each generated index into a throwaway venv
 	@set -e; \
 	port=8099; \

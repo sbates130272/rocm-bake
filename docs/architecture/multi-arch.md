@@ -126,6 +126,54 @@ exists to prevent.
     `download.pytorch.org` has the same property and the same
     workaround.
 
+## Publishing The Index Publicly
+
+`make wheels-publish ARCH=gfx950` puts one architecture on the public
+internet. It is a separate decision from building, so it is in no group
+and no `push-all`; run `make wheel-index` first and this publishes what
+that fetched, rather than fetching again.
+
+The binaries and the index go to different places, and the split is
+forced rather than chosen. A wheel here is 300–500 MB — `amd_aiter` for
+`gfx950` is 495 MB — and GitHub refuses any file over 100 MB in git. So
+gh-pages carries the index, which is 28 KB of HTML, and the wheels go to
+a **release**, where an asset may be 2 GB and does not count against the
+repository.
+
+`wheelindex.py --wheel-url` already existed for exactly this: it sets
+the href prefix, and every link already carries a `#sha256=` fragment,
+so an offsite asset is still verified by pip at install time.
+
+**One release per architecture.** Assets within a release share a
+namespace, and these wheel filenames are architecture-independent — two
+architectures' `torch` wheels are the same string and differ by 50 MB.
+In one release the second upload would collide with the first. That is
+the same problem the per-architecture index path exists to solve, so it
+gets the same answer.
+
+```bash
+make wheel-index                       # fetch and build the indexes
+make wheels-publish-dry ARCH=gfx950    # show what would happen
+make wheels-publish ARCH=gfx950        # release + gh-pages
+```
+
+```bash
+pip install \
+  --index-url https://sbates130272.github.io/rocm-bake/data/wheels/gfx950/ \
+  --extra-index-url https://pypi.org/simple \
+  "rocm-torch[device-gfx950]"
+```
+
+!!! warning "A downloaded asset does not say what it needs"
+    The filenames carry no ROCm version and no architecture —
+    `torch-2.15.0a0+git31a77fc-cp314-cp314-linux_x86_64.whl` is the same
+    string for every target. Installing *through the index* is always
+    correct, because the index path and the `rocm-torch` metapackage
+    both carry the architecture. Downloading a release asset by hand is
+    not: nothing in the file says it needs ROCm 10.1 and `gfx950`.
+    `torchvision` and `atom` already carry `+rocm10.1.0`; `torch`,
+    `triton` and `amd_aiter` do not yet.
+
 ### Why `device-<arch>` And Not A Variant
 
 This is the shape TheRock ships ROCm in, rather than the WheelNext

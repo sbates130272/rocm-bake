@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+# Publish one architecture's wheels: binaries to a GitHub release, the
+# PEP 503 index to gh-pages.
+#
+# Usage:  wheelpublish.sh --arch gfx950 [--wheels DIR] [--index DIR]
+#                         [--rocm 10.1.0-full] [--repo owner/name]
+#                         [--dry-run] [--no-push]
+#
+# WHY TWO PLACES. The wheels are 300-500MB each -- amd_aiter for gfx950
+# is 494MB -- and GitHub refuses a file over 100MB in git. gh-pages can
+# therefore carry the index, which is a few KB of HTML, but never the
+# wheels. Release assets take 2GB each and do not count against the
+# repository, so the binaries go there and the index points at them.
+# wheelindex.py already supports exactly this: --wheel-url sets the href
+# prefix, and every link already carries a #sha256= fragment, so an
+# offsite asset is still verified by pip.
+#
+# WHY ONE RELEASE PER ARCH. Every wheel this repo builds has an
+# arch-independent filename -- torch-2.15.0a0+git31a77fc-cp314-cp314-
+# linux_x86_64.whl is the same string for gfx950 and gfx1201, and the
+# two files differ by 50MB. That is the whole reason wheelindex.py puts
+# the arch in the path. Assets within one release share a namespace, so
+# two arches in one release would collide and the second upload would
+# either fail or silently replace the first. A release per arch keeps
+# the filenames distinct by keeping them apart.
+#
+# The release is a plain tag, not a repository tag object anyone has to
+# push: `gh release create` makes it from the current commit if it does
+# not exist. Re-running replaces the assets rather than accumulating
+# them, so a republished arch does not leave a stale wheel behind for
+# the index to point at.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "${HERE}/.." && pwd)"
+cd "${ROOT}" || exit 1
+
+ARCH=""
+WHEELS=""
+INDEX=""
+ROCM="${ROCM_VERSION:-10.1.0-full}"
+PYVER="${PYTHON_VERSION:-3.14}"
+REPO=""
+DRY=0
+PUSH=1
+
+usage() { sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --arch)    ARCH="${2:-}"; shift 2 ;;
+        --wheels)  WHEELS="${2:-}"; shift 2 ;;
+        --index)   INDEX="${2:-}"; shift 2 ;;
+        --rocm)    ROCM="${2:-}"; shift 2 ;;
+        --repo)    REPO="${2:-}"; shift 2 ;;
+        --dry-run) DRY=1; shift ;;
+        --no-push) PUSH=0; shift ;;
+        -h|--help) usage 0 ;;
+        *) echo "wheelpublish: unknown argument $1" >&2; usage 2 ;;
+    esac
+done
+
+[ -n "${ARCH}" ] || { echo "wheelpublish: --arch is required" >&2; exit 2; }
+WHEELS="${WHEELS:-dist/wheels/${ARCH}}"
+INDEX="${INDEX:-dist/index/${ARCH}}"
+
+say() { printf '%s\n' "$*" >&2; }
+run() { if [ "${DRY}" = 1 ]; then say "   would: $*"; else "$@"; fi; }
+
+[ -d "${WHEELS}" ] || {
+    say "wheelpublish: ${WHEELS} does not exist — run 'make wheel-index' first"
+    exit 1
+}
+shopt -s nullglob
+WHLS=("${WHEELS}"/*.whl)
+shopt -u nullglob
+[ "${#WHLS[@]}" -gt 0 ] || { say "wheelpublish: no .whl in ${WHEELS}"; exit 1; }
+
+# The repository the release lands in. Derived rather than hardcoded so
+# a fork publishes to itself; `gh` resolves it from the remote.
+if [ -z "${REPO}" ]; then
+    REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)"
+fi
+[ -n "${REPO}" ] || { say "wheelpublish: cannot determine repo; pass --repo"; exit 1; }
+
+# The ROCm version without the `-full` flavour suffix: the flavour is a
+# property of the base image we build from, not of the wheels, and it
+# does not belong in a public tag.
+TAG="wheels-${ROCM%%-*}-${ARCH}"
+BASE="https://github.com/${REPO}/releases/download/${TAG}"
+
+say "== ${ARCH}"
+say "   repo     ${REPO}"
+say "   tag      ${TAG}"
+say "   wheels   ${#WHLS[@]} file(s), $(du -shc "${WHLS[@]}" 2>/dev/null | tail -1 | cut -f1)"
+
+# ── 1. the index, pointed at the release ────────────────────────────
+# Regenerated here rather than reused from `make wheel-index`, because
+# that one points at local paths. Same script, different --wheel-url.
+say "   index    regenerating with --wheel-url ${BASE}/"
+run python3 -I "${HERE}/wheelindex.py" "${WHEELS}" \
+    --arch "${ARCH}" --out "${INDEX}" \
+    --version "${ROCM}" --python "${PYVER}" \
+    --wheel-url "${BASE}/"
+
+# ── 2. the release ──────────────────────────────────────────────────
+if gh release view "${TAG}" --repo "${REPO}" >/dev/null 2>&1; then
+    say "   release  ${TAG} exists — replacing assets"
+else
+    say "   release  creating ${TAG}"
+    run gh release create "${TAG}" --repo "${REPO}" \
+        --title "ROCm ${ROCM%%-*} wheels for ${ARCH}" \
+        --notes "PEP 503 index: https://${REPO%%/*}.github.io/${REPO##*/}/data/wheels/${ARCH}/
+
+    pip install --index-url https://${REPO%%/*}.github.io/${REPO##*/}/data/wheels/${ARCH}/ \\
+        --extra-index-url https://pypi.org/simple \\
+        \"rocm-torch[device-${ARCH}]\"
+
+Built for ROCm ${ROCM}, Python ${PYVER}, ${ARCH}. These wheels are
+architecture-specific despite their filenames; install through the index
+rather than downloading assets directly."
+fi
+
+# --clobber: re-running must replace an asset, not fail on it, or a
+# republished arch leaves the index pointing at a stale binary whose
+# sha256 no longer matches and every install fails verification.
+say "   upload   ${#WHLS[@]} wheel(s)"
+run gh release upload "${TAG}" --repo "${REPO}" --clobber "${WHLS[@]}"
+
+# ── 3. the index to gh-pages ────────────────────────────────────────
+if [ "${PUSH}" = 0 ]; then
+    say "   pages    skipped (--no-push); index is in ${INDEX}"
+    exit 0
+fi
+
+GHP="dist/gh-pages"
+say "   pages    publishing index to data/wheels/${ARCH}/"
+if [ "${DRY}" = 1 ]; then
+    say "   would: ghpages.sh ${GHP} && copy ${INDEX} -> data/wheels/${ARCH}/"
+    exit 0
+fi
+
+"${HERE}/ghpages.sh" "${GHP}" >/dev/null
+DEST="${GHP}/data/wheels/${ARCH}"
+rm -rf "${DEST}"
+mkdir -p "$(dirname "${DEST}")"
+cp -r "${INDEX}" "${DEST}"
+
+cd "${GHP}"
+git add "data/wheels/${ARCH}"
+if git diff --cached --quiet; then
+    say "   pages    no change"
+else
+    git -c user.name='github-actions[bot]' \
+        -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+        commit -q -m "data: wheel index for ${ARCH} (${TAG})"
+    # HEAD:gh-pages, not the branch name: this worktree is detached, so
+    # pushing the branch name would push the local ref rather than what
+    # was just committed. Same reason nightly.yml does it this way.
+    git push -q origin HEAD:gh-pages
+    say "   pages    pushed"
+fi
+cd "${ROOT}"
+
+say ""
+say "   https://${REPO%%/*}.github.io/${REPO##*/}/data/wheels/${ARCH}/"

@@ -132,6 +132,8 @@ layer cache nor compiler-cache hits.
 | `arches-list` | What `ARCHES` resolves to, with the tag each would produce |
 | `wheel-index` | Fetch each architecture's wheels and build a PEP 503 index |
 | `wheel-index-check` | Install each generated index into a throwaway venv |
+| `wheels-publish` | Publish one architecture publicly — release + gh-pages (`ARCH=`) |
+| `wheels-publish-dry` | Show what `wheels-publish` would do, touching nothing |
 
 `arches-%` takes any target name, not only the documented examples.
 
