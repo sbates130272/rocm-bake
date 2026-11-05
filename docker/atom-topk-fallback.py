@@ -27,15 +27,26 @@ byte-identical across gfx950 and gfx1151 — and baking an arch decision in
 would make that false for no gain. And on CDNA the fused AITER kernel is
 still the faster path, so it stays selected there.
 
-One behavioural caveat, deliberately accepted. `tie="low"` asks AITER for
-lowest-index tie-breaking; torch.topk does not document its tie rule. It is
-deterministic for a given input and build, so the rank-consistency
-rejection_sampler.py needs still holds — every TP rank runs the same kernel
-over the same row and gets the same answer. What is not guaranteed is that a
-tie resolves the same way as AITER would resolve it. rejection_sampler.py's
-own comment records measuring this: on 64-256 rows of three vocabularies,
-slot 0 moved on 2 rows of 256 and in both the tied ids held equal
-probability.
+One behavioural caveat, deliberately accepted, and it is observed rather
+than theoretical. `tie="low"` asks AITER for lowest-index tie-breaking;
+torch.topk does not document its tie rule. Measured by running the same
+input down both branches — the AITER one on an emulated gfx1250, which is
+in _SUPPORTED_GFX, and the fallback on gfx1151, which is not:
+
+    row              [0.5, 0.2, 0.2, 0.4]      idx1 and idx2 tie at 0.2
+    AITER   gfx1250  top-3 -> [0, 3, 1]        takes the lower index
+    torch   gfx1151  top-3 -> [0, 3, 2]        takes the other
+
+Same selected set, different tie resolution. What this does NOT break is the
+rank-consistency rejection_sampler.py needs: torch.topk is deterministic for
+a given input and build, so every TP rank runs the same kernel over the same
+row and agrees with itself. A fleet mixing CDNA and RDNA ranks in one job
+would disagree across them — this repo runs one architecture per job, so
+that case does not arise here, but it is the thing to check before it does.
+
+rejection_sampler.py's own comment records upstream measuring the same
+class of difference: on 64-256 rows of three vocabularies, slot 0 moved on
+2 rows of 256, and in both the tied ids held equal probability.
 
 Run from the root of an ATOM checkout. Idempotent, and a no-op once the
 import has been rewritten, so re-running or a future upstream fix leaves it
