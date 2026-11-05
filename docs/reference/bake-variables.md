@@ -20,6 +20,7 @@ is authoritative if this page has aged.
 | `TRITON_REF` | `aad2a60d958f945420c5c40936b37d411fb02e89` |
 | `AITER_REF` | `v0.1.28` |
 | `TORCHVISION_REF` | `v0.29.2` |
+| `ATOM_REF` | `v0.1.9` |
 | `NIXL_REF` | `v1.5.2` |
 | `UCX_REF` | `v1.22.0` |
 | `VLLM_REF` | `v0.33.0` |

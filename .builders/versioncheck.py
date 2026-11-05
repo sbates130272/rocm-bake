@@ -149,6 +149,16 @@ COMPONENTS = [
          source=("gh", "pytorch/vision"), norm="verbatim",
          wheel_repo="torchvision-wheel", label="pytorch/vision",
          url="https://github.com/pytorch/vision"),
+    # ATOM. Note the upstream repo is private to the ROCm org as far as
+    # an unauthenticated token is concerned, so the `gh` probe here will
+    # report "unknown" rather than a latest tag unless the runner's
+    # token can see it. Declared anyway: the pinned column is still
+    # worth publishing, and a blank upstream column is honest about
+    # what we could not check.
+    dict(name="ATOM", var="ATOM_REF", readme=True,
+         source=("gh", "ROCm/ATOM"), norm="verbatim",
+         wheel_repo="atom-wheel", label="ROCm/ATOM",
+         url="https://github.com/ROCm/ATOM"),
     dict(name="NIXL", var="NIXL_REF", readme=True,
          source=("gh", "ai-dynamo/nixl"), norm="verbatim",
          wheel_repo="nixl-wheel", label="ai-dynamo/nixl",

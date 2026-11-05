@@ -1,0 +1,348 @@
+# syntax=docker/dockerfile:1
+# ATOM (github.com/ROCm/ATOM) built as a standalone wheel, against this
+# repo's ROCm PyTorch.
+#
+# What ATOM is. "AiTer Optimized Model" — AMD's LLM serving engine, and
+# the largest consumer of AITER, which this pipeline already builds. Not
+# a wrapper around it: ~407k lines of Python with its own scheduler
+# (atom/model_engine/scheduler.py, 5604 lines), paged KV block manager,
+# prefix cache and OpenAI-compatible server. AITER supplies optimized
+# kernels where it has them — 701 call sites across 240 files — and ATOM
+# ships 333 of its own @triton.jit kernels where it does not, which is
+# how new model families get day-0 support before AITER has them.
+#
+# Why build it here rather than `pip install atom`: there is no ROCm
+# wheel on PyPI, and the one thing this pipeline is for is producing
+# artifacts built against its own torch and its own AITER rather than
+# against whatever CUDA build an index happens to serve.
+#
+# Why FROM the PyTorch image rather than the ROCm base: unlike
+# torchvision and AITER, ATOM's setup.py does NOT import torch — it
+# compiles no C++ and no HIP, so the wheel could in principle be built
+# anywhere. It is built here anyway so the verification at the bottom
+# can import against the torch this wheel will actually run on. That
+# check is the point of the stage; a wheel that imports in a vacuum
+# tells us nothing.
+#
+# WHAT THIS WHEEL IS NOT ARCHITECTURE-SPECIFIC ABOUT, and why the tag
+# says gfx anyway. There is no device code in it: the only compiled
+# artifact is libmesh.so, a Rust cdylib that is CPU-only. The bake
+# target still carries ARCH_TAG and CACHE_ARCH like every other target,
+# because balance.sh, the cache refs and the perf report all assume a
+# target is arch-scoped, and one exception costs more than the
+# redundancy does. If that ever changes, this is the target to unscope
+# first.
+#
+# The result is a thin image whose payload is /wheels/*.whl plus the
+# atomesh binary — the same shape as aiter-wheel and torchvision-wheel.
+
+ARG PYTORCH_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/pytorch:latest
+
+FROM ${PYTORCH_IMAGE} AS builder
+
+ARG ATOM_REF=v0.1.9
+ARG PYTORCH_ROCM_ARCH=gfx950
+ARG ROCM_VERSION=10.1.0-full
+# The channel ATOM's Cargo.toml needs: edition 2021, axum 0.8, rand 0.9.
+# Shared with Dockerfile.vllm, which builds vllm/vllm-rs on the same pin.
+ARG RUST_VERSION=1.95
+ARG SCCACHE_WEBDAV_ENDPOINT=http://snoc-strix.fold-leaffish.ts.net:8081
+
+# Optional Cargo features for atomesh. Empty is deliberate and matches
+# upstream's atom_release.dockerfile: the only non-default feature is
+# ext-proc, which additionally compiles the Envoy ext_proc protos.
+# Nothing here uses it. Note that empty does NOT mean "no protobuf" —
+# see the protobuf-compiler note below.
+ARG ATOM_MESH_FEATURES=
+
+# sccache on S3, for builds that are not on the fleet. Empty selects
+# the WebDAV store above: sccache treats an empty SCCACHE_BUCKET as
+# unset, so these are inert on SNOC. Credentials are NOT args — they
+# arrive as a BuildKit secret, so they stay out of image history.
+ARG SCCACHE_BUCKET=
+ARG SCCACHE_REGION=
+ARG SCCACHE_S3_KEY_PREFIX=rocm-pytorch
+ARG SCCACHE_WEBDAV_KEY_PREFIX=rocm-pytorch
+ARG SCCACHE_VERSION=0.19.0
+# Pinned by content, not just by version tag: a release asset can be
+# replaced after publication. See Dockerfile.aiter.
+ARG SCCACHE_SHA256=aa73c7270c997894038c0d8f0d297865f57569e1687883322bc431713d4bb9dd
+
+LABEL org.opencontainers.image.source="https://github.com/ROCm/ATOM"
+LABEL org.opencontainers.image.description="ATOM ${ATOM_REF} for ROCm ${ROCM_VERSION}, ${PYTORCH_ROCM_ARCH}"
+
+# RUSTC_WRAPPER is the only sccache lever that matters here — there is
+# no CMake and no hipcc in this build, so the CMAKE_*_COMPILER_LAUNCHER
+# and HIP_CLANG_LAUNCHER settings the other wheel Dockerfiles carry
+# would wrap nothing. Same finding Dockerfile.vllm records for
+# vllm/vllm-rs: without RUSTC_WRAPPER, sccache sees zero rustc calls.
+#
+# CARGO_INCREMENTAL=0 because sccache declines to cache incremental
+# compilation. The release profile already disables it, so this states
+# the requirement rather than changing behaviour.
+ENV SCCACHE_WEBDAV_ENDPOINT=${SCCACHE_WEBDAV_ENDPOINT} \
+    SCCACHE_BUCKET=${SCCACHE_BUCKET} \
+    SCCACHE_REGION=${SCCACHE_REGION} \
+    SCCACHE_S3_KEY_PREFIX=${SCCACHE_S3_KEY_PREFIX} \
+    SCCACHE_SERVER_UDS=/tmp/sccache.sock \
+    SCCACHE_WEBDAV_KEY_PREFIX=${SCCACHE_WEBDAV_KEY_PREFIX} \
+    SCCACHE_IGNORE_CLIENT_VERSION=1 \
+    SCCACHE_CONF=/etc/sccache.toml \
+    RUSTC_WRAPPER=/usr/local/bin/sccache \
+    CARGO_INCREMENTAL=0 \
+    CARGO_HOME=/opt/cargo \
+    RUSTUP_HOME=/opt/rustup \
+    PATH=/opt/cargo/bin:/usr/local/bin:${PATH}
+
+# sccache lives in Dockerfile.pytorch's *builder* stage and never
+# reaches `final`, which is what this image is FROM.
+ADD --checksum=sha256:${SCCACHE_SHA256} \
+    "https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+    /tmp/sccache.tar.gz
+RUN tar xzf /tmp/sccache.tar.gz -C /usr/local/bin --strip-components=1 \
+        "sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache" && \
+    rm /tmp/sccache.tar.gz && chmod +x /usr/local/bin/sccache && sccache --version
+
+# Each RUN is a fresh container, so a build step has to start its own
+# sccache server, and startup probes the remote store. That probe is
+# bounded by a 10s timeout compiled into sccache — no environment
+# variable exists for it, only this config file field.
+RUN printf 'server_startup_timeout_ms = 60000\n' > /etc/sccache.toml
+
+# Native build dependencies of the atomesh cargo build. All three were
+# found by building, not by reading Cargo.toml, and both failures were
+# loud but entirely invisible from the manifest:
+#
+#   libssl-dev + pkg-config  openssl-sys's build script exits 101 with
+#     "Could not find openssl via pkg-config". The trap is that
+#     atom/mesh asks for rustls everywhere it names TLS at all (reqwest
+#     with default-features = false + rustls-tls, axum-server
+#     tls-rustls, rustls on ring) — openssl-sys arrives transitively
+#     anyway, and is absent from the resolved graph until cargo builds
+#     it. Upstream's atom_release.dockerfile:609 installs these two
+#     before rustup for the same reason.
+#
+#   protobuf-compiler + libprotobuf-dev  prost-build shells out to
+#     protoc, and `mesh_grpc = { package = "smg-grpc-client" }` has a
+#     build.rs that needs it. Note this is NOT the ext-proc feature:
+#     ext-proc is the opt-in that pulls tonic-prost-build, but
+#     smg-grpc-client sits under `grpc-client`, which is in Cargo.toml's
+#     `default`. So protoc is required for the default build, and
+#     ATOM_MESH_FEATURES="" does not avoid it.
+#
+#     Both packages, because Ubuntu splits them and the compiler alone
+#     is not enough: protobuf-compiler ships the protoc binary,
+#     libprotobuf-dev ships the well-known types under
+#     /usr/include/google/protobuf. With only the former, protoc runs
+#     and then fails on smg-grpc-client's own imports —
+#     "google/protobuf/timestamp.proto: File not found". PROTOC_INCLUDE
+#     is set explicitly below rather than left to prost-build's guess.
+#
+# Upstream does not install any of this because its base image
+# (rocm/pytorch) already ships protoc; ours is built from source and
+# does not put it on PATH.
+#
+# There is no Cargo.lock in the ATOM repo, so none of this resolution
+# is pinned: the transitive set can move under us between two builds of
+# the same ATOM tag. That is upstream's exposure as much as ours, but
+# it means a green build here is not evidence the next one is green.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        pkg-config \
+        libssl-dev \
+        protobuf-compiler \
+        libprotobuf-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && protoc --version \
+    && test -f /usr/include/google/protobuf/timestamp.proto
+
+ENV PROTOC=/usr/bin/protoc \
+    PROTOC_INCLUDE=/usr/include
+
+RUN curl -fsSL https://sh.rustup.rs -o /tmp/rustup-init.sh && \
+    sh /tmp/rustup-init.sh -y --no-modify-path --profile minimal \
+        --default-toolchain ${RUST_VERSION} && \
+    rm /tmp/rustup-init.sh && cargo --version
+
+# A tag, never a branch — a moving ref would be served from the layer
+# cache indefinitely, so an "update" would silently be a no-op.
+#
+# NOT shallow, unlike every other clone in this pipeline, and not
+# cosmetically. setup.py is `use_scm_version=True`: setuptools_scm
+# derives the version from git describe. `--depth 1 --branch v0.1.9`
+# does put the tag at HEAD, but git describe against a depth-1 clone is
+# fragile enough that the fallback_version = "0.1.0" in pyproject.toml
+# would be a silent wrong answer rather than an error. The version is
+# pinned explicitly below regardless; this just removes one way for the
+# two to disagree.
+#
+# No submodules: ATOM vendors what it needs (the FlyDSL kernel trees
+# under atom/models/glm52/mono/kernels are copied into the repo).
+RUN git clone --branch ${ATOM_REF} \
+    https://github.com/ROCm/ATOM.git /opt/atom
+
+WORKDIR /opt/atom
+
+# setuptools_scm, explicitly, and this is NOT belt-and-braces.
+#
+# pyproject.toml puts it in `[build-system] requires`, which is honoured
+# only by a PEP 517 front end. This builds with `setup.py bdist_wheel`
+# directly — the house convention, for the reason Dockerfile.torchvision
+# and Dockerfile.aiter both give — so that list is never consulted and
+# nothing installs it.
+#
+# Without it the failure is silent and the artifact is wrong: setuptools
+# does not recognise `use_scm_version`, emits only
+#
+#     UserWarning: Unknown distribution option: 'use_scm_version'
+#
+# and builds a wheel versioned 0.0.0 — not even pyproject's
+# fallback_version of 0.1.0, because the fallback belongs to
+# setuptools_scm too. SETUPTOOLS_SCM_PRETEND_VERSION below is read by
+# the same absent package, so it is ignored as well. Measured: the first
+# build of this file produced atom-0.0.0-py3-none-any.whl with the
+# pretend-version correctly set in the environment. The version
+# assertion further down is what turns that back into a build failure.
+RUN pip install --no-cache-dir "setuptools_scm[toml]>=6.2"
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# setuptools_scm, overridden. The same local-version trick
+# Dockerfile.torchvision plays with BUILD_VERSION, for the same reason:
+# `0.1.9+rocm10.1.0` is a version PyPI cannot offer, so a constraint
+# naming it is unsatisfiable from anywhere but this pipeline. `atom` is
+# a generic enough name on PyPI that this matters more here than it did
+# there.
+#
+# ATOM_MESH_BUILD=1 is what makes setup.py's build_py hook run cargo at
+# all. Its absence is silent in the way this repo keeps being bitten by:
+# without it the wheel builds fine, installs fine, imports fine, and
+# simply has no libmesh.so in it — the atomesh check below is what turns
+# that back into a build failure.
+#
+# ulimit -n 65536 because the cargo build spawns one rustc per crate in
+# parallel and runs out of file descriptors at docker's default nofile,
+# failing as "could not execute process rustc (never executed)",
+# os error 24. Upstream's atom_release.dockerfile documents the same.
+#
+# `setup.py bdist_wheel`, not `python -m build`, matching every other
+# wheel here. Upstream installs ATOM editable (`pip install -e .`),
+# which is why this path is ours rather than theirs.
+#
+# --python-tag / --plat-name because the default tag is a lie. ATOM
+# declares no ext_modules — the cargo build happens in a build_py hook
+# and libmesh.so arrives as package *data* — so bdist_wheel concludes
+# the wheel is pure Python and tags it py3-none-any. It is not: the
+# mesh crate links pyo3 0.28 with `auto-initialize` and WITHOUT abi3,
+# so libmesh.so is bound to this exact CPython as well as to x86-64
+# Linux. A py3-none-any wheel would install happily on the wrong
+# interpreter and fail when that .so is loaded.
+#
+# linux_x86_64 rather than a manylinux policy, deliberately: nothing
+# here runs auditwheel, so no claim about glibc has been checked and
+# manylinux_2_39 would be a guess. The consumers of this wheel are
+# images FROM the same PyTorch base, where that is not a constraint.
+# If this ever needs to install somewhere else, add an auditwheel
+# repair step the way Dockerfile.torchvision does and let it choose
+# the policy from the symbols.
+RUN --mount=type=secret,id=aws,required=false \
+    if [ -s /run/secrets/aws ]; then set -a; . /run/secrets/aws; set +a; fi; \
+    export SETUPTOOLS_SCM_PRETEND_VERSION="${ATOM_REF#v}+rocm${ROCM_VERSION%%-*}"; \
+    echo "SETUPTOOLS_SCM_PRETEND_VERSION=${SETUPTOOLS_SCM_PRETEND_VERSION}"; \
+    ulimit -n 65536; \
+    py_tag="cp$(python -c 'import sys; print(f"{sys.version_info.major}{sys.version_info.minor}")')"; \
+    echo "python tag: ${py_tag}"; \
+    ATOM_MESH_BUILD=1 ATOM_MESH_FEATURES="${ATOM_MESH_FEATURES}" \
+        python setup.py bdist_wheel --dist-dir=/wheels \
+            --python-tag "${py_tag}" --plat-name linux_x86_64 \
+    2>&1 | tee /wheels-build.log \
+    && sccache --show-stats | tee /wheels-atom-sccache-stats.txt
+
+SHELL ["/bin/sh", "-c"]
+
+# The atomesh binary. It is NOT in the wheel — pyproject.toml's
+# package-data names only mesh/target/release/libmesh.so, so the cdylib
+# ships and the executable does not. Upstream copies it to
+# /usr/local/bin as a separate step; this stage carries it out to the
+# scratch image for whoever builds the serving image.
+RUN strip /opt/atom/atom/mesh/target/release/atomesh && \
+    cp /opt/atom/atom/mesh/target/release/atomesh /usr/local/bin/atomesh && \
+    atomesh --version | tee /wheels-atomesh-version.txt
+
+# Structural checks on the artifact, before anything is installed.
+#
+# These run first deliberately: ATOM declares `transformers==5.16.1`
+# and a dozen other runtime dependencies, and resolving those is a
+# separate thing that can fail for reasons having nothing to do with
+# whether this wheel was built correctly. A dependency problem must not
+# be able to mask a missing libmesh.so.
+#
+# libmesh.so is the one that would otherwise pass silently. It reaches
+# the wheel through `[tool.setuptools.package-data] atom = [...]`, a
+# path relative to the atom package directory — atom/mesh has no
+# __init__.py and is not itself a package, so this depends on
+# include-package-data and on cargo having actually run.
+RUN set -eu; \
+    ls -la /wheels/; \
+    whl=$(ls /wheels/atom-*.whl); \
+    test -n "${whl}"; \
+    echo "${whl}" | grep -qF "+rocm${ROCM_VERSION%%-*}" || { \
+        echo "wheel is not versioned +rocm${ROCM_VERSION%%-*}: ${whl}" >&2; exit 1; }; \
+    python -m zipfile -l "${whl}" > /wheels-contents.txt; \
+    grep -qE 'atom/mesh/target/release/libmesh\.so' /wheels-contents.txt || { \
+        echo "wheel carries no libmesh.so — did ATOM_MESH_BUILD take?" >&2; \
+        grep -c . /wheels-contents.txt >&2; exit 1; }; \
+    echo "wheel structure verified: $(basename "${whl}")"
+
+# Now the import, with dependencies resolved. This is what the PyTorch
+# base image is for: `import atom` pulls torch, and a wheel that imports
+# against some other torch would prove nothing about this one.
+#
+# --no-build-isolation is not needed (nothing here builds), but
+# PIP_CONSTRAINT is: ATOM's dependency closure must not be allowed to
+# replace the ROCm torch this pipeline exists to produce with a CUDA
+# build from PyPI. Same guard Dockerfile.vllm writes for itself.
+#
+# `cd /` first, and not cosmetically: WORKDIR is the clone, which has an
+# atom/ package directory in it. Python puts the script's directory
+# first on sys.path, so importing from here would pick up the source
+# tree rather than the installed wheel and test nothing. Exactly the
+# trap documented at the bottom of Dockerfile.torchvision.
+RUN pip list --format=freeze > /tmp/pip-freeze.txt && \
+    grep -E '^(torch|torchvision|triton)==' /tmp/pip-freeze.txt > /etc/pip-constraints.txt && \
+    rm /tmp/pip-freeze.txt && \
+    cat /etc/pip-constraints.txt
+ENV PIP_CONSTRAINT=/etc/pip-constraints.txt
+
+# importlib.metadata rather than atom.__version__: ATOM's __init__.py
+# is lazy (a module-level __getattr__ over a submodule map) and exposes
+# no __version__ at all, so reading one raises AttributeError. The
+# version setuptools_scm wrote is in atom/_version.py, but the
+# distribution metadata is the thing worth asserting — it is what the
+# pip constraint in a consuming image will be matched against.
+RUN pip install --no-cache-dir /wheels/*.whl && \
+    cd / && python -c "\
+import torch, atom;\
+from importlib.metadata import version;\
+v = version('atom');\
+print('atom', v, 'on torch', torch.__version__);\
+assert torch.version.hip, 'torch is not a HIP build';\
+assert '+rocm' in v, f'atom reports {v}, not a +rocm local version';\
+import atom.entrypoints.openai_server;\
+print('atom.entrypoints.openai_server imports')"
+
+# ─── Wheel-only image ────────────────────────────────────────────
+# scratch, not the PyTorch image: this exists to be consumed by
+# `COPY --from=`, so it should carry the wheel and nothing else.
+FROM scratch AS wheel
+
+ARG PYTORCH_ROCM_ARCH
+ARG ATOM_REF
+LABEL org.opencontainers.image.source="https://github.com/ROCm/ATOM"
+LABEL org.opencontainers.image.description="ATOM ${ATOM_REF} wheel for ${PYTORCH_ROCM_ARCH}"
+
+COPY --from=builder /wheels/ /wheels/
+# atomesh rides along rather than in /wheels: it is not a wheel, and a
+# consumer globbing /wheels/*.whl must not pick it up.
+COPY --from=builder /usr/local/bin/atomesh /atomesh
+COPY --from=builder /wheels-build.log /wheels-atom-sccache-stats.txt \
+     /wheels-contents.txt /wheels-atomesh-version.txt /

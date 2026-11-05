@@ -268,6 +268,7 @@ BAKE_PRINT = docker buildx bake -f rocm-bake.hcl
         push-nixl-wheel build-nixl-wheel fetch-nixl-wheel \
         push-cupy-wheel build-cupy-wheel fetch-cupy-wheel \
         push-torchvision-wheel build-torchvision-wheel fetch-torchvision-wheel \
+        push-atom-wheel build-atom-wheel fetch-atom-wheel \
         build-vllm push-vllm push-vllm-wheel build-vllm-wheel fetch-vllm-wheel \
         build-lmcache push-lmcache push-lmcache-wheel build-lmcache-wheel \
         fetch-lmcache-wheel \
@@ -320,7 +321,8 @@ zot-tags: ## List tags for a repo (REPO=rocm-pytorch/base)
 # here — the same way the serving stack was absent from the layer
 # panel. Keep in step with the `wheels` group in rocm-bake.hcl.
 WHEEL_REPOS ?= pytorch-wheel triton-wheel aiter-wheel \
-               nixl-wheel torchvision-wheel cupy-wheel vllm-wheel lmcache-wheel
+               nixl-wheel torchvision-wheel atom-wheel cupy-wheel \
+               vllm-wheel lmcache-wheel
 
 # How many tags zot-wheels shows per repo, newest first. Every build
 # adds a tag and nothing removes them, so the full list is mostly
@@ -359,7 +361,7 @@ IMAGE_REPOS ?= rocm-runtime base pytorch runtime vllm lmcache
 CACHE_REPOS ?= rocm-runtime-cache base-cache pytorch-cache runtime-cache \
                vllm-cache lmcache-cache triton-wheel-cache \
                aiter-wheel-cache cupy-wheel-cache nixl-wheel-cache \
-               torchvision-wheel-cache
+               torchvision-wheel-cache atom-wheel-cache
 
 # IMAGE_ARCH, not PYTORCH_ROCM_ARCH directly, so one table can be asked
 # for while a build for another architecture is in flight. Scoping to
@@ -932,6 +934,9 @@ build-aiter-wheel: builder-ensure ## Build the AITER wheel image (no push)
 build-torchvision-wheel: builder-ensure ## Build the torchvision wheel image (no push)
 	$(call bake,torchvision-wheel)
 
+build-atom-wheel: builder-ensure ## Build the ATOM wheel image (no push)
+	$(call bake,atom-wheel)
+
 # Not offered for the pool. Scheduling across nodes makes every target
 # its own bake invocation, so they cannot hand results to each other
 # through `target:` contexts — stage 2 would build against whatever is
@@ -1423,6 +1428,19 @@ fetch-torchvision-wheel: ## Fetch the torchvision wheel from Zot into ./dist
 		| docker buildx build --builder $(BUILDER) \
 			--output type=local,dest=dist -
 	@ls -la dist/wheels/
+
+# ATOM is AMD's LLM serving engine and AITER's largest consumer — not a
+# wrapper around it. There is no ROCm wheel on PyPI. See
+# docker/Dockerfile.atom.
+push-atom-wheel: builder-ensure ## * Build and push the ATOM wheel image to Zot
+	$(call bake,atom-wheel,--push,pub)
+
+fetch-atom-wheel: ## Fetch the ATOM wheel (and atomesh) from Zot into ./dist
+	@mkdir -p dist
+	@printf 'FROM %s/%s/atom-wheel:latest\n' "$(REGISTRY)" "$(REGISTRY_NAME)" \
+		| docker buildx build --builder $(BUILDER) \
+			--output type=local,dest=dist -
+	@ls -la dist/wheels/ dist/atomesh
 
 # CuPy is not an optional extra: LMCache's MP server imports it at
 # module scope, and no published wheel matches ROCm 10.1 on cp314.

@@ -69,6 +69,15 @@ build lmcache-wheel     66
 # is the whole vertex span, push included. Take the kind=step spans.
 build torchvision-wheel  27
 
+# PLACEHOLDER, not measured. ATOM compiles no C++ and no HIP — the only
+# compile in it is the atomesh cargo build — so this should sit well
+# below the HIP targets. 120s is a guess that deliberately errs high:
+# an over-estimate costs a good node on one target, an under-estimate
+# costs the scheduler its ordering entirely (see the pytorch story
+# below). Replace from a cold run: `make perf-cold` then `make
+# perf-report`, taking the kind=step spans as the header describes.
+build atom-wheel        120
+
 # The image targets. These were absent until 2026-10-30, and the
 # absence was not harmless: cost_of falls back to build=1 for a target
 # with no row, so the scheduler believed `pytorch` cost one second.
@@ -155,3 +164,13 @@ cache pytorch-wheel   5046000000
 # it is the row most likely to move a placement now that best_node_for
 # actually reads these.
 cache torchvision-wheel 2595074525
+
+# PLACEHOLDER, not measured. The ATOM wheel is pure Python plus one
+# small Rust cdylib, so the export should be a fraction of the HIP
+# wheels' — but the image is FROM the PyTorch image and the scratch
+# wheel stage carries only /wheels, so what is actually exported is the
+# wheel and the cache layers of the builder stage. 250MB is a guess
+# borrowed from nothing in particular. Re-measure the same way
+# torchvision's row above was: sum Content-Length over every PUT/PATCH/
+# POST to an atom-wheel path in a run's zot.jsonl.
+cache atom-wheel        250000000
