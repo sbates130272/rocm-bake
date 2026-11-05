@@ -104,6 +104,124 @@ def fmt(spec):
     return text, cls
 
 
+def cost_cache(summary):
+    """The cost and cache cells for one arch, as (cost, sccache, layer).
+
+    Every one can be absent. A run from before these were recorded has no
+    `cost` key at all; an unknown instance has a null `usd`; a phase that
+    compiled nothing has a null `hit_rate`. Each renders as an em dash
+    rather than a zero, because zero is a measurement and these are not.
+    """
+    c = summary.get("cost") or {}
+    m = summary.get("metrics") or {}
+    sc = m.get("sccache") or {}
+    lc = m.get("layer_cache") or {}
+
+    cost = "—" if c.get("usd") is None else f"${c['usd']:.2f}"
+    if c.get("usd") is not None and not c.get("rate_verified"):
+        cost += "*"
+
+    rate = sc.get("hit_rate")
+    sccache = "—" if rate is None else f"{rate:.0f}%"
+
+    if lc:
+        layer = f"{lc.get('cached', 0)}/{lc.get('done', 0)}"
+    else:
+        layer = "—"
+    return cost, sccache, layer
+
+
+def write_chart(root, runs):
+    """Warm wall clock per run, oldest left, one bar group per arch.
+
+    Written as a file and referenced by <img>: GitHub strips inline <svg>
+    from markdown, the same reason perfreport.py emits its charts this way.
+
+    Returns the filename, or None when there is nothing worth drawing. One
+    run is not a series -- the chart would be a single bar implying a trend
+    that cannot exist -- so it takes two.
+    """
+    series = []
+    for r in reversed(runs):            # oldest first, left to right
+        for arch, s in sorted(r["arches"].items()):
+            warm = (s.get("phases", {}).get("warm") or {}).get("seconds")
+            if warm:
+                series.append((r["stamp"], arch, warm))
+    if len({stamp for stamp, _, _ in series}) < 2:
+        return None
+
+    arches = sorted({a for _, a, _ in series})
+    colours = {a: c for a, c in zip(arches, (BLUE, ORANGE, GREEN))}
+    stamps = sorted({s for s, _, _ in series})
+
+    w, h, pad_l, pad_b, pad_t = 760, 260, 54, 46, 28
+    plot_w, plot_h = w - pad_l - 16, h - pad_t - pad_b
+    top = max(v for _, _, v in series)
+    # Round the axis up to a whole minute so the gridline labels are not
+    # 7m13s; a build-time chart is read for shape, not for its maximum.
+    top = max(60, -(-top // 60) * 60)
+    slot = plot_w / max(1, len(stamps))
+    bw = min(34, slot / (len(arches) + 1))
+
+    style = (
+        "<style>"
+        "  .s{fill:#fff} .i{fill:#1f2328} .i2{fill:#656d76}"
+        "  .g{stroke:#d0d7de;stroke-width:1}"
+        "  text{font-family:ui-sans-serif,-apple-system,Segoe UI,Helvetica,"
+        "Arial,sans-serif}"
+        "  .l{font-size:10px} .t{font-size:12px;font-weight:600}"
+        "  @media (prefers-color-scheme: dark){"
+        "    .s{fill:#0d1117} .i{fill:#e6edf3} .i2{fill:#8b949e}"
+        "    .g{stroke:#30363d} }"
+        "</style>"
+    )
+    opening = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" '
+        f'viewBox="0 0 {w} {h}" role="img" '
+        f'aria-label="Nightly warm build time per run">'
+    )
+    out = [
+        opening,
+        style,
+        f'<rect class="s" width="{w}" height="{h}"/>',
+        '<text class="i t" x="12" y="18">Warm build time per night</text>',
+    ]
+
+    for frac in (0, 0.25, 0.5, 0.75, 1.0):
+        y = pad_t + plot_h - plot_h * frac
+        out.append(f'<line class="g" x1="{pad_l}" y1="{y:.1f}" '
+                   f'x2="{w - 16}" y2="{y:.1f}"/>')
+        out.append(f'<text class="i2 l" x="{pad_l - 6}" y="{y + 3:.1f}" '
+                   f'text-anchor="end">{int(top * frac // 60)}m</text>')
+
+    for si, stamp in enumerate(stamps):
+        x0 = pad_l + si * slot
+        for ai, arch in enumerate(arches):
+            vals = [v for st, a, v in series if st == stamp and a == arch]
+            if not vals:
+                continue
+            v = vals[0]
+            bh = plot_h * v / top
+            x = x0 + slot / 2 - (len(arches) * bw) / 2 + ai * bw
+            y = pad_t + plot_h - bh
+            out.append(f'<rect x="{x:.1f}" y="{y:.1f}" width="{bw - 3:.1f}" '
+                       f'height="{bh:.1f}" rx="2" fill="{colours[arch]}"/>')
+        out.append(f'<text class="i2 l" x="{x0 + slot / 2:.1f}" '
+                   f'y="{h - pad_b + 16}" text-anchor="middle">'
+                   f"{html.escape(stamp[:8])}</text>")
+
+    for ai, arch in enumerate(arches):
+        x = pad_l + ai * 108
+        out.append(f'<rect x="{x}" y="{h - 16}" width="9" height="9" rx="2" '
+                   f'fill="{colours[arch]}"/>')
+        out.append(f'<text class="i2 l" x="{x + 13}" y="{h - 8}">'
+                   f"{html.escape(arch)}</text>")
+
+    out.append("</svg>")
+    (root / "build-time.svg").write_text("\n".join(out) + "\n")
+    return "build-time.svg"
+
+
 NOTE = ("These are <strong>not</strong> comparable with the "
         '<a href="../perf/">instrumented fleet runs</a>. Those measure a '
         "parallel build across three nodes with a shared compiler cache; "
@@ -113,20 +231,30 @@ NOTE = ("These are <strong>not</strong> comparable with the "
 
 def write_html(root, runs):
     rows = []
+    unverified = False
     for r in runs:
         for arch, s in sorted(r["arches"].items()):
             ph = s.get("phases", {})
             cold, cold_cls = fmt(ph.get("cold"))
             warm, warm_cls = fmt(ph.get("warm"))
+            cost, sccache, layer = cost_cache(s)
+            unverified = unverified or cost.endswith("*")
             stamp = html.escape(r["stamp"])
             rows.append(
                 f'<tr><td><a href="{stamp}/">{stamp}</a></td>'
                 f"<td><code>{html.escape(arch)}</code></td>"
                 f'<td class="{cold_cls}">{cold}</td>'
-                f'<td class="{warm_cls}">{warm}</td></tr>')
+                f'<td class="{warm_cls}">{warm}</td>'
+                f"<td>{cost}</td><td>{sccache}</td><td>{layer}</td></tr>")
 
     body = "\n".join(rows) or (
-        '<tr><td colspan="4" class="skip">No runs published yet.</td></tr>')
+        '<tr><td colspan="7" class="skip">No runs published yet.</td></tr>')
+
+    chart = write_chart(root, runs)
+    chart_html = (f'<p><img src="{chart}" alt="Warm build time per night" '
+                  f'width="760"></p>') if chart else ""
+    foot = ('<p class="sub">* cost used an unverified rate for that '
+            "instance size.</p>") if unverified else ""
 
     (root / "index.html").write_text(f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
@@ -139,11 +267,14 @@ def write_html(root, runs):
 <p class="sub">Cold and warm bake invocations on a rented CodeBuild
 machine, one job per architecture.</p>
 <div class="note">{NOTE}</div>
+{chart_html}
 <table>
-<thead><tr><th>Run</th><th>Arch</th><th>Cold</th><th>Warm</th></tr></thead>
+<thead><tr><th>Run</th><th>Arch</th><th>Cold</th><th>Warm</th>
+<th>Cost</th><th>sccache</th><th>Layer cache</th></tr></thead>
 <tbody>
 {body}
 </tbody></table>
+{foot}
 </body></html>
 """)
 
@@ -202,12 +333,15 @@ def main(argv):
           "[instrumented fleet runs](../perf/). Those measure a parallel "
           "build across three nodes with a shared compiler cache; these "
           "measure sequential bakes on one machine.", "",
-          "| run | arch | cold | warm |", "| --- | --- | --- | --- |"]
+          "| run | arch | cold | warm | cost | sccache | layer cache |",
+          "| --- | --- | --- | --- | --- | --- | --- |"]
     for r in runs:
         for arch, s in sorted(r["arches"].items()):
             ph = s.get("phases", {})
+            cost, sccache, layer = cost_cache(s)
             md.append(f"| [{r['stamp']}]({r['stamp']}/) | `{arch}` | "
-                      f"{fmt(ph.get('cold'))[0]} | {fmt(ph.get('warm'))[0]} |")
+                      f"{fmt(ph.get('cold'))[0]} | {fmt(ph.get('warm'))[0]} | "
+                      f"{cost} | {sccache} | {layer} |")
     md.append("")
     (root / "index.md").write_text("\n".join(md) + "\n")
 

@@ -195,6 +195,13 @@ jobs:
           # here fails every cache export rather than falling back.
           REGISTRY_INSECURE: "false"
           CACHE_TAG_SUFFIX: -nightly
+          # The compute this job runs on, for the cost line in the report.
+          # It is the `instance-size:` label in `runs-on:` above; AWS
+          # exposes no environment variable naming the compute type, so the
+          # two have to be kept in step by hand. Wrong here means a wrong
+          # cost, not a failed build, so it is reported with the rate it
+          # used rather than silently.
+          NIGHTLY_INSTANCE: 2xlarge
           # sccache on S3 rather than the fleet's tailnet WebDAV store,
           # which this machine cannot reach. Unset SCCACHE_BUCKET and
           # the build falls back to WebDAV and fails at server start —

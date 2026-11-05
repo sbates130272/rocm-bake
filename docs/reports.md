@@ -51,18 +51,28 @@ relative to its own URL to populate a selector; every run also keeps a
 you get its full chart — overlaid CPU and memory, a legend that filters
 by builder and target, per-band hover.
 
-**`data/nightly/` is a table.** `nightlysite.py` writes a row per run
-and architecture — cold, warm, cache errors — with a
-`data/nightly/<stamp>/` permalink and its own `runs.json`. No chart, no
-legend, no per-target spans.
+**`data/nightly/` is a table, plus one bar chart.** `nightlysite.py`
+writes a row per run and architecture — cold, warm, cost, sccache hit
+rate, layer-cache hits — with a `data/nightly/<stamp>/` permalink and
+its own `runs.json`. Above the table, `build-time.svg` plots warm wall
+clock per night, one bar group per architecture. No legend filtering,
+no per-target spans, no sampled series.
 
-!!! note "The chart does not cover the AWS runs, and cannot"
-    Not an oversight. `nightly.sh` writes two files, `report.md` and
-    `summary.json`, because a rented CodeBuild machine has none of what
-    the chart is drawn from: there is no node_exporter on three nodes
-    to sample into `samples.jsonl`, no per-target `trace-<target>.json`,
-    and no Zot or nginx log to slice. A nightly times bake invocations
-    and claims nothing it cannot see.
+The chart appears only once there are **two** runs to compare: one bar
+is not a series, and drawing it would imply a trend that cannot exist.
+
+!!! note "The *sampled* chart does not cover the AWS runs, and cannot"
+    Not an oversight, and the distinction is narrower than "no chart".
+    A rented CodeBuild machine has none of what the fleet chart is drawn
+    from: there is no node_exporter on three nodes to sample into
+    `samples.jsonl`, no per-target `trace-<target>.json`, and no Zot or
+    nginx log to slice. None of that becomes available by wanting it.
+
+    What a nightly *can* see is its own wall clock, the instance it was
+    billed on, and what its phase logs already printed — which is what
+    `build-time.svg` and the cost and cache columns are drawn from, and
+    nothing more. A nightly times bake invocations and claims nothing it
+    cannot see.
 
     `nightlysite.py` is deliberately a separate index for the same
     reason the admonition above gives. Merging the two selectors would

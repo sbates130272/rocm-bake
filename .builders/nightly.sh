@@ -36,6 +36,13 @@ SKIP_COLD=0
 PUSH=1
 ENSURE_ECR=0
 
+# Which CodeBuild compute the job is on, for the cost line in the report.
+# The workflow hardcodes it in `runs-on:` as `instance-size:2xlarge`, and
+# AWS exposes no environment variable naming the compute type, so it is
+# passed in rather than detected. Empty means "unknown": the rate table
+# misses, and summary.json reports a null cost instead of a wrong one.
+NIGHTLY_INSTANCE="${NIGHTLY_INSTANCE:-}"
+
 usage() { sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 while [ $# -gt 0 ]; do
@@ -271,6 +278,43 @@ TOTAL_CACHE_ERR=$(( $(cerrof cold) + $(cerrof warm) ))
     fi
     printf 'arch `%s` · %d targets · registry `%s` · cache suffix `%s`\n' \
         "${ARCH}" "${#TARGETS[@]}" "${REGISTRY}" "${CACHE_TAG_SUFFIX}"
+
+    # Cost and cache, read back out of the summary this run just wrote, so
+    # the table and the JSON can never disagree. Printed only when there is
+    # something to say: an unknown instance yields no cost line rather than
+    # a zero, and a run with no compiler calls yields no sccache line.
+    python3 -I - "${OUT}/summary.json" <<'PY'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+c, m = d.get("cost") or {}, d.get("metrics") or {}
+sc, lc = m.get("sccache") or {}, m.get("layer_cache") or {}
+out = []
+if c.get("usd") is not None:
+    note = "" if c.get("rate_verified") else " (rate unverified)"
+    out.append(
+        f"cost **${c['usd']:.2f}** · {c['instance']} at "
+        f"${c['usd_per_min']:.3f}/min over {c['billed_seconds'] / 60:.1f} "
+        f"build-minutes{note}"
+    )
+elif c.get("instance"):
+    out.append(f"cost unknown — no rate for instance `{c['instance']}`")
+if sc.get("hit_rate") is not None:
+    out.append(
+        f"sccache **{sc['hit_rate']:.1f}%** "
+        f"({sc['hits']} hit / {sc['hits'] + sc['misses']} cacheable)"
+    )
+if lc:
+    out.append(
+        f"layer cache {lc['cached']}/{lc['done']} steps CACHED"
+        + (f" · {lc['import_misses']} import miss(es)"
+           if lc.get("import_misses") else "")
+    )
+if out:
+    print("\n" + " · ".join(out))
+PY
     if [ "${WARM_RC}" != 0 ] || { [ "${SKIP_COLD}" = 0 ] && [ "${COLD_RC}" != 0 ]; }; then
         printf '\n<details><summary>last 40 lines of the failing phase</summary>\n\n```\n'
         for n in cold warm; do
@@ -283,16 +327,55 @@ TOTAL_CACHE_ERR=$(( $(cerrof cold) + $(cerrof warm) ))
     fi
 } > "${OUT}/report.md"
 
-python3 -I - "${OUT}" "${ARCH}" "${REGISTRY}" <<'PY' > "${OUT}/summary.json"
+# Metrics the phase logs already carried and nobody read: sccache hit
+# rate, CACHED-vs-DONE, cache-import misses, and per-target
+# vertex-seconds for the chart. See .builders/nightlymetrics.py.
+#
+# Both logs unconditionally; the script drops the one --skip-cold never
+# wrote. A parse failure must not lose the run, so this falls back to an
+# empty object rather than failing the build.
+METRICS_JSON="$(python3 -I "${HERE}/nightlymetrics.py" \
+    "${OUT}/cold.log" "${OUT}/warm.log" 2>/dev/null || echo '{}')"
+
+python3 -I - "${OUT}" "${ARCH}" "${REGISTRY}" "${NIGHTLY_INSTANCE}" \
+    "${METRICS_JSON}" <<'PY' > "${OUT}/summary.json"
 import json, sys, pathlib
-out, arch, registry = sys.argv[1], sys.argv[2], sys.argv[3]
+out, arch, registry, instance, metrics_raw = sys.argv[1:6]
 phases = {}
 for line in (pathlib.Path(out) / "phases").read_text().split("\n"):
     parts = line.split()
     if len(parts) == 4:
         phases[parts[0]] = {"seconds": int(parts[1]), "rc": int(parts[2]),
                             "cache_errors": int(parts[3])}
-print(json.dumps({"arch": arch, "registry": registry, "phases": phases}, indent=2))
+
+try:
+    metrics = json.loads(metrics_raw) or {}
+except ValueError:
+    metrics = {}
+
+# CodeBuild on-demand Linux, USD per build-minute. Only 2xlarge is
+# measured here: $17.80 billed across 88.2 minutes on 2026-11-04 gives
+# $0.2018/min, which matches AWS's published rate. The rest are AWS's
+# published figures, carried so a resized project still reports a cost
+# -- check one against a bill before trusting it.
+RATES = {"small": 0.005, "medium": 0.010, "large": 0.020,
+         "xlarge": 0.080, "2xlarge": 0.200}
+VERIFIED = {"2xlarge"}
+
+rate = RATES.get(instance)
+billed = sum(p["seconds"] for p in phases.values())
+cost = {
+    "instance": instance or None,
+    "usd_per_min": rate,
+    "rate_verified": instance in VERIFIED,
+    # Phase wall clock, which is the bake. It excludes CodeBuild's ~135s
+    # PROVISIONING, so this is a floor on the bill, not the bill.
+    "billed_seconds": billed,
+    "usd": round(rate * billed / 60.0, 2) if rate else None,
+}
+
+print(json.dumps({"arch": arch, "registry": registry, "phases": phases,
+                  "cost": cost, "metrics": metrics}, indent=2))
 PY
 
 cat "${OUT}/report.md" >&2
