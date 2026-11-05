@@ -1,0 +1,108 @@
+---
+# Publish one architecture's wheels publicly: binaries to a GitHub
+# release, the PEP 503 index to gh-pages.
+#
+# Manual dispatch, not a schedule and not a hook on the nightly. Three
+# reasons, in order of how much they matter.
+#
+# The nightly deliberately splits its jobs: the one that runs the build
+# holds registry credentials and third-party build code, and is not the
+# one that writes to this repository. Hooking publishing onto it would
+# have to break that, by giving either the build job permission to cut
+# public releases or the publishing job credentials to a registry.
+#
+# This workflow does hold both, and that is defensible where the
+# nightly's build job is not: it compiles nothing. It pulls finished
+# wheels out of ECR and uploads them. No third-party source is built
+# here, so "holds credentials and runs build code" does not apply.
+#
+# And publishing is a decision. Every green night republishing a 1.2GB
+# release is not obviously wanted, especially on a lane whose
+# NIGHTLY_ARCHES is pinned to one architecture.
+#
+# Runs on CodeBuild rather than a GitHub runner because that is where
+# ECR access is: the build's identity is the project's service role,
+# already attached to the machine, and the fleet's own Zot is on a
+# tailnet a hosted runner cannot reach. It bills like any other
+# CodeBuild minute — a publish is a few minutes of download and upload,
+# so call it a couple of dollars.
+name: Wheels — publish one architecture
+
+on:
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: 'Architecture to publish (one release per arch)'
+        required: true
+        type: choice
+        options: [gfx950, gfx1201, gfx1151, gfx1250]
+      dry_run:
+        description: 'Show what would happen, touch nothing'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  # One publish at a time. Two would race on the same gh-pages branch,
+  # and the loser's index would be silently dropped by the push.
+  group: wheels-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: ${{ inputs.arch }}
+    runs-on:
+      - codebuild-${{ vars.CODEBUILD_PROJECT }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - instance-size:2xlarge
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The gh-pages worktree ghpages.sh creates needs real history
+          # to attach to; a shallow clone cannot add a worktree for a
+          # ref it does not have.
+          fetch-depth: 0
+
+      - name: Log in to ECR
+        run: |
+          aws ecr get-login-password --region "${{ vars.AWS_REGION }}" \
+            | docker login --username AWS --password-stdin \
+                "${{ vars.ECR_REGISTRY }}"
+
+      # Fetches this arch's wheels out of the registry and builds the
+      # local index. wheels-publish then regenerates that index with the
+      # release URL as its href prefix -- same script, different
+      # --wheel-url -- so what is published is what was just fetched.
+      - name: Fetch wheels and build the index
+        env:
+          REGISTRY: ${{ vars.ECR_REGISTRY }}
+          REGISTRY_INSECURE: "false"
+        run: |
+          make wheel-index ARCHES="${{ inputs.arch }}"
+          ls -la "dist/wheels/${{ inputs.arch }}/"
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REGISTRY: ${{ vars.ECR_REGISTRY }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          make wheels-publish ARCH="${{ inputs.arch }}" \
+            WHEELS_PUBLISH_ARGS="${{ inputs.dry_run && '--dry-run' || '' }}"
+
+      - name: Where it landed
+        if: ${{ !inputs.dry_run }}
+        run: |
+          owner='${{ github.repository_owner }}'
+          name="${GITHUB_REPOSITORY##*/}"
+          echo "### Published ${{ inputs.arch }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```bash' >> "$GITHUB_STEP_SUMMARY"
+          echo "pip install \\" >> "$GITHUB_STEP_SUMMARY"
+          echo "  --index-url https://${owner}.github.io/${name}/data/wheels/${{ inputs.arch }}/ \\" \
+            >> "$GITHUB_STEP_SUMMARY"
+          echo "  --extra-index-url https://pypi.org/simple \\" >> "$GITHUB_STEP_SUMMARY"
+          echo "  \"rocm-torch[device-${{ inputs.arch }}]\"" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
