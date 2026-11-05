@@ -1442,6 +1442,20 @@ target "vllm" {
     NIXL_WHEEL_IMAGE        = USE_PUB ? PUB_NIXL : "nixl-wheels"
     TORCHVISION_WHEEL_IMAGE = USE_PUB ? PUB_TORCHVISION : "torchvision-wheels"
     LMCACHE_WHEEL_IMAGE     = USE_PUB ? PUB_LMCACHE : "lmcache-wheels"
+    # Dockerfile.vllm has always declared `ARG MAX_JOBS=`, but this
+    # target never passed it, so the one knob that bounds the heaviest
+    # compile in the graph could not be set — `MAX_JOBS=8 make
+    # push-vllm` was accepted and silently ignored, and the build chose
+    # its own job count anyway.
+    #
+    # Found on gfx1151. Dockerfile.vllm uses MEM_PER_JOB_GB=1, where
+    # every other Dockerfile here uses 2, because a measured gfx1201
+    # run averaged 0.75GB per job. That arithmetic is right on a 128GB
+    # node and wrong on snoc-strix, which has 30GB: the heuristic read
+    # 21GB available, chose 20 jobs, and the first of the 7GB outliers
+    # the comment at MEM_PER_JOB_GB itself warns about took the build
+    # out with ResourceExhausted. Nothing could override it.
+    MAX_JOBS                = MAX_JOBS
     VLLM_REF                = VLLM_REF
     # Same ref the aiter-wheel target built from: Dockerfile.vllm fetches
     # AITER's requirements.txt at this tag because the wheel does not

@@ -9,7 +9,7 @@ Two different things, easy to confuse:
 
 `PYTORCH_ROCM_ARCH` picks the architecture for one build and defaults to
 `gfx950`. `ARCHES` is the list the `arches-*` wrappers fan out over, and
-defaults to `gfx950 gfx1201 gfx1250`.
+defaults to `gfx950 gfx1201 gfx1151 gfx1250`.
 
 ```bash
 make arches-push-all                      # every target, every arch
@@ -21,6 +21,22 @@ make arches-list                          # what ARCHES resolves to
 `arches-%` accepts *any* target name. Each architecture is a full pass
 over every target, so treat the list as a multiplier on build time; the
 passes run sequentially because they contend for the same builders.
+
+## `gfx1151` Is The Card snoc-strix Actually Has
+
+RDNA3.5 (Strix Halo). Unlike `gfx950` and `gfx1250`, it is in the fleet
+— see `manifests/*.yml` or `make list-nodes` for which node has what —
+so it can be GPU-tested rather than only cross-compiled, including with
+`GPU_HOST=snoc-strix` when the default `gpu_node` is busy.
+
+ROCm 10.1 ships eleven `-gfx1151` packages, so `rocm-prune` has
+something to keep. AITER v0.1.28 lists it as Experimental and still
+recommends installing it on RDNA parts, with the caveat that drives the
+`PREBUILD_KERNELS` choice below: most CK and ASM kernels are CDNA-only,
+so level 2 fails here as it does on `gfx1201`. Level 0 is the default.
+
+It is **not** RDNA4 despite being gfx11-and-up — `IS_RDNA4` tests for a
+`gfx12` substring, so `USE_ROCM_CK_SDPA_GFX12` stays off.
 
 ## `gfx1250` Is In The List Without Being In The Fleet
 

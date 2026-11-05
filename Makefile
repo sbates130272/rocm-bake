@@ -1025,6 +1025,21 @@ _push-wheels: builder-ensure
 # single-valued and still defaults to gfx950, so every existing target
 # is unchanged; this is the list the arches-* wrappers fan out over.
 #
+# gfx1151 (RDNA3.5, Strix Halo) is snoc-strix's own card. Which nodes
+# have which card is in manifests/*.yml and `make list-nodes`; this
+# comment is about why the arch is in the build list.
+#
+# Checked rather than assumed: ROCm 10.1 ships eleven -gfx1151 packages
+# so rocm-prune has something to keep, and AITER v0.1.28's table lists
+# gfx1151 as Experimental while still recommending it on RDNA. That
+# qualifier is why PREBUILD_KERNELS matters — most CK and ASM kernels
+# are CDNA-only, so level 2 would fail the way it does on gfx1201.
+# Level 0 is the default; nothing needs passing.
+#
+# NOT RDNA4, despite the gfx11-and-up number: IS_RDNA4 in rocm-bake.hcl
+# tests for a gfx12 substring, so gfx1151 correctly leaves
+# USE_ROCM_CK_SDPA_GFX12 off.
+#
 # gfx1250 (MI450) is in the list without being in the fleet. The
 # builders already cross-compile — the two gfx1201 nodes build gfx950
 # today — so having no such card only means `make test` and `make
@@ -1044,7 +1059,7 @@ _push-wheels: builder-ensure
 # builds producing two separately-tagged sets of artifacts. The fat
 # build is still available — set PYTORCH_ROCM_ARCH to the ";" form —
 # but it costs both compiles and ships every card the larger binary.
-ARCHES ?= gfx950 gfx1201 gfx1250
+ARCHES ?= gfx950 gfx1201 gfx1151 gfx1250
 
 # `make arches-push-all`, `make arches-build-pytorch`, `make
 # arches-push-wheels` — any target, once per arch. Sequential: the

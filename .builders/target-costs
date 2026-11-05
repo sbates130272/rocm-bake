@@ -165,12 +165,17 @@ cache pytorch-wheel   5046000000
 # actually reads these.
 cache torchvision-wheel 2595074525
 
-# PLACEHOLDER, not measured. The ATOM wheel is pure Python plus one
-# small Rust cdylib, so the export should be a fraction of the HIP
-# wheels' — but the image is FROM the PyTorch image and the scratch
-# wheel stage carries only /wheels, so what is actually exported is the
-# wheel and the cache layers of the builder stage. 250MB is a guess
-# borrowed from nothing in particular. Re-measure the same way
-# torchvision's row above was: sum Content-Length over every PUT/PATCH/
-# POST to an atom-wheel path in a run's zot.jsonl.
-cache atom-wheel        250000000
+# PARTLY MEASURED. The published image is 20,854,576 bytes over three
+# zstd layers, read from the manifest after the first push on
+# 2026-11-05: 13,641,288 for the wheel, 7,163,114 for the atomesh
+# binary, 50,174 for the logs. That is the image, not the export this
+# row costs — cost_of charges the builder stage's cache layers too, and
+# those are not in the manifest. 60MB carries the measured image plus
+# room for them.
+#
+# The first placeholder here was 250MB, guessed before anything had
+# been built; the image alone came in at a twelfth of that. Still
+# re-measure properly the way torchvision's row above was: sum
+# Content-Length over every PUT/PATCH/POST to an atom-wheel path in a
+# run's zot.jsonl.
+cache atom-wheel         60000000

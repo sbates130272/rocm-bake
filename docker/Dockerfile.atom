@@ -33,6 +33,15 @@
 # redundancy does. If that ever changes, this is the target to unscope
 # first.
 #
+# That claim is measured, not assumed. Comparing the gfx950 and gfx1151
+# wheels of v0.1.9: 1204 of 1206 files are byte-identical, and the only
+# two that differ are libmesh.so and the RECORD carrying its hash — by
+# 24 bytes, of which 20 are the GNU build-id and 4 are the digits of a
+# wall-clock timestamp build.rs stamps with chrono::Utc::now(). No
+# device code, no architecture. The flip side is that this wheel can
+# never be bit-reproducible while that stamp exists; see
+# docs/architecture/reproducibility.md.
+#
 # The result is a thin image whose payload is /wheels/*.whl plus the
 # atomesh binary — the same shape as aiter-wheel and torchvision-wheel.
 
