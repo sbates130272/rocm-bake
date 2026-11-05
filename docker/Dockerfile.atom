@@ -213,6 +213,40 @@ WORKDIR /opt/atom
 # assertion further down is what turns that back into a build failure.
 RUN pip install --no-cache-dir "setuptools_scm[toml]>=6.2"
 
+# ATOM's samplers refuse to run on any RDNA part, and do not have to.
+#
+# atom/model_ops/{sampler,rejection_sampler}.py call AITER's topk_select,
+# and aiter/ops/topk_select.py gates it to
+#
+#   _SUPPORTED_GFX = ("gfx942", "gfx950", "gfx1250")
+#
+# so serving dies at the first forward with "topk_select is not
+# supported on gfx1151". gfx1201 is not in that tuple either, so this
+# is every RDNA card including the one ATOM's own README advertises as
+# Experimental — measured on gfx1151, where the model loads, the
+# weights load, and the failure lands in warmup_model -> forward ->
+# sampler.
+#
+# The patch rebinds the imported name rather than rewriting call sites,
+# so all three call shapes work untouched — including the k>1 one in
+# rejection_sampler.py, which has no argmax equivalent and would
+# otherwise leave speculative decoding blocked on RDNA. Dispatch is at
+# runtime so the wheel stays architecture-independent and CDNA keeps
+# the fused kernel. docker/atom-topk-fallback.py carries the full
+# reasoning, including the one accepted behavioural caveat about tie
+# breaking.
+#
+# A file copied from the context rather than a printf'd heredoc: this
+# is 50 lines with its own docstring, and Dockerfile.rocm-runtime
+# already establishes the pattern with docker/rocm-prune.sh.
+COPY docker/atom-topk-fallback.py /tmp/atom-topk-fallback.py
+RUN python3 -I /tmp/atom-topk-fallback.py && \
+    rm /tmp/atom-topk-fallback.py && \
+    python3 -c "import ast; ast.parse(open('atom/model_ops/sampler.py').read())" && \
+    python3 -c "import ast; ast.parse(open('atom/model_ops/rejection_sampler.py').read())" && \
+    python3 -c "import ast; ast.parse(open('atom/distributed/nccl_watchdog.py').read())" && \
+    echo "atom topk: both samplers parse clean after patch"
+
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # setuptools_scm, overridden. The same local-version trick
