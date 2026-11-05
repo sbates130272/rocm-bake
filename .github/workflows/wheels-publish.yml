@@ -98,11 +98,16 @@ jobs:
         run: |
           owner='${{ github.repository_owner }}'
           name="${GITHUB_REPOSITORY##*/}"
-          echo "### Published ${{ inputs.arch }}" >> "$GITHUB_STEP_SUMMARY"
-          echo '```bash' >> "$GITHUB_STEP_SUMMARY"
-          echo "pip install \\" >> "$GITHUB_STEP_SUMMARY"
-          echo "  --index-url https://${owner}.github.io/${name}/data/wheels/${{ inputs.arch }}/ \\" \
-            >> "$GITHUB_STEP_SUMMARY"
-          echo "  --extra-index-url https://pypi.org/simple \\" >> "$GITHUB_STEP_SUMMARY"
-          echo "  \"rocm-torch[device-${{ inputs.arch }}]\"" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          arch='${{ inputs.arch }}'
+          # One redirect, not seven: actionlint runs shellcheck over
+          # this block and SC2129 objects to the repeated form.
+          cat >> "$GITHUB_STEP_SUMMARY" <<SUMMARY
+          ### Published ${arch}
+
+          \`\`\`bash
+          pip install \\
+            --index-url https://${owner}.github.io/${name}/data/wheels/${arch}/ \\
+            --extra-index-url https://pypi.org/simple \\
+            "rocm-torch[device-${arch}]"
+          \`\`\`
+          SUMMARY
