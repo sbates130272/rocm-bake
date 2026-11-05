@@ -40,9 +40,42 @@ Per-image overrides pin one without the others:
 SDE_PYTORCH=1700000001 make build-pytorch
 ```
 
-The ten `SDE_*` per-image variables all default to empty, meaning "use
-`SDE_EPOCH`". Bake reads them from the environment, so `SDE_PYTORCH=…
+The twelve `SDE_*` per-image variables all default to empty, meaning
+"use `SDE_EPOCH`". Bake reads them from the environment, so `SDE_PYTORCH=…
 make …` works and `make … SDE_PYTORCH=…` does not.
+
+## `atom-wheel` Is Not Bit-Reproducible, And `SOURCE_DATE_EPOCH` Cannot Fix It
+
+ATOM's `atom/mesh/build.rs` stamps the binary with
+`chrono::Utc::now()`, which no epoch variable reaches:
+
+```rust
+set_env!("BUILD_TIME", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"));
+```
+
+Measured by comparing the `gfx950` and `gfx1151` wheels of ATOM
+`v0.1.9`, built an hour apart. Of 1206 files, 1204 are byte-identical;
+only `atom/mesh/target/release/libmesh.so` and the `RECORD` that
+carries its hash differ. Inside that 20,930,632-byte `.so`, exactly 24
+bytes differ — 20 of them the `.note.gnu.build-id`, which is a hash of
+the output rather than an input, and the other four the digits of:
+
+```
+2026-11-05 02:13:25 UTC     gfx950
+2026-11-05 03:12:52 UTC     gfx1151
+```
+
+Everything else in that record matches: crate version `0.2.0`, target
+triple, ATOM commit `606aceb1`, `clean` tree, `rustc 1.95.0`.
+
+Two things follow. First, the wheel's *content* really is
+architecture-independent — which is what `docker/Dockerfile.atom` and
+the `atom-wheel` target claim, and the 1204 identical files are the
+evidence. Second, two builds of the same ATOM tag will never share a
+digest, so nothing downstream can pin `atom-wheel` by digest and expect
+a rebuild to match. Fixing it means patching `build.rs` to honour
+`SOURCE_DATE_EPOCH`, upstream or in this repo; until then this is a
+known exception rather than a defect to hunt.
 
 ## Provenance Attestations
 

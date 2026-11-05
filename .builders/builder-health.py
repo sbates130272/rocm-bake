@@ -38,7 +38,7 @@ Usage:
   ./builder-health.py --refresh       probe now and update the cache
   ./builder-health.py --cached-only   never probe; use whatever is cached
 
---cached-only exists for `make watch`, which repaints every few seconds
+--cached-only exists for `make build-watch`, which repaints every few seconds
 and must never block. A probe costs as long as the slowest dead node
 takes to time out — 20s here with one node down — so watch warms the
 cache once up front and then reads it, accepting that a status can be a
@@ -62,11 +62,11 @@ def fleet_builders(names):
     The filter used to be the literal prefix `snoc-`, which quietly
     assumed every builder worth watching was named after one fleet.
     Now it is membership of the manifest, plus the pool sentinel —
-    `make watch` lists the pool in its own right because its buildkit
+    `make build-watch` lists the pool in its own right because its buildkit
     instances keep their own build history.
 
     Falls back to every name if the manifest cannot be read: a broken
-    manifest should not make `make watch` claim there are no builders.
+    manifest should not make `make build-watch` claim there are no builders.
     """
     try:
         here = Path(__file__).resolve().parent
@@ -87,7 +87,7 @@ def fleet_builders(names):
 # it `error`. Measured over 20s here with snoc-gaming down.
 TIMEOUT = 45
 
-# Which makes it far too slow to call from `watch` on a 5s refresh, so
+# Which makes it far too slow to call from `build-watch` on a 5s refresh, so
 # the result is cached, the same way builder-load already caches per-node
 # load in /tmp/.rocm-load. Health changes on the scale of a daemon
 # restart, not a build step, so a minute of staleness costs nothing and
@@ -168,7 +168,7 @@ def builder_table(max_age=MAX_AGE):
 
     builders = debounce_errors(builders, cached)
 
-    # Written via a temporary file so a `watch` reading it concurrently
+    # Written via a temporary file so a `build-watch` reading it concurrently
     # never sees a half-written one.
     try:
         tmp = f"{CACHE}.{os.getpid()}"
@@ -192,7 +192,7 @@ def debounce_errors(fresh, cached):
 
     It is not hypothetical. snoc-gaming is behind WiFi at 3.7MB/s, and
     while it uploads a cache export its endpoint answers slowly enough
-    to be marked `error` — so `make watch` painted it red through
+    to be marked `error` — so `make build-watch` painted it red through
     roughly every export it did, on a node that was building fine. A
     probe takes 520ms against that node when it is idle.
 

@@ -147,7 +147,7 @@ for ref in ${REFS}; do
     # made these filenames unique: triton and aiter both used to tee to
     # /wheels-sccache-stats.txt, so records written before it aged out
     # would match no marker and silently drop their sccache numbers
-    # from `make watch`. Those old records are genuinely ambiguous and
+    # from `make build-watch`. Those old records are genuinely ambiguous and
     # cannot be attributed exactly, but a possibly-imprecise number
     # beats a blank panel until they expire.
     marker=""; legacy=""

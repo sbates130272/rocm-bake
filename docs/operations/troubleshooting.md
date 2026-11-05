@@ -110,7 +110,7 @@ layer cache and the shared compiler cache are untouched, so the next
 build still picks up where it can.
 
 A build cancelled by `build-stop` is recorded by BuildKit as `Error`
-with no detail, indistinguishable from a real failure. `make watch`
+with no detail, indistinguishable from a real failure. `make build-watch`
 reads a stop file so it can label those correctly.
 
 ### Alternating Architectures Are Both Always Cold

@@ -290,10 +290,40 @@ ENV USE_AITER=${USE_AITER} \
 # friends) still declare it, and fail to configure without this.
 ENV CMAKE_POLICY_VERSION_MINIMUM=3.5
 
+# USE_NCCL=ON means RCCL here, and it is not optional for every
+# consumer of this image.
+#
+# It was OFF until now, and that was never a decision about collectives
+# — it arrived inside this block in commit 48b0307 ("tidy the top
+# level"), whose message does not mention NCCL or RCCL. Nothing noticed
+# because nothing exercised torch.distributed: vLLM at TP=1 needs no
+# process group, so the whole pipeline ran for weeks on a torch with
+# only gloo.
+#
+# ATOM is what found it. Its model runner creates a process group even
+# at -tp 1, so `python -m atom.entrypoints.openai_server` died with
+#
+#     RuntimeError: Distributed package doesn't have NCCL built in
+#
+# on a card AITER had already JIT-compiled for happily. Not an
+# architecture problem and not an ATOM bug — this flag.
+#
+# No USE_SYSTEM_NCCL beside it, deliberately: cmake/Dependencies.cmake
+# logs "Forcing USE_SYSTEM_NCCL to ON since it's required by using
+# RCCL" and includes External/rccl.cmake itself, so setting it here
+# would restate what upstream already guarantees.
+#
+# Nothing has to be fetched or built for this. ROCm 10.1 ships RCCL
+# complete — NCCL API 2.30.7, amdrocm-rccl-dev10.1 carrying
+# rccl/rccl.h and lib/cmake/rccl/rccl-config.cmake — and rocm-prune
+# keeps the arch-scoped amdrocm-rccl10.1-gfxNNNN through its generic
+# -gfxNNNN rule, so the runtime library survives into every image
+# downstream. Contrast UCX in Dockerfile.nixl, which IS built from
+# source because Ubuntu's has no ROCm support; RCCL has no such gap.
 ENV USE_ROCM=1 \
     USE_CUDA=0 \
     USE_MKLDNN=OFF \
-    USE_NCCL=OFF \
+    USE_NCCL=ON \
     USE_KINETO=OFF \
     USE_FBGEMM=ON \
     USE_QNNPACK=ON \

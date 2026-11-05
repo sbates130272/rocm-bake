@@ -97,6 +97,39 @@
         state: directory
         mode: "0755"
 
+    # Zot writes here instead of stdout, so its request log never
+    # reaches journald or syslog. See registry_zot_log_file for the
+    # 88GB of /var/log/syslog that made this necessary.
+    - name: Log directory
+      become: true
+      ansible.builtin.file:
+        path: "{{ registry_zot_log_file | dirname }}"
+        state: directory
+        owner: zot
+        group: zot
+        mode: "0755"
+
+    # Bounds the file whatever the level. Without this, raising
+    # registry_zot_log_level back to info to debug something would
+    # refill the disk exactly as before, just in a different path.
+    - name: Log rotation
+      become: true
+      ansible.builtin.copy:
+        dest: /etc/logrotate.d/zot
+        mode: "0644"
+        content: |
+          {{ registry_zot_log_file }} {
+              daily
+              rotate 7
+              maxsize 200M
+              missingok
+              notifempty
+              compress
+              delaycompress
+              copytruncate
+              su zot zot
+          }
+
     - name: Configuration
       become: true
       ansible.builtin.template:

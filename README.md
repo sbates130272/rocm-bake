@@ -43,6 +43,7 @@ default — `PERF_BIND=` narrows it, `make perf-serve-stop` ends it.
 | Triton | [triton-lang/triton](https://github.com/triton-lang/triton) | `TRITON_VERSION` | `3.9.0` |
 | AITER | [ROCm/aiter](https://github.com/ROCm/aiter) | `AITER_REF` | `v0.1.28` |
 | torchvision | [pytorch/vision](https://github.com/pytorch/vision) | `TORCHVISION_REF` | `v0.29.2` |
+| ATOM | [ROCm/ATOM](https://github.com/ROCm/ATOM) | `ATOM_REF` | `v0.1.9` |
 | NIXL | [ai-dynamo/nixl](https://github.com/ai-dynamo/nixl) | `NIXL_REF` | `v1.5.2` |
 | UCX | [openucx/ucx](https://github.com/openucx/ucx) | `UCX_REF` | `v1.22.0` |
 | vLLM | [vllm-project/vllm](https://github.com/vllm-project/vllm) | `VLLM_REF` | `v0.33.0` |
@@ -72,7 +73,7 @@ make zot-check                     # is the registry up?
 make fleet-apply                   # bring every node to the manifest's state
 make builder-setup                 # a buildx builder per node
 make push-all BUILDER=snoc-pool    # build and publish everything
-make watch                         # follow it from a second terminal
+make build-watch                   # follow it from a second terminal
 ```
 
 The step-by-step version is in the

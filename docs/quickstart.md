@@ -184,8 +184,8 @@ docker buildx bake -f rocm-bake.hcl --set '*.args.REQUIRE_SCCACHE=0' pytorch
 From a second terminal:
 
 ```bash
-make watch                              # every builder, with a live tail
-make watch WATCH_BUILDERS=snoc-think WATCH_LINES=40
+make build-watch                        # every builder, with a live tail
+make build-watch WATCH_BUILDERS=snoc-think WATCH_LINES=40
 ```
 
 Or one thing at a time:

@@ -69,6 +69,15 @@ build lmcache-wheel     66
 # is the whole vertex span, push included. Take the kind=step spans.
 build torchvision-wheel  27
 
+# PLACEHOLDER, not measured. ATOM compiles no C++ and no HIP — the only
+# compile in it is the atomesh cargo build — so this should sit well
+# below the HIP targets. 120s is a guess that deliberately errs high:
+# an over-estimate costs a good node on one target, an under-estimate
+# costs the scheduler its ordering entirely (see the pytorch story
+# below). Replace from a cold run: `make perf-cold` then `make
+# perf-report`, taking the kind=step spans as the header describes.
+build atom-wheel        120
+
 # The image targets. These were absent until 2026-10-30, and the
 # absence was not harmless: cost_of falls back to build=1 for a target
 # with no row, so the scheduler believed `pytorch` cost one second.
@@ -155,3 +164,18 @@ cache pytorch-wheel   5046000000
 # it is the row most likely to move a placement now that best_node_for
 # actually reads these.
 cache torchvision-wheel 2595074525
+
+# PARTLY MEASURED. The published image is 20,854,576 bytes over three
+# zstd layers, read from the manifest after the first push on
+# 2026-11-05: 13,641,288 for the wheel, 7,163,114 for the atomesh
+# binary, 50,174 for the logs. That is the image, not the export this
+# row costs — cost_of charges the builder stage's cache layers too, and
+# those are not in the manifest. 60MB carries the measured image plus
+# room for them.
+#
+# The first placeholder here was 250MB, guessed before anything had
+# been built; the image alone came in at a twelfth of that. Still
+# re-measure properly the way torchvision's row above was: sum
+# Content-Length over every PUT/PATCH/POST to an atom-wheel path in a
+# run's zot.jsonl.
+cache atom-wheel         60000000

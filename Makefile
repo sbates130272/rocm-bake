@@ -151,7 +151,7 @@ endif
 
 # Aliased so the recipe text does not contain the literal $(MAKE):
 # make executes any line referencing $(MAKE) even under -n, which made
-# `make -n watch` launch a full-screen watch instead of printing it.
+# `make -n build-watch` launch a full-screen watch instead of printing it.
 # Where running builds record themselves, for `make build-stop`.
 BUILD_PIDFILE ?= /tmp/.rocm-build.pids
 export BUILD_PIDFILE
@@ -190,7 +190,7 @@ WEBDAV_DIR  ?= $(call fleet_var,FLEET_CACHE_DIR)
 # .builders/balance.sh, which runs each target against a concrete node.
 # Nothing is ever built against a buildx pool now, so the pool builder
 # need not exist — and if it does, its records never update, which is
-# why watch skips it.
+# why build-watch skips it.
 # Reclaim its containers with: docker buildx rm $(POOL_BUILDER)
 POOL_BUILDER ?= $(call fleet_var,FLEET_POOL_BUILDER)
 
@@ -212,7 +212,7 @@ export BUILD_DATE
 
 # Identifies a run in the build records: it is the last component of
 # every target's BUILDKIT_BUILD_NAME, and the column `make build-status`
-# and `make watch` print. The bake default is "dev", which made every
+# and `make build-watch` print. The bake default is "dev", which made every
 # build since the beginning of time look like the same run.
 #
 # `:=`, not `?=`. A recursively-expanded `?=` re-runs its $(shell) at
@@ -255,7 +255,7 @@ BAKE_PRINT = docker buildx bake -f rocm-bake.hcl
         image-sizes image-data image-publish zot-disk \
         builder-setup builder-pool list-nodes fleet-apply fleet-check \
         builder-status builder-logs builder-restart \
-        build-status build-logs build-inspect builder-ensure watch \
+        build-status build-logs build-inspect builder-ensure build-watch \
         build-stop gpu-test \
         serve-vllm serve-stack serve-wait serve-down serve-status \
         serve-test serve-test-baseline serve-test-l2 \
@@ -268,6 +268,7 @@ BAKE_PRINT = docker buildx bake -f rocm-bake.hcl
         push-nixl-wheel build-nixl-wheel fetch-nixl-wheel \
         push-cupy-wheel build-cupy-wheel fetch-cupy-wheel \
         push-torchvision-wheel build-torchvision-wheel fetch-torchvision-wheel \
+        push-atom-wheel build-atom-wheel fetch-atom-wheel \
         build-vllm push-vllm push-vllm-wheel build-vllm-wheel fetch-vllm-wheel \
         build-lmcache push-lmcache push-lmcache-wheel build-lmcache-wheel \
         fetch-lmcache-wheel \
@@ -320,7 +321,8 @@ zot-tags: ## List tags for a repo (REPO=rocm-pytorch/base)
 # here — the same way the serving stack was absent from the layer
 # panel. Keep in step with the `wheels` group in rocm-bake.hcl.
 WHEEL_REPOS ?= pytorch-wheel triton-wheel aiter-wheel \
-               nixl-wheel torchvision-wheel cupy-wheel vllm-wheel lmcache-wheel
+               nixl-wheel torchvision-wheel atom-wheel cupy-wheel \
+               vllm-wheel lmcache-wheel
 
 # How many tags zot-wheels shows per repo, newest first. Every build
 # adds a tag and nothing removes them, so the full list is mostly
@@ -359,7 +361,7 @@ IMAGE_REPOS ?= rocm-runtime base pytorch runtime vllm lmcache
 CACHE_REPOS ?= rocm-runtime-cache base-cache pytorch-cache runtime-cache \
                vllm-cache lmcache-cache triton-wheel-cache \
                aiter-wheel-cache cupy-wheel-cache nixl-wheel-cache \
-               torchvision-wheel-cache
+               torchvision-wheel-cache atom-wheel-cache
 
 # IMAGE_ARCH, not PYTORCH_ROCM_ARCH directly, so one table can be asked
 # for while a build for another architecture is in flight. Scoping to
@@ -489,7 +491,7 @@ CACHE_STATE := /tmp/.rocm-cache-prev
 # a log. It is per-target and from the last build of each, which is why
 # the target name is printed with it.
 #
-# Every lookup is best-effort. This runs inside `make watch`'s refresh
+# Every lookup is best-effort. This runs inside `make build-watch`'s refresh
 # loop, so a missing sudo, an unmounted store or an absent telemetry
 # file must degrade to a line of output rather than break the panel.
 cache-summary: ## Compiler-cache state: size, disk, deltas and hit rates
@@ -632,7 +634,7 @@ builder-status: ## Show all builders and their nodes
 
 # The buildkitd *daemon* log, which is a different thing from a build
 # log: scheduling, cache GC, registry auth and connection failures. Use
-# `make watch` or `docker buildx history logs` for the steps of a build.
+# `make build-watch` or `docker buildx history logs` for the steps of a build.
 # The container lives on whichever node the endpoint points at, so a
 # remote node's log has to be fetched over SSH.
 builder-logs: ## Tail buildkitd's own log for each node of $(BUILDER)
@@ -672,7 +674,7 @@ WATCH_TMP := /tmp/.rocm-build-watch.log
 # Every snoc-* builder, so a build started on any node shows up. The pool
 # keeps its own buildkit instances separate from the single-node
 # builders, so it has its own history and is listed in its own right.
-# Override to narrow: make watch WATCH_BUILDERS=snoc-think
+# Override to narrow: make build-watch WATCH_BUILDERS=snoc-think
 #
 # From builder-health.py, which already parses `docker buildx ls` and
 # caches the result, rather than running it again here.
@@ -680,9 +682,9 @@ WATCH_TMP := /tmp/.rocm-build-watch.log
 # Memoised rather than plain `?=` or `:=`, because neither works:
 #
 #   ?=  is recursive, so every reference re-runs the probe. The watch
-#       recipe names it three times, so `make watch` paid for three —
+#       recipe names it three times, so `make build-watch` paid for three —
 #       and with a node down a probe waits out its ssh timeout, 40s
-#       here, so watch sat silent for two minutes before painting.
+#       here, so build-watch sat silent for two minutes before painting.
 #   :=  expands once, but at *parse* time, which means every target
 #       pays it. `make help` cold took 40s.
 #
@@ -692,7 +694,7 @@ WATCH_TMP := /tmp/.rocm-build-watch.log
 # command-line WATCH_BUILDERS= overrides the assignment outright.
 WATCH_BUILDERS ?= $(eval WATCH_BUILDERS := $(shell python3 .builders/builder-health.py --list 2>/dev/null))$(WATCH_BUILDERS)
 
-watch: ## Live build history across all snoc-* builders (WATCH_BUILDERS=, WATCH_LINES=)
+build-watch: ## Live build history across all snoc-* builders (WATCH_BUILDERS=, WATCH_LINES=)
 	@command -v watch > /dev/null || { echo "watch(1) not found: apt-get install procps"; exit 1; }
 	@# Warm the health cache before entering the loop, which reads it
 	@# with --cached-only and must never block. Not --refresh: the
@@ -766,7 +768,7 @@ builder-restart: ## Restart buildkitd for $(BUILDER), clearing stuck builds
 		done
 	@echo "done"
 
-# Per-node load. Kept as its own target so `watch` can re-enter make
+# Per-node load. Kept as its own target so `build-watch` can re-enter make
 # rather than inlining a second layer of quoting inside its shell string.
 LOAD_CACHE := /tmp/.rocm-load
 builder-load: ## Show CPU, cores and load for each node of $(BUILDER)
@@ -793,9 +795,6 @@ builder-load: ## Show CPU, cores and load for each node of $(BUILDER)
 				printf '   %-14s (load unavailable)\n' "$$node"; \
 			fi; \
 		done
-
-build-stop: ## Stop builds started from this repo (balancer, bake clients)
-	@.builders/build-stop.sh
 
 build-status: ## List build records for $(BUILDER), with the node each ran on
 	@python3 .builders/history.py $(BUILDER) $(WATCH_HISTORY)
@@ -882,6 +881,12 @@ endef
 
 ##@ Build
 
+# Stopping a build is a build action, not a monitoring one — it lived
+# under Monitoring next to build-status and build-logs because it
+# shares their prefix, which is the wrong reason.
+build-stop: ## Stop builds started from this repo (balancer, bake clients)
+	@.builders/build-stop.sh
+
 # The ROCm SDK cut down to one architecture and flattened. Everything
 # else builds FROM this; see docs/reference/image-sizes.md.
 # PyTorch's source tree, fetched once. Keyed on PYTORCH_VERSION and
@@ -928,6 +933,9 @@ build-aiter-wheel: builder-ensure ## Build the AITER wheel image (no push)
 
 build-torchvision-wheel: builder-ensure ## Build the torchvision wheel image (no push)
 	$(call bake,torchvision-wheel)
+
+build-atom-wheel: builder-ensure ## Build the ATOM wheel image (no push)
+	$(call bake,atom-wheel)
 
 # Not offered for the pool. Scheduling across nodes makes every target
 # its own bake invocation, so they cannot hand results to each other
@@ -1017,6 +1025,21 @@ _push-wheels: builder-ensure
 # single-valued and still defaults to gfx950, so every existing target
 # is unchanged; this is the list the arches-* wrappers fan out over.
 #
+# gfx1151 (RDNA3.5, Strix Halo) is snoc-strix's own card. Which nodes
+# have which card is in manifests/*.yml and `make list-nodes`; this
+# comment is about why the arch is in the build list.
+#
+# Checked rather than assumed: ROCm 10.1 ships eleven -gfx1151 packages
+# so rocm-prune has something to keep, and AITER v0.1.28's table lists
+# gfx1151 as Experimental while still recommending it on RDNA. That
+# qualifier is why PREBUILD_KERNELS matters — most CK and ASM kernels
+# are CDNA-only, so level 2 would fail the way it does on gfx1201.
+# Level 0 is the default; nothing needs passing.
+#
+# NOT RDNA4, despite the gfx11-and-up number: IS_RDNA4 in rocm-bake.hcl
+# tests for a gfx12 substring, so gfx1151 correctly leaves
+# USE_ROCM_CK_SDPA_GFX12 off.
+#
 # gfx1250 (MI450) is in the list without being in the fleet. The
 # builders already cross-compile — the two gfx1201 nodes build gfx950
 # today — so having no such card only means `make test` and `make
@@ -1036,7 +1059,7 @@ _push-wheels: builder-ensure
 # builds producing two separately-tagged sets of artifacts. The fat
 # build is still available — set PYTORCH_ROCM_ARCH to the ";" form —
 # but it costs both compiles and ships every card the larger binary.
-ARCHES ?= gfx950 gfx1201 gfx1250
+ARCHES ?= gfx950 gfx1201 gfx1151 gfx1250
 
 # `make arches-push-all`, `make arches-build-pytorch`, `make
 # arches-push-wheels` — any target, once per arch. Sequential: the
@@ -1182,8 +1205,21 @@ wheel-index-check: ## Install each generated index into a throwaway venv
 # answer different questions and must not be confused in a report.
 PERF_ARCH ?= $(PYTORCH_ROCM_ARCH)
 
-perf-plan: ## Show which builder each wheel would land on (no build)
-	@PYTORCH_ROCM_ARCH=$(PERF_ARCH) .builders/perfrun.sh --dry-run
+# Warm by default, because warm is what actually gets run — by
+# perf-warm, by arches-perf-warm and by the nightly. This used to pass
+# only --dry-run, i.e. plan the COLD run, and that is not a cosmetic
+# difference: a cold plan resolves against the rocm-pytorch-coldrun
+# namespace, where nothing is published, so it reports a bootstrap of
+# rocm-runtime and pytorch-base before anything else. Asked about
+# gfx1250 it showed eight waves opening with two bootstrap stages,
+# against the six the warm run really uses — an arch with every input
+# already in Zot looked like it was missing its base images.
+#
+# PERF_PLAN_MODE= (empty) gets the cold plan back.
+PERF_PLAN_MODE ?= --warm
+
+perf-plan: ## Show which builder each wheel would land on (PERF_PLAN_MODE= for cold)
+	@PYTORCH_ROCM_ARCH=$(PERF_ARCH) .builders/perfrun.sh $(PERF_PLAN_MODE) --dry-run
 
 perf-cold: ## Cold parallel build of every wheel, fully instrumented
 	@PYTORCH_ROCM_ARCH=$(PERF_ARCH) .builders/perfrun.sh
@@ -1269,7 +1305,7 @@ perf-serve-stop: ## Stop a running perf-serve (and free PERF_PORT)
 	fi; \
 	echo "port $$port free"
 
-# One line, for the watch panel. A perf-serve binds 0.0.0.0 by default
+# One line, for the build-watch panel. A perf-serve binds 0.0.0.0 by default
 # and outlives the terminal that started it, so "is one up, and where"
 # is otherwise a pgrep away at exactly the moment you are not thinking
 # about it — this one has been found three days old.
@@ -1407,6 +1443,19 @@ fetch-torchvision-wheel: ## Fetch the torchvision wheel from Zot into ./dist
 		| docker buildx build --builder $(BUILDER) \
 			--output type=local,dest=dist -
 	@ls -la dist/wheels/
+
+# ATOM is AMD's LLM serving engine and AITER's largest consumer — not a
+# wrapper around it. There is no ROCm wheel on PyPI. See
+# docker/Dockerfile.atom.
+push-atom-wheel: builder-ensure ## * Build and push the ATOM wheel image to Zot
+	$(call bake,atom-wheel,--push,pub)
+
+fetch-atom-wheel: ## Fetch the ATOM wheel (and atomesh) from Zot into ./dist
+	@mkdir -p dist
+	@printf 'FROM %s/%s/atom-wheel:latest\n' "$(REGISTRY)" "$(REGISTRY_NAME)" \
+		| docker buildx build --builder $(BUILDER) \
+			--output type=local,dest=dist -
+	@ls -la dist/wheels/ dist/atomesh
 
 # CuPy is not an optional extra: LMCache's MP server imports it at
 # module scope, and no published wheel matches ROCm 10.1 on cp314.

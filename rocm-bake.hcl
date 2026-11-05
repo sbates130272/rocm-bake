@@ -185,6 +185,7 @@ variable "SDE_VLLM"    { default = "" }
 variable "SDE_LMCACHE" { default = "" }
 variable "SDE_CUPY"    { default = "" }
 variable "SDE_TORCHVISION" { default = "" }
+variable "SDE_ATOM"    { default = "" }
 
 EPOCH_ROCM    = SDE_ROCM    != "" ? SDE_ROCM    : SDE_EPOCH
 EPOCH_BASE    = SDE_BASE    != "" ? SDE_BASE    : SDE_EPOCH
@@ -197,6 +198,7 @@ EPOCH_VLLM    = SDE_VLLM    != "" ? SDE_VLLM    : SDE_EPOCH
 EPOCH_LMCACHE = SDE_LMCACHE != "" ? SDE_LMCACHE : SDE_EPOCH
 EPOCH_CUPY    = SDE_CUPY    != "" ? SDE_CUPY    : SDE_EPOCH
 EPOCH_TORCHVISION = SDE_TORCHVISION != "" ? SDE_TORCHVISION : SDE_EPOCH
+EPOCH_ATOM    = SDE_ATOM    != "" ? SDE_ATOM    : SDE_EPOCH
 
 # Empty means each build derives its own job count from the node it
 # lands on, sized by memory rather than cores. Set it to pin one.
@@ -275,6 +277,29 @@ variable "TORCHVISION_REF" {
   default = "v0.29.2"
 }
 
+# ATOM — AMD's LLM serving engine, and AITER's largest consumer. Built
+# here because there is no ROCm wheel on PyPI and because the point of
+# this pipeline is artifacts built against its own torch and its own
+# AITER. See docker/Dockerfile.atom for what it is and is not.
+#
+# v0.1.9 is the newest tag. Note that ATOM declares no `aiter`
+# dependency or version range at all, so nothing checks our
+# AITER_REF = v0.1.28 against what this tag expects — ATOM dispatches
+# into AITER per-op across 701 call sites, so a mismatch surfaces deep
+# in one model's path rather than at import. Unassessed, deliberately:
+# the import check in Dockerfile.atom is the first thing that would
+# catch a gross one.
+variable "ATOM_REF" {
+  default = "v0.1.9"
+}
+
+# Optional Cargo features for atomesh, ATOM's Rust orchestrator. Empty
+# matches upstream: the only non-default feature is ext-proc, which
+# needs protoc in the image to compile the Envoy ext_proc protos.
+variable "ATOM_MESH_FEATURES" {
+  default = ""
+}
+
 # ─── Input wiring ────────────────────────────────────────────────
 # Targets take their inputs from sibling targets through `target:`
 # named contexts. That is bake's dependency mechanism, and the only one
@@ -318,6 +343,7 @@ PUB_NIXL    = "${REGISTRY}/${REGISTRY_NAME}/nixl-wheel:${NIXL_REF}-${ROCM_VERSIO
 PUB_LMCACHE = "${REGISTRY}/${REGISTRY_NAME}/lmcache-wheel:${LMCACHE_REF}-${ROCM_VERSION}-${ARCH_TAG}"
 PUB_CUPY    = "${REGISTRY}/${REGISTRY_NAME}/cupy-wheel:${CUPY_REF}-${ROCM_VERSION}-${ARCH_TAG}"
 PUB_TORCHVISION = "${REGISTRY}/${REGISTRY_NAME}/torchvision-wheel:${TORCHVISION_REF}-${ROCM_VERSION}-${ARCH_TAG}"
+PUB_ATOM    = "${REGISTRY}/${REGISTRY_NAME}/atom-wheel:${ATOM_REF}-${ROCM_VERSION}-${ARCH_TAG}"
 
 USE_PUB = PUBLISHED_INPUTS != ""
 
@@ -586,7 +612,7 @@ group "default" {
   targets = [
     "rocm-runtime", "pytorch-src", "pytorch-base", "pytorch",
     "pytorch-wheel", "triton-wheel", "aiter-wheel",
-    "torchvision-wheel",
+    "torchvision-wheel", "atom-wheel",
     "cupy-wheel", "nixl-wheel", "vllm", "vllm-wheel",
     "lmcache", "lmcache-wheel",
   ]
@@ -597,7 +623,8 @@ group "default" {
 group "wheels" {
   targets = [
     "pytorch-wheel", "triton-wheel", "aiter-wheel", "nixl-wheel",
-    "torchvision-wheel", "cupy-wheel", "vllm-wheel", "lmcache-wheel",
+    "torchvision-wheel", "atom-wheel", "cupy-wheel", "vllm-wheel",
+    "lmcache-wheel",
   ]
 }
 
@@ -1110,6 +1137,66 @@ target "torchvision-wheel" {
   output = ["type=image,compression=zstd"]
 }
 
+# ─── ATOM wheel artifact ─────────────────────────────────────────
+# Arch-scoped in tag and cache like every other target, even though
+# nothing in this wheel is architecture-specific — there is no device
+# code in it, only a CPU-only Rust cdylib. The scoping is for the
+# machinery around it (balance.sh, the cache refs, the perf report),
+# which assumes every target is. Dockerfile.atom says the same at
+# greater length.
+target "atom-wheel" {
+  dockerfile = "docker/Dockerfile.atom"
+  # Pinned, not left to the last stage in the file — see aiter-wheel.
+  target     = "wheel"
+  platforms  = ["linux/amd64"]
+
+  tags = compact([
+    "${REGISTRY}/${REGISTRY_NAME}/atom-wheel:${ATOM_REF}-${ROCM_VERSION}-${ARCH_TAG}",
+    "${REGISTRY}/${REGISTRY_NAME}/atom-wheel:latest",
+    VCS_REF != "" ? "${REGISTRY}/${REGISTRY_NAME}/atom-wheel:${ATOM_REF}-${ROCM_VERSION}-${ARCH_TAG}-g${VCS_REF}" : "",
+  ])
+
+  labels = merge(OCI_LABELS, {
+    "org.opencontainers.image.title"       = "atom wheel"
+    "org.opencontainers.image.description" = "ATOM ${ATOM_REF} built against PyTorch ${PYTORCH_VERSION}, ${PYTORCH_ROCM_ARCH}"
+    "org.opencontainers.image.version"     = "${ATOM_REF}-${ROCM_VERSION}-${ARCH_TAG}"
+  })
+
+  cache-from = [
+    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/atom-wheel-cache:latest${CACHE_ARCH},mode=max,registry.insecure=${REGISTRY_INSECURE}",
+    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/atom-wheel-cache:latest${CACHE_ARCH}-ref,mode=max,registry.insecure=${REGISTRY_INSECURE}",
+  ]
+  cache-to   = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/atom-wheel-cache:latest${CACHE_ARCH}${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=${REGISTRY_INSECURE},ignore-error=true"]
+
+  # No transitional un-arch-scoped cache ref: this target has never
+  # been published, so there is no pre-scoping cache to read and
+  # pointing at one would only cost a registry round trip per build.
+
+  contexts = USE_PUB ? {} : {
+    pytorch-img = "target:pytorch"
+  }
+
+  args = {
+    BUILDKIT_BUILD_NAME = "rocm-pytorch-build/atom-wheel/${PYTORCH_ROCM_ARCH}/${RUN_ID}"
+    SOURCE_DATE_EPOCH   = EPOCH_ATOM
+    PYTORCH_IMAGE       = USE_PUB ? PUB_PYTORCH : "pytorch-img"
+    ATOM_REF            = ATOM_REF
+    ATOM_MESH_FEATURES  = ATOM_MESH_FEATURES
+    PYTORCH_ROCM_ARCH   = PYTORCH_ROCM_ARCH
+    ROCM_VERSION        = ROCM_VERSION
+    RUST_VERSION        = RUST_VERSION
+    SCCACHE_VERSION     = SCCACHE_VERSION
+    SCCACHE_WEBDAV_ENDPOINT = WEBDAV_ENDPOINT
+    SCCACHE_WEBDAV_KEY_PREFIX = SCCACHE_WEBDAV_KEY_PREFIX
+    # Empty on the fleet, which is how WebDAV above stays the backend.
+    SCCACHE_BUCKET       = SCCACHE_BUCKET
+    SCCACHE_REGION       = SCCACHE_REGION
+    SCCACHE_S3_KEY_PREFIX = SCCACHE_S3_KEY_PREFIX
+  }
+
+  output = ["type=image,compression=zstd"]
+}
+
 # ─── Minimal runtime image ───────────────────────────────────────
 target "pytorch-run" {
   dockerfile = "docker/Dockerfile.runtime"
@@ -1355,6 +1442,20 @@ target "vllm" {
     NIXL_WHEEL_IMAGE        = USE_PUB ? PUB_NIXL : "nixl-wheels"
     TORCHVISION_WHEEL_IMAGE = USE_PUB ? PUB_TORCHVISION : "torchvision-wheels"
     LMCACHE_WHEEL_IMAGE     = USE_PUB ? PUB_LMCACHE : "lmcache-wheels"
+    # Dockerfile.vllm has always declared `ARG MAX_JOBS=`, but this
+    # target never passed it, so the one knob that bounds the heaviest
+    # compile in the graph could not be set — `MAX_JOBS=8 make
+    # push-vllm` was accepted and silently ignored, and the build chose
+    # its own job count anyway.
+    #
+    # Found on gfx1151. Dockerfile.vllm uses MEM_PER_JOB_GB=1, where
+    # every other Dockerfile here uses 2, because a measured gfx1201
+    # run averaged 0.75GB per job. That arithmetic is right on a 128GB
+    # node and wrong on snoc-strix, which has 30GB: the heuristic read
+    # 21GB available, chose 20 jobs, and the first of the 7GB outliers
+    # the comment at MEM_PER_JOB_GB itself warns about took the build
+    # out with ResourceExhausted. Nothing could override it.
+    MAX_JOBS                = MAX_JOBS
     VLLM_REF                = VLLM_REF
     # Same ref the aiter-wheel target built from: Dockerfile.vllm fetches
     # AITER's requirements.txt at this tag because the wheel does not
