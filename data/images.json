@@ -1,0 +1,570 @@
+{
+ "generated": "2026-11-03T19:57:23+00:00",
+ "registry": "snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch",
+ "images": [
+  {
+   "repo": "rocm-runtime",
+   "tag": "10.1.0-full-gfx1201",
+   "arch": "gfx1201",
+   "pushed": "2023-11-14T22:13:20Z",
+   "tags": 7,
+   "bytes": 1417953482,
+   "shared_bytes": 1417953482,
+   "own_bytes": 0
+  },
+  {
+   "repo": "base",
+   "tag": "10.1.0-full-3.14-gfx1201",
+   "arch": "gfx1201",
+   "pushed": "2023-11-14T22:13:20Z",
+   "tags": 32,
+   "bytes": 1659754715,
+   "shared_bytes": 1659754715,
+   "own_bytes": 0
+  },
+  {
+   "repo": "pytorch",
+   "tag": "2.15.0-10.1.0-full-gfx1201",
+   "arch": "gfx1201",
+   "pushed": "2026-11-03T10:03:43-06:00",
+   "tags": 26,
+   "bytes": 2531955562,
+   "shared_bytes": 2531955562,
+   "own_bytes": 0
+  },
+  {
+   "repo": "runtime",
+   "tag": "2.15.0-10.1.0-full-gfx1201",
+   "arch": "gfx1201",
+   "pushed": "2026-11-03T13:33:41-06:00",
+   "tags": 6,
+   "bytes": 2501979306,
+   "shared_bytes": 1417953498,
+   "own_bytes": 1084025808
+  },
+  {
+   "repo": "vllm",
+   "tag": "v0.33.0-10.1.0-full-gfx1201",
+   "arch": "gfx1201",
+   "pushed": "2026-11-03T11:25:06-06:00",
+   "tags": 10,
+   "bytes": 3167944425,
+   "shared_bytes": 2531955578,
+   "own_bytes": 635988847
+  },
+  {
+   "repo": "lmcache",
+   "tag": "v0.5.6-10.1.0-full-gfx1201",
+   "arch": "gfx1201",
+   "pushed": "2026-11-03T11:25:06-06:00",
+   "tags": 8,
+   "bytes": 2747896252,
+   "shared_bytes": 2531955578,
+   "own_bytes": 215940674
+  }
+ ],
+ "wheels": [
+  {
+   "repo": "pytorch-wheel",
+   "tag": "2.15.0-10.1.0-full-gfx1201",
+   "arch": "gfx1201",
+   "pushed": "2026-11-03T10:03:43-06:00",
+   "tags": 26,
+   "bytes": 401464101,
+   "shared_bytes": 0,
+   "own_bytes": 401464101
+  },
+  {
+   "repo": "triton-wheel",
+   "tag": "10.1.0-full-gfx1201",
+   "arch": "gfx1201",
+   "pushed": "2026-10-28T12:31:46-06:00",
+   "tags": 34,
+   "bytes": 412079605,
+   "shared_bytes": 0,
+   "own_bytes": 412079605
+  },
+  {
+   "repo": "aiter-wheel",
+   "tag": "2.15.0-10.1.0-full-gfx1201",
+   "arch": "gfx1201",
+   "pushed": "2026-11-03T10:03:43-06:00",
+   "tags": 18,
+   "bytes": 140179175,
+   "shared_bytes": 0,
+   "own_bytes": 140179175
+  },
+  {
+   "repo": "nixl-wheel",
+   "tag": "v1.5.2-10.1.0-full-gfx1201",
+   "arch": "gfx1201",
+   "pushed": "2026-11-03T11:25:06-06:00",
+   "tags": 21,
+   "bytes": 12802387,
+   "shared_bytes": 0,
+   "own_bytes": 12802387
+  },
+  {
+   "repo": "cupy-wheel",
+   "tag": "v14.2.0-10.1.0-full-gfx1201",
+   "arch": "gfx1201",
+   "pushed": "2026-11-03T11:25:06-06:00",
+   "tags": 20,
+   "bytes": 43531983,
+   "shared_bytes": 0,
+   "own_bytes": 43531983
+  },
+  {
+   "repo": "vllm-wheel",
+   "tag": "v0.33.0-10.1.0-full-gfx1201",
+   "arch": "gfx1201",
+   "pushed": "2026-11-03T11:25:06-06:00",
+   "tags": 18,
+   "bytes": 78426027,
+   "shared_bytes": 0,
+   "own_bytes": 78426027
+  },
+  {
+   "repo": "lmcache-wheel",
+   "tag": "v0.5.6-10.1.0-full-gfx1201",
+   "arch": "gfx1201",
+   "pushed": "2026-11-03T11:25:06-06:00",
+   "tags": 20,
+   "bytes": 9068878,
+   "shared_bytes": 0,
+   "own_bytes": 9068878
+  }
+ ],
+ "caches": [
+  {
+   "repo": "rocm-runtime-cache",
+   "tags": 2,
+   "bytes": 21195614743
+  },
+  {
+   "repo": "base-cache",
+   "tags": 3,
+   "bytes": 29395531440
+  },
+  {
+   "repo": "pytorch-cache",
+   "tags": 5,
+   "bytes": 73588947341
+  },
+  {
+   "repo": "runtime-cache",
+   "tags": 2,
+   "bytes": 17120026588
+  },
+  {
+   "repo": "vllm-cache",
+   "tags": 4,
+   "bytes": 46431651054
+  },
+  {
+   "repo": "lmcache-cache",
+   "tags": 5,
+   "bytes": 48429210927
+  },
+  {
+   "repo": "triton-wheel-cache",
+   "tags": 2,
+   "bytes": 32400576370
+  },
+  {
+   "repo": "aiter-wheel-cache",
+   "tags": 4,
+   "bytes": 56940764333
+  },
+  {
+   "repo": "cupy-wheel-cache",
+   "tags": 5,
+   "bytes": 39928707249
+  },
+  {
+   "repo": "nixl-wheel-cache",
+   "tags": 5,
+   "bytes": 58317298554
+  }
+ ],
+ "history": [
+  {
+   "generated": "2026-11-03T19:51:09+00:00",
+   "images": [
+    {
+     "repo": "rocm-runtime",
+     "tag": "10.1.0-full-gfx1201",
+     "arch": "gfx1201",
+     "pushed": "2023-11-14T22:13:20Z",
+     "tags": 7,
+     "bytes": 1417953482,
+     "shared_bytes": 1417953482,
+     "own_bytes": 0
+    },
+    {
+     "repo": "base",
+     "tag": "10.1.0-full-3.14-gfx1201",
+     "arch": "gfx1201",
+     "pushed": "2023-11-14T22:13:20Z",
+     "tags": 32,
+     "bytes": 1659754715,
+     "shared_bytes": 1659754715,
+     "own_bytes": 0
+    },
+    {
+     "repo": "pytorch",
+     "tag": "2.15.0-10.1.0-full-gfx1201",
+     "arch": "gfx1201",
+     "pushed": "2026-11-03T10:03:43-06:00",
+     "tags": 26,
+     "bytes": 2531955562,
+     "shared_bytes": 2531955562,
+     "own_bytes": 0
+    },
+    {
+     "repo": "runtime",
+     "tag": "2.15.0-10.1.0-full-gfx1201",
+     "arch": "gfx1201",
+     "pushed": "2026-11-03T13:33:41-06:00",
+     "tags": 6,
+     "bytes": 2501979306,
+     "shared_bytes": 1417953498,
+     "own_bytes": 1084025808
+    },
+    {
+     "repo": "vllm",
+     "tag": "v0.33.0-10.1.0-full-gfx1201",
+     "arch": "gfx1201",
+     "pushed": "2026-11-03T11:25:06-06:00",
+     "tags": 10,
+     "bytes": 3167944425,
+     "shared_bytes": 2531955578,
+     "own_bytes": 635988847
+    },
+    {
+     "repo": "lmcache",
+     "tag": "v0.5.6-10.1.0-full-gfx1201",
+     "arch": "gfx1201",
+     "pushed": "2026-11-03T11:25:06-06:00",
+     "tags": 8,
+     "bytes": 2747896252,
+     "shared_bytes": 2531955578,
+     "own_bytes": 215940674
+    }
+   ],
+   "wheels": [
+    {
+     "repo": "pytorch-wheel",
+     "tag": "2.15.0-10.1.0-full-gfx1201",
+     "arch": "gfx1201",
+     "pushed": "2026-11-03T10:03:43-06:00",
+     "tags": 26,
+     "bytes": 401464101,
+     "shared_bytes": 0,
+     "own_bytes": 401464101
+    },
+    {
+     "repo": "triton-wheel",
+     "tag": "10.1.0-full-gfx1201",
+     "arch": "gfx1201",
+     "pushed": "2026-10-28T12:31:46-06:00",
+     "tags": 34,
+     "bytes": 412079605,
+     "shared_bytes": 0,
+     "own_bytes": 412079605
+    },
+    {
+     "repo": "aiter-wheel",
+     "tag": "2.15.0-10.1.0-full-gfx1201",
+     "arch": "gfx1201",
+     "pushed": "2026-11-03T10:03:43-06:00",
+     "tags": 18,
+     "bytes": 140179175,
+     "shared_bytes": 0,
+     "own_bytes": 140179175
+    },
+    {
+     "repo": "nixl-wheel",
+     "tag": "v1.5.2-10.1.0-full-gfx1201",
+     "arch": "gfx1201",
+     "pushed": "2026-11-03T11:25:06-06:00",
+     "tags": 21,
+     "bytes": 12802387,
+     "shared_bytes": 0,
+     "own_bytes": 12802387
+    },
+    {
+     "repo": "cupy-wheel",
+     "tag": "v14.2.0-10.1.0-full-gfx1201",
+     "arch": "gfx1201",
+     "pushed": "2026-11-03T11:25:06-06:00",
+     "tags": 20,
+     "bytes": 43531983,
+     "shared_bytes": 0,
+     "own_bytes": 43531983
+    },
+    {
+     "repo": "vllm-wheel",
+     "tag": "v0.33.0-10.1.0-full-gfx1201",
+     "arch": "gfx1201",
+     "pushed": "2026-11-03T11:25:06-06:00",
+     "tags": 18,
+     "bytes": 78426027,
+     "shared_bytes": 0,
+     "own_bytes": 78426027
+    },
+    {
+     "repo": "lmcache-wheel",
+     "tag": "v0.5.6-10.1.0-full-gfx1201",
+     "arch": "gfx1201",
+     "pushed": "2026-11-03T11:25:06-06:00",
+     "tags": 20,
+     "bytes": 9068878,
+     "shared_bytes": 0,
+     "own_bytes": 9068878
+    }
+   ],
+   "caches": [
+    {
+     "repo": "rocm-runtime-cache",
+     "tags": 2,
+     "bytes": 21195614743
+    },
+    {
+     "repo": "base-cache",
+     "tags": 3,
+     "bytes": 29395531440
+    },
+    {
+     "repo": "pytorch-cache",
+     "tags": 5,
+     "bytes": 73588947341
+    },
+    {
+     "repo": "runtime-cache",
+     "tags": 2,
+     "bytes": 17120026588
+    },
+    {
+     "repo": "vllm-cache",
+     "tags": 4,
+     "bytes": 46431651054
+    },
+    {
+     "repo": "lmcache-cache",
+     "tags": 5,
+     "bytes": 48429210927
+    },
+    {
+     "repo": "triton-wheel-cache",
+     "tags": 2,
+     "bytes": 32400576370
+    },
+    {
+     "repo": "aiter-wheel-cache",
+     "tags": 4,
+     "bytes": 56940764333
+    },
+    {
+     "repo": "cupy-wheel-cache",
+     "tags": 5,
+     "bytes": 39928707249
+    },
+    {
+     "repo": "nixl-wheel-cache",
+     "tags": 5,
+     "bytes": 58317298554
+    }
+   ]
+  },
+  {
+   "generated": "2026-11-03T19:57:23+00:00",
+   "images": [
+    {
+     "repo": "rocm-runtime",
+     "tag": "10.1.0-full-gfx1201",
+     "arch": "gfx1201",
+     "pushed": "2023-11-14T22:13:20Z",
+     "tags": 7,
+     "bytes": 1417953482,
+     "shared_bytes": 1417953482,
+     "own_bytes": 0
+    },
+    {
+     "repo": "base",
+     "tag": "10.1.0-full-3.14-gfx1201",
+     "arch": "gfx1201",
+     "pushed": "2023-11-14T22:13:20Z",
+     "tags": 32,
+     "bytes": 1659754715,
+     "shared_bytes": 1659754715,
+     "own_bytes": 0
+    },
+    {
+     "repo": "pytorch",
+     "tag": "2.15.0-10.1.0-full-gfx1201",
+     "arch": "gfx1201",
+     "pushed": "2026-11-03T10:03:43-06:00",
+     "tags": 26,
+     "bytes": 2531955562,
+     "shared_bytes": 2531955562,
+     "own_bytes": 0
+    },
+    {
+     "repo": "runtime",
+     "tag": "2.15.0-10.1.0-full-gfx1201",
+     "arch": "gfx1201",
+     "pushed": "2026-11-03T13:33:41-06:00",
+     "tags": 6,
+     "bytes": 2501979306,
+     "shared_bytes": 1417953498,
+     "own_bytes": 1084025808
+    },
+    {
+     "repo": "vllm",
+     "tag": "v0.33.0-10.1.0-full-gfx1201",
+     "arch": "gfx1201",
+     "pushed": "2026-11-03T11:25:06-06:00",
+     "tags": 10,
+     "bytes": 3167944425,
+     "shared_bytes": 2531955578,
+     "own_bytes": 635988847
+    },
+    {
+     "repo": "lmcache",
+     "tag": "v0.5.6-10.1.0-full-gfx1201",
+     "arch": "gfx1201",
+     "pushed": "2026-11-03T11:25:06-06:00",
+     "tags": 8,
+     "bytes": 2747896252,
+     "shared_bytes": 2531955578,
+     "own_bytes": 215940674
+    }
+   ],
+   "wheels": [
+    {
+     "repo": "pytorch-wheel",
+     "tag": "2.15.0-10.1.0-full-gfx1201",
+     "arch": "gfx1201",
+     "pushed": "2026-11-03T10:03:43-06:00",
+     "tags": 26,
+     "bytes": 401464101,
+     "shared_bytes": 0,
+     "own_bytes": 401464101
+    },
+    {
+     "repo": "triton-wheel",
+     "tag": "10.1.0-full-gfx1201",
+     "arch": "gfx1201",
+     "pushed": "2026-10-28T12:31:46-06:00",
+     "tags": 34,
+     "bytes": 412079605,
+     "shared_bytes": 0,
+     "own_bytes": 412079605
+    },
+    {
+     "repo": "aiter-wheel",
+     "tag": "2.15.0-10.1.0-full-gfx1201",
+     "arch": "gfx1201",
+     "pushed": "2026-11-03T10:03:43-06:00",
+     "tags": 18,
+     "bytes": 140179175,
+     "shared_bytes": 0,
+     "own_bytes": 140179175
+    },
+    {
+     "repo": "nixl-wheel",
+     "tag": "v1.5.2-10.1.0-full-gfx1201",
+     "arch": "gfx1201",
+     "pushed": "2026-11-03T11:25:06-06:00",
+     "tags": 21,
+     "bytes": 12802387,
+     "shared_bytes": 0,
+     "own_bytes": 12802387
+    },
+    {
+     "repo": "cupy-wheel",
+     "tag": "v14.2.0-10.1.0-full-gfx1201",
+     "arch": "gfx1201",
+     "pushed": "2026-11-03T11:25:06-06:00",
+     "tags": 20,
+     "bytes": 43531983,
+     "shared_bytes": 0,
+     "own_bytes": 43531983
+    },
+    {
+     "repo": "vllm-wheel",
+     "tag": "v0.33.0-10.1.0-full-gfx1201",
+     "arch": "gfx1201",
+     "pushed": "2026-11-03T11:25:06-06:00",
+     "tags": 18,
+     "bytes": 78426027,
+     "shared_bytes": 0,
+     "own_bytes": 78426027
+    },
+    {
+     "repo": "lmcache-wheel",
+     "tag": "v0.5.6-10.1.0-full-gfx1201",
+     "arch": "gfx1201",
+     "pushed": "2026-11-03T11:25:06-06:00",
+     "tags": 20,
+     "bytes": 9068878,
+     "shared_bytes": 0,
+     "own_bytes": 9068878
+    }
+   ],
+   "caches": [
+    {
+     "repo": "rocm-runtime-cache",
+     "tags": 2,
+     "bytes": 21195614743
+    },
+    {
+     "repo": "base-cache",
+     "tags": 3,
+     "bytes": 29395531440
+    },
+    {
+     "repo": "pytorch-cache",
+     "tags": 5,
+     "bytes": 73588947341
+    },
+    {
+     "repo": "runtime-cache",
+     "tags": 2,
+     "bytes": 17120026588
+    },
+    {
+     "repo": "vllm-cache",
+     "tags": 4,
+     "bytes": 46431651054
+    },
+    {
+     "repo": "lmcache-cache",
+     "tags": 5,
+     "bytes": 48429210927
+    },
+    {
+     "repo": "triton-wheel-cache",
+     "tags": 2,
+     "bytes": 32400576370
+    },
+    {
+     "repo": "aiter-wheel-cache",
+     "tags": 4,
+     "bytes": 56940764333
+    },
+    {
+     "repo": "cupy-wheel-cache",
+     "tags": 5,
+     "bytes": 39928707249
+    },
+    {
+     "repo": "nixl-wheel-cache",
+     "tags": 5,
+     "bytes": 58317298554
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,11 @@
+{
+  "arch": "gfx1201",
+  "registry": "472426151104.dkr.ecr.us-west-2.amazonaws.com",
+  "phases": {
+    "warm": {
+      "seconds": 4000,
+      "rc": 0,
+      "cache_errors": 0
+    }
+  }
+}
