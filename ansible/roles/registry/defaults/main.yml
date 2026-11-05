@@ -2,6 +2,23 @@
 registry_zot_version: v2.1.8
 registry_zot_storage: /var/lib/zot
 
+# Zot's own log file, and the level it writes at.
+#
+# Both exist because the defaults filled a 1.8TB disk. Zot logged at
+# `info` with no `output` set, so every HTTP API call — plus a
+# "getting a list of all images" graphql line per request — went to
+# stdout, through journald, into /var/log/syslog. A fleet whose builds
+# hammer the registry turned that into 88GB across syslog and
+# syslog.1, and the push that discovered it failed with "blob upload
+# invalid" and "provided digest did not match uploaded content", which
+# are what truncated writes look like from the client side.
+#
+# `warn` keeps the lines that mean something. `output` keeps even those
+# out of syslog, so raising the level back to info or debug to chase a
+# problem cannot repeat this — logrotate below bounds it either way.
+registry_zot_log_level: warn
+registry_zot_log_file: /var/log/zot/zot.log
+
 # Anonymous read is open so every pull, pull-through and cache read
 # works unauthenticated; only pushing needs an account. Set
 # registry_zot_htpasswd to a path on the control host to install one.

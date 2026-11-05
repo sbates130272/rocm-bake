@@ -29,7 +29,8 @@
 
   },
   "log": {
-    "level": "info"
+    "level": "{{ registry_zot_log_level }}",
+    "output": "{{ registry_zot_log_file }}"
   },
   "extensions": {
     "sync": {
