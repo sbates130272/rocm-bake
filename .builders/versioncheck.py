@@ -44,6 +44,7 @@ import re
 import shutil
 import subprocess
 import sys
+import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -82,12 +83,20 @@ DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 # the underlying tags are dated. AITER does the same with v0.1.24.post1.
 # Without this filter the next RC reports us "behind" a tag we must not
 # build.
-SEMVER = r"^v[0-9]+\\.[0-9]+\\.[0-9]+$"
+# A post-release is part of this shape, deliberately. The strict filter
+# below exists to drop release *candidates* from repos that do not flag
+# them honestly; PEP 440 puts .postN strictly AFTER the base version, so
+# excluding it discards the newest real release rather than a prerelease.
+# ROCm/aiter is the case that proved it: its releases run
+# v0.1.28.post1, v0.1.27, v0.1.26 ..., and without the suffix here the
+# "upstream latest" came back v0.1.27 -- older than our own pin, which
+# reads as us being ahead of upstream.
+SEMVER = r"^v[0-9]+\\.[0-9]+\\.[0-9]+(\\.post[0-9]+)?$"
 
 # The same shape for Python's re rather than jq's test(). The doubled
 # backslashes above survive the trip through a jq program string; here
 # they would mean "a literal backslash, then any character".
-SEMVER_RE = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
+SEMVER_RE = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+(\.post[0-9]+)?$")
 
 # One row per thing we pin, in rocm-bake.hcl declaration order, which
 # is also roughly build order. This is the only place a component is
@@ -280,26 +289,91 @@ def bake_defaults():
 CLASSIC_PAT = "personal access token (classic)"
 
 
-def gh_api(path, jq=None):
+def _apply_jq(obj, jq):
+    """The subset of --jq this file actually uses: one top-level field.
+
+    gh evaluates --jq server-side; the anonymous path has to do it here.
+    Every call site passes `.tag_name`, `.name`, `.ref` or `.content`,
+    so rather than depend on jq being installed or reimplement it, this
+    handles exactly that shape and refuses anything else. A new call
+    site with a real jq program gets a clear error instead of a wrong
+    answer.
+    """
+    key = jq.strip()
+    if not re.fullmatch(r"\.[A-Za-z_][A-Za-z0-9_]*", key):
+        return None, f"anonymous fallback cannot evaluate jq {jq!r}"
+    if not isinstance(obj, dict):
+        return None, "anonymous fallback: response is not an object"
+    value = obj.get(key[1:])
+    if value is None:
+        return None, f"anonymous fallback: no field {key}"
+    return str(value), None
+
+
+def _anon_api(path):
+    """GET api.github.com with no credentials. See gh_api for when.
+
+    Explicit User-Agent because GitHub rejects requests without one.
+    urllib picks the proxy up from the environment, which is how this
+    reaches the internet from here at all.
+    """
+    url = f"https://api.github.com/{path.lstrip('/')}"
+    req = urllib.request.Request(url, headers={
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "rocm-bake-versioncheck",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode()), None
+    except urllib.error.HTTPError as exc:
+        # 403 here is the shared anonymous budget, which is worth saying
+        # plainly: the row is not wrong, the address is out of requests.
+        if exc.code == 403:
+            return None, "anonymous rate limit spent (60/hour, shared)"
+        return None, f"anonymous HTTP {exc.code}"
+    except Exception as exc:
+        return None, f"anonymous request failed: {exc}"
+
+
+def gh_api(path, jq=None, pick=None):
     """`gh api <path>` -> parsed JSON (or the raw --jq string), or None.
 
-    gh and not urllib. An unauthenticated api.github.com call from this
-    network answers 403 immediately: the 60/hour anonymous budget is
-    keyed on the corporate NAT address and is already spent by everyone
-    else behind the same proxy. A tokenless fallback would never once
-    succeed, so it would only disguise the reason every row said "?".
+    gh first, because it carries a token and 5000 requests an hour.
 
-    The retry is for the ROCm org, which refuses classic PATs outright:
+    Three attempts, each for a different refusal.
 
-        `ROCm` forbids access via a personal access token (classic).
+    1. gh as configured.
 
-    gh prefers $GITHUB_TOKEN over hosts.yml, so `gh auth switch` does
-    not help - the variable has to leave the child environment, which
-    drops gh back to its configured account. Detected from the message
-    rather than hardcoded per repo, because the policy is the org's to
-    change and because a GitHub runner has no hosts.yml to fall back
-    to: there the Actions token is an App installation token, which the
-    policy accepts, and this retry never fires.
+    2. gh with $GITHUB_TOKEN and $GH_TOKEN dropped. That is for the ROCm
+       org, which refuses classic PATs outright:
+
+           `ROCm` forbids access via a personal access token (classic).
+
+       gh prefers $GITHUB_TOKEN over hosts.yml, so `gh auth switch` does
+       not help - the variable has to leave the child environment, which
+       drops gh back to its configured account. Detected from the
+       message rather than hardcoded per repo, because the policy is the
+       org's to change, and because a GitHub runner has no hosts.yml:
+       there the Actions token is an App installation token, which the
+       policy accepts, and neither retry fires.
+
+    3. An unauthenticated HTTPS GET. This is the one that actually
+       answers for ROCm, because the org's policy is about *classic
+       PATs*, not about anonymous reads of a public repository - and
+       falling back to hosts.yml in step 2 only finds another classic
+       PAT, so it hits the same wall.
+
+       This used to say a tokenless call "would never once succeed",
+       on the grounds that the 60/hour anonymous budget is keyed on the
+       corporate NAT and already spent. Measured 2026-11-05 from that
+       network: ROCm/aiter and ROCm/ATOM both returned 200, with 58 of
+       60 remaining. The claim was wrong, and it was costing two rows on
+       every run.
+
+       It is still a 60/hour budget shared with everyone behind the same
+       address, so this stays last and is used only for what the
+       authenticated attempts could not get. A handful of rows per run
+       fits; it is not a path to move everything onto.
     """
     cmd = ["gh", "api", path]
     if jq:
@@ -326,6 +400,29 @@ def gh_api(path, jq=None):
                 return None, str(exc)
         if CLASSIC_PAT not in p.stderr and not drop_token:
             break
+
+    # Attempt 3: anonymous. Only worth trying for the refusal it fixes,
+    # so the budget is not spent on rows that failed for another reason.
+    if CLASSIC_PAT in p.stderr:
+        body, err = _anon_api(path)
+        if body is not None:
+            # `pick` is how a caller whose --jq is a real program says
+            # what that program means in Python. Without one, only the
+            # single-field subset _apply_jq handles is available.
+            if pick is not None:
+                try:
+                    value = pick(body)
+                except Exception as exc:
+                    return None, f"anonymous fallback: {exc}"
+                if value is None:
+                    return None, "anonymous fallback: no match"
+                return str(value), None
+            if jq:
+                return _apply_jq(body, jq)
+            return body, None
+        if err:
+            return None, err
+
     detail = (p.stderr or p.stdout).strip().splitlines()
     return None, detail[0] if detail else "gh api failed"
 
@@ -347,7 +444,25 @@ def gh_latest(repo):
     if repo in STRICT_SEMVER_REPOS:
         jq = ('[.[]|select(.prerelease==false and .draft==false)'
               '|.tag_name|select(test("%s"))][0]' % SEMVER)
-        return gh_api("repos/%s/releases?per_page=100" % repo, jq)
+
+        def pick(releases):
+            """The same filter as the jq above, for the anonymous path.
+
+            Spelled out rather than shelling to jq: this runs only when
+            the authenticated attempts were refused, and adding a jq
+            binary as a hard dependency of a fallback would be a poor
+            trade. Kept beside the program it mirrors so the two cannot
+            drift unnoticed.
+            """
+            for rel in releases or []:
+                if rel.get("prerelease") or rel.get("draft"):
+                    continue
+                tag = rel.get("tag_name") or ""
+                if SEMVER_RE.match(tag):
+                    return tag
+            return None
+
+        return gh_api("repos/%s/releases?per_page=100" % repo, jq, pick=pick)
 
     tag, err = gh_api("repos/%s/releases/latest" % repo, ".tag_name")
     if repo not in RELEASE_NAME_REPOS or err is not None or tag is None:
