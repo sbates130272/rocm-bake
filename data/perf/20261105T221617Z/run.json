@@ -1,0 +1,11 @@
+{
+  "stamp": "20261105T221617Z",
+  "arch": "gfx1201",
+  "mode": "warm",
+  "interval_seconds": 5,
+  "sccache_key_prefix": "",
+  "run_id": "20261105T221617Z-a7daef0-dirty",
+  "targets": "pytorch-wheel triton-wheel aiter-wheel nixl-wheel torchvision-wheel atom-wheel cupy-wheel vllm-wheel lmcache-wheel pytorch",
+  "vcs_ref": "a7daef0",
+  "vcs_dirty": true
+}
