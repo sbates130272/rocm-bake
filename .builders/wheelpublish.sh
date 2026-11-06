@@ -121,11 +121,22 @@ architecture-specific despite their filenames; install through the index
 rather than downloading assets directly."
 fi
 
+# The generated metapackage goes up too, because its href now points
+# at the release like every other wheel. It must not stay on gh-pages:
+# its filename carries a PEP 440 local segment
+# (rocm_torch-10.1.0+gfx950-py3-none-any.whl) and GitHub Pages fails
+# the entire site build on a "+" in a filename, reporting only "Page
+# build failed". Measured 2026-11-05.
+shopt -s nullglob
+META=("${INDEX}"/rocm-torch/*.whl)
+shopt -u nullglob
+
 # --clobber: re-running must replace an asset, not fail on it, or a
 # republished arch leaves the index pointing at a stale binary whose
 # sha256 no longer matches and every install fails verification.
-say "   upload   ${#WHLS[@]} wheel(s)"
-run gh release upload "${TAG}" --repo "${REPO}" --clobber "${WHLS[@]}"
+say "   upload   ${#WHLS[@]} wheel(s) + ${#META[@]} metapackage"
+run gh release upload "${TAG}" --repo "${REPO}" --clobber \
+    "${WHLS[@]}" ${META[@]+"${META[@]}"}
 
 # ── 3. the index to gh-pages ────────────────────────────────────────
 if [ "${PUSH}" = 0 ]; then
@@ -145,14 +156,34 @@ DEST="${GHP}/data/wheels/${ARCH}"
 rm -rf "${DEST}"
 mkdir -p "$(dirname "${DEST}")"
 cp -r "${INDEX}" "${DEST}"
+# Everything published to Pages must be .html -- see the note above the
+# metapackage upload. The wheel is already a release asset by now, and
+# the index points at it there.
+find "${DEST}" -name '*.whl' -delete
 
 cd "${GHP}"
 git add "data/wheels/${ARCH}"
 if git diff --cached --quiet; then
     say "   pages    no change"
 else
+    # gpgsign=false alongside the bot identity, and not merely for
+    # convenience. This commit is generated data attributed to
+    # github-actions[bot]; signing it with a human key asserts
+    # authorship that is not true. The same commit made by nightly.yml
+    # on a runner is unsigned for the same reason.
+    #
+    # It also removes a real failure mode. With commit.gpgsign=true set
+    # globally, publishing dies on
+    #
+    #     gpg: signing failed: No such file or directory
+    #     PINENTRY_LAUNCHED ... not a tty
+    #
+    # whenever the agent's passphrase cache has expired -- after the
+    # release assets are already uploaded, leaving the wheels public
+    # and the index missing. Observed 2026-11-06 on gfx1151.
     git -c user.name='github-actions[bot]' \
         -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+        -c commit.gpgsign=false \
         commit -q -m "data: wheel index for ${ARCH} (${TAG})"
     # HEAD:gh-pages, not the branch name: this worktree is detached, so
     # pushing the branch name would push the local ref rather than what

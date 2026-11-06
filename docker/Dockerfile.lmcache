@@ -154,12 +154,33 @@ WORKDIR /opt/lmcache
 #   numpy<=2.2.6          upper-capped for NIXL's numba, which on cp314
 #                         needs a numpy newer than the cap allows. The cap
 #                         is lifted rather than the version pinned down.
+#   prometheus_client     capped at <=0.24.1, which no longer coexists
+#     <=0.24.1            with ATOM: atom 0.1.9 requires >=0.25,<0.26, so
+#                         the two are unsatisfiable together and the
+#                         generated rocm-torch[device-<arch>] metapackage
+#                         — which pins every wheel in the index at once —
+#                         could not be installed at all. Measured against
+#                         the published gfx950 index:
+#
+#                           atom depends on prometheus_client<0.26,>=0.25
+#                           lmcache depends on prometheus_client<=0.24.1
+#                           ERROR: ResolutionImpossible
+#
+#                         The cap is lifted, not replaced by a pin, for
+#                         the same reason numpy's is: this image installs
+#                         one resolved set and the cap is a support
+#                         statement from upstream, not an ABI constraint.
+#                         LMCache uses prometheus_client for counters;
+#                         0.25 did not change that surface.
 ARG LMCACHE_DROP_REQS='^(cufile-python|nvtx|cupy-rocm-7-0|grpcio-observability)([<=>;\[[:space:]]|$)'
 
 RUN cp requirements/common.txt /tmp/common.txt.orig && \
     sed -i -E "/${LMCACHE_DROP_REQS}/d" requirements/common.txt && \
     sed -i -E "/${LMCACHE_DROP_REQS}/d" requirements/rocm_core.txt && \
     sed -i -E 's/^numpy<=2\.2\.6$/numpy/' requirements/common.txt && \
+    sed -i -E 's/^prometheus_client *>=.*$/prometheus_client >= 0.18.0/' \
+        requirements/common.txt && \
+    grep -q '^prometheus_client >= 0.18.0$' requirements/common.txt && \
     echo "--- patched requirements ---" && \
     diff /tmp/common.txt.orig requirements/common.txt || true && \
     cat requirements/rocm_core.txt

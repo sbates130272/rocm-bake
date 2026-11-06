@@ -294,8 +294,25 @@ def main():
 
     meta_whl = metapackage_wheel(args.arch, meta_version, pins,
                                 out / METAPACKAGE, args.python)
+    # The metapackage href follows --wheel-url when one is given, which
+    # means the generated wheel has to be published alongside the rest
+    # rather than served from the index directory. wheelpublish.sh does
+    # that; see the note there.
+    #
+    # Not a tidiness choice. Its filename carries a PEP 440 local
+    # segment -- rocm_torch-10.1.0+gfx950-py3-none-any.whl -- and
+    # GitHub Pages fails the whole site build on a file whose name
+    # contains "+", with no error beyond "Page build failed". Measured
+    # 2026-11-05: the first published index errored the build, and
+    # removing only that file made the next one succeed. Every other
+    # file in the index is .html.
+    #
+    # Without --wheel-url the href stays relative, which is what the
+    # local `make wheel-index` + http.server path wants.
+    meta_href = (f"{prefix}{meta_whl.name}" if args.wheel_url
+                 else meta_whl.name)
     projects[METAPACKAGE] = [
-        (f"{meta_whl.name}#sha256={sha256_of(meta_whl)}", meta_whl.name)]
+        (f"{meta_href}#sha256={sha256_of(meta_whl)}", meta_whl.name)]
 
     for project, entries in projects.items():
         write_project(out, project, entries)
