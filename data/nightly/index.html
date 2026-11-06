@@ -30,10 +30,14 @@ a { color: #2a78d6; text-decoration-thickness: 1px; text-underline-offset: 2px; 
 <p class="sub">Cold and warm bake invocations on a rented CodeBuild
 machine, one job per architecture.</p>
 <div class="note">These are <strong>not</strong> comparable with the <a href="../perf/">instrumented fleet runs</a>. Those measure a parallel build across three nodes with a shared compiler cache; these measure sequential bakes on one rented machine. The phase wall clock is the whole bake, not a per-target cost.</div>
+<p><img src="build-time.svg" alt="Warm build time per night" width="760"></p>
 <table>
-<thead><tr><th>Run</th><th>Arch</th><th>Cold</th><th>Warm</th></tr></thead>
+<thead><tr><th>Run</th><th>Arch</th><th>Cold</th><th>Warm</th>
+<th>Cost</th><th>sccache</th><th>Layer cache</th></tr></thead>
 <tbody>
-<tr><td><a href="20261105T102024Z/">20261105T102024Z</a></td><td><code>gfx1201</code></td><td class="skip">—</td><td class="">43m05s</td></tr>
-<tr><td><a href="20261104T063657Z/">20261104T063657Z</a></td><td><code>gfx1201</code></td><td class="skip">—</td><td class="">66m40s</td></tr>
+<tr><td><a href="20261106T102401Z/">20261106T102401Z</a></td><td><code>gfx1201</code></td><td class="skip">—</td><td class="">52m28s</td><td>$10.49</td><td>64%</td><td>0/567</td></tr>
+<tr><td><a href="20261105T102024Z/">20261105T102024Z</a></td><td><code>gfx1201</code></td><td class="skip">—</td><td class="">43m05s</td><td>—</td><td>—</td><td>—</td></tr>
+<tr><td><a href="20261104T063657Z/">20261104T063657Z</a></td><td><code>gfx1201</code></td><td class="skip">—</td><td class="">66m40s</td><td>—</td><td>—</td><td>—</td></tr>
 </tbody></table>
+
 </body></html>

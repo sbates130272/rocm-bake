@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="260" viewBox="0 0 760 260" role="img" aria-label="Nightly warm build time per run">
+<style>  .s{fill:#fff} .i{fill:#1f2328} .i2{fill:#656d76}  .g{stroke:#d0d7de;stroke-width:1}  text{font-family:ui-sans-serif,-apple-system,Segoe UI,Helvetica,Arial,sans-serif}  .l{font-size:10px} .t{font-size:12px;font-weight:600}  @media (prefers-color-scheme: dark){    .s{fill:#0d1117} .i{fill:#e6edf3} .i2{fill:#8b949e}    .g{stroke:#30363d} }</style>
+<rect class="s" width="760" height="260"/>
+<text class="i t" x="12" y="18">Warm build time per night</text>
+<line class="g" x1="54" y1="214.0" x2="744" y2="214.0"/>
+<text class="i2 l" x="48" y="217.0" text-anchor="end">0m</text>
+<line class="g" x1="54" y1="167.5" x2="744" y2="167.5"/>
+<text class="i2 l" x="48" y="170.5" text-anchor="end">16m</text>
+<line class="g" x1="54" y1="121.0" x2="744" y2="121.0"/>
+<text class="i2 l" x="48" y="124.0" text-anchor="end">33m</text>
+<line class="g" x1="54" y1="74.5" x2="744" y2="74.5"/>
+<text class="i2 l" x="48" y="77.5" text-anchor="end">50m</text>
+<line class="g" x1="54" y1="28.0" x2="744" y2="28.0"/>
+<text class="i2 l" x="48" y="31.0" text-anchor="end">67m</text>
+<rect x="152.0" y="28.9" width="31.0" height="185.1" rx="2" fill="#2a78d6"/>
+<text class="i2 l" x="169.0" y="230" text-anchor="middle">20261104</text>
+<rect x="382.0" y="94.4" width="31.0" height="119.6" rx="2" fill="#2a78d6"/>
+<text class="i2 l" x="399.0" y="230" text-anchor="middle">20261105</text>
+<rect x="612.0" y="68.3" width="31.0" height="145.7" rx="2" fill="#2a78d6"/>
+<text class="i2 l" x="629.0" y="230" text-anchor="middle">20261106</text>
+<rect x="54" y="244" width="9" height="9" rx="2" fill="#2a78d6"/>
+<text class="i2 l" x="67" y="252">gfx1201</text>
+</svg>
