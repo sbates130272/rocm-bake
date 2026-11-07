@@ -264,11 +264,6 @@ def main():
     recorded = check_arch(args.wheel_dir, args.arch)
 
     found = scan(args.wheel_dir)
-    # The metapackage version carries the arch as a PEP 440 local
-    # segment. Two indexes then hold genuinely different versions of
-    # rocm-torch rather than the same one with different contents,
-    # which is what makes a stale pip cache harmless here.
-    meta_version = f"{args.version.split('-')[0]}+{args.arch}"
 
     out = Path(args.out)
     prefix = args.wheel_url
@@ -292,6 +287,29 @@ def main():
         if capped_below(spec, args.python):
             capped.append((project, spec))
 
+    # The metapackage version carries the arch as a PEP 440 local
+    # segment, so two indexes hold genuinely different versions of
+    # rocm-torch rather than the same one with different contents.
+    #
+    # The arch alone is not enough, and the pin digest is why. Both
+    # other inputs -- the ROCm version and the arch -- are stable across
+    # rebuilds, while the pins inside the metapackage are not: a torch
+    # rebuilt at a new commit, or every wheel renamed at once, rewrites
+    # every Requires-Dist while leaving the filename, the version and
+    # the download URL byte-identical. A client with a warm pip cache is
+    # then entitled to reuse the body it already has, and resolve pins
+    # that are no longer anywhere in the index -- surfacing as a hash
+    # mismatch or an unsatisfiable requirement, neither of which names
+    # the cause.
+    #
+    # So the pin set is part of the version. Any change to what this
+    # metapackage requires produces a new version, which is the property
+    # a cache is allowed to rely on.
+    pin_digest = hashlib.sha256(
+        "\n".join(f"{n}=={v}" for n, v in sorted(pins)).encode()
+    ).hexdigest()[:8]
+    meta_version = f"{args.version.split('-')[0]}+{args.arch}.{pin_digest}"
+
     meta_whl = metapackage_wheel(args.arch, meta_version, pins,
                                 out / METAPACKAGE, args.python)
     # The metapackage href follows --wheel-url when one is given, which
@@ -300,7 +318,7 @@ def main():
     # that; see the note there.
     #
     # Not a tidiness choice. Its filename carries a PEP 440 local
-    # segment -- rocm_torch-10.1.0+gfx950-py3-none-any.whl -- and
+    # segment -- rocm_torch-10.1.0+gfx950.13b9737a-py3-none-any.whl --
     # GitHub Pages fails the whole site build on a file whose name
     # contains "+", with no error beyond "Page build failed". Measured
     # 2026-11-05: the first published index errored the build, and

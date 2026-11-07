@@ -16,19 +16,21 @@
 # offsite asset is still verified by pip.
 #
 # WHY ONE RELEASE PER ARCH. Every wheel this repo builds has an
-# arch-independent filename -- torch-2.15.0a0+git31a77fc-cp314-cp314-
-# linux_x86_64.whl is the same string for gfx950 and gfx1201, and the
-# two files differ by 50MB. That is the whole reason wheelindex.py puts
-# the arch in the path. Assets within one release share a namespace, so
-# two arches in one release would collide and the second upload would
-# either fail or silently replace the first. A release per arch keeps
-# the filenames distinct by keeping them apart.
+# arch-independent filename -- torch-2.15.0a0+git31a77fc.rocm10.1.0-
+# cp314-cp314-linux_x86_64.whl is the same string for gfx950 and
+# gfx1201, and the two files differ by 40MB. The version says which
+# ROCm; nothing in it says which GPU. That is the whole reason
+# wheelindex.py puts the arch in the path. Assets within one release
+# share a namespace, so two arches in one release would collide and the
+# second upload would either fail or silently replace the first. A
+# release per arch keeps the filenames distinct by keeping them apart.
 #
 # The release is a plain tag, not a repository tag object anyone has to
 # push: `gh release create` makes it from the current commit if it does
-# not exist. Re-running replaces the assets rather than accumulating
-# them, so a republished arch does not leave a stale wheel behind for
-# the index to point at.
+# not exist. Re-running replaces same-named assets and then prunes any
+# .whl the current build did not produce, so a republished arch leaves
+# no stale wheel behind -- see the note above the prune step for why
+# --clobber alone is not enough.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -44,7 +46,13 @@ REPO=""
 DRY=0
 PUSH=1
 
-usage() { sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+# The header block, however long it is. A hardcoded range silently
+# truncates --help mid-sentence the first time the comment grows, which
+# is exactly what happened when the prune note was added.
+usage() {
+    awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$0"
+    exit "${1:-0}"
+}
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -124,7 +132,7 @@ fi
 # The generated metapackage goes up too, because its href now points
 # at the release like every other wheel. It must not stay on gh-pages:
 # its filename carries a PEP 440 local segment
-# (rocm_torch-10.1.0+gfx950-py3-none-any.whl) and GitHub Pages fails
+# (rocm_torch-10.1.0+gfx950.13b9737a-py3-none-any.whl) and GitHub Pages
 # the entire site build on a "+" in a filename, reporting only "Page
 # build failed". Measured 2026-11-05.
 shopt -s nullglob
@@ -137,6 +145,45 @@ shopt -u nullglob
 say "   upload   ${#WHLS[@]} wheel(s) + ${#META[@]} metapackage"
 run gh release upload "${TAG}" --repo "${REPO}" --clobber \
     "${WHLS[@]}" ${META[@]+"${META[@]}"}
+
+# ...but --clobber only matches by FILENAME, so it replaces nothing when
+# a wheel's version changes. The old asset simply stays, and the release
+# accumulates a generation per rebuild.
+#
+# Not hypothetical. Before this was added, wheels-10.1.0-gfx950 held
+# both
+#
+#     amd_aiter-0.1.29.dev0+gf1965cd26.d20261104-...whl
+#     amd_aiter-0.1.29.dev0+gf1965cd26.d20261105-...whl
+#
+# because setuptools_scm stamps the build date and the date moved. The
+# index only ever points at the current set, so the strays are
+# unreferenced -- but they are still public, still downloadable at a
+# stable URL, and indistinguishable from the real thing to anyone who
+# picks an asset off the release page by hand.
+#
+# So: after uploading, delete every .whl asset that is not in the set
+# just uploaded. Only .whl, and only after a successful upload, so a
+# half-finished publish cannot strand the release empty.
+WANT=$(for f in "${WHLS[@]}" ${META[@]+"${META[@]}"}; do basename "${f}"; done | sort -u)
+if [ "${DRY}" = 1 ]; then
+    say "   prune    would reconcile release assets against ${#WHLS[@]}+${#META[@]} files"
+else
+    HAVE=$(gh release view "${TAG}" --repo "${REPO}" \
+               --json assets --jq '.assets[].name' 2>/dev/null \
+           | grep -E '\.whl$' | sort -u || true)
+    STALE=$(comm -23 <(printf '%s\n' "${HAVE}") <(printf '%s\n' "${WANT}") || true)
+    if [ -n "${STALE}" ]; then
+        printf '%s\n' "${STALE}" | while read -r asset; do
+            [ -n "${asset}" ] || continue
+            say "   prune    removing stale asset ${asset}"
+            gh release delete-asset "${TAG}" "${asset}" \
+                --repo "${REPO}" --yes
+        done
+    else
+        say "   prune    no stale assets"
+    fi
+fi
 
 # ── 3. the index to gh-pages ────────────────────────────────────────
 if [ "${PUSH}" = 0 ]; then
