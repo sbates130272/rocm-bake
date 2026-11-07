@@ -211,7 +211,8 @@ WORKDIR /opt/atom
 # build of this file produced atom-0.0.0-py3-none-any.whl with the
 # pretend-version correctly set in the environment. The version
 # assertion further down is what turns that back into a build failure.
-RUN pip install --no-cache-dir "setuptools_scm[toml]>=6.2"
+# auditwheel (and its patchelf backend) are for the repair step below.
+RUN pip install --no-cache-dir "setuptools_scm[toml]>=6.2" auditwheel patchelf
 
 # ATOM's samplers refuse to run on any RDNA part, and do not have to.
 #
@@ -280,13 +281,12 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # Linux. A py3-none-any wheel would install happily on the wrong
 # interpreter and fail when that .so is loaded.
 #
-# linux_x86_64 rather than a manylinux policy, deliberately: nothing
-# here runs auditwheel, so no claim about glibc has been checked and
-# manylinux_2_39 would be a guess. The consumers of this wheel are
-# images FROM the same PyTorch base, where that is not a constraint.
-# If this ever needs to install somewhere else, add an auditwheel
-# repair step the way Dockerfile.torchvision does and let it choose
-# the policy from the symbols.
+# linux_x86_64 is the honest starting tag -- bdist_wheel has checked no
+# glibc policy -- and the auditwheel step below turns it into the one
+# the symbols actually allow. This note used to say that step did not
+# exist and manylinux_2_39 "would be a guess"; it exists now, and the
+# answer it gives is manylinux_2_38, not 2_39. The guess would have
+# been wrong, which is the argument for measuring rather than asserting.
 RUN --mount=type=secret,id=aws,required=false \
     if [ -s /run/secrets/aws ]; then set -a; . /run/secrets/aws; set +a; fi; \
     export SETUPTOOLS_SCM_PRETEND_VERSION="${ATOM_REF#v}+rocm${ROCM_VERSION%%-*}"; \
@@ -295,21 +295,30 @@ RUN --mount=type=secret,id=aws,required=false \
     py_tag="cp$(python -c 'import sys; print(f"{sys.version_info.major}{sys.version_info.minor}")')"; \
     echo "python tag: ${py_tag}"; \
     ATOM_MESH_BUILD=1 ATOM_MESH_FEATURES="${ATOM_MESH_FEATURES}" \
-        python setup.py bdist_wheel --dist-dir=/wheels \
+        python setup.py bdist_wheel --dist-dir=/raw-wheels \
             --python-tag "${py_tag}" --plat-name linux_x86_64 \
     2>&1 | tee /wheels-build.log \
     && sccache --show-stats | tee /wheels-atom-sccache-stats.txt
 
 SHELL ["/bin/sh", "-c"]
 
+# linux_x86_64 -> manylinux_2_38_x86_64. The exclude list is derived
+# from the ROCm tree and from torch; see docker/auditwheel-rocm.sh.
+COPY docker/auditwheel-rocm.sh /usr/local/bin/auditwheel-rocm
+RUN auditwheel-rocm /raw-wheels /wheels
+
 # The atomesh binary. It is NOT in the wheel — pyproject.toml's
 # package-data names only mesh/target/release/libmesh.so, so the cdylib
 # ships and the executable does not. Upstream copies it to
 # /usr/local/bin as a separate step; this stage carries it out to the
 # scratch image for whoever builds the serving image.
+# `> file && cat`, not `| tee`: this RUN has no pipefail, so a piped
+# `atomesh --version` that segfaults would report tee's exit 0 and the
+# check would pass having proved nothing.
 RUN strip /opt/atom/atom/mesh/target/release/atomesh && \
     cp /opt/atom/atom/mesh/target/release/atomesh /usr/local/bin/atomesh && \
-    atomesh --version | tee /wheels-atomesh-version.txt
+    atomesh --version > /wheels-atomesh-version.txt && \
+    cat /wheels-atomesh-version.txt
 
 # Structural checks on the artifact, before anything is installed.
 #

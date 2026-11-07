@@ -96,12 +96,33 @@ RUN printf 'server_startup_timeout_ms = 60000\n' > /etc/sccache.toml
 # headers were already there anyway. The directory is `thrust`, not
 # `rocthrust`, which is what made it look absent.
 
-RUN pip install --no-cache-dir "cython>=0.29.22" "fastrlock>=0.5" numpy setuptools wheel build
+# auditwheel (and its patchelf backend) are for the repair step below.
+RUN pip install --no-cache-dir "cython>=0.29.22" "fastrlock>=0.5" numpy setuptools wheel build \
+    auditwheel patchelf
 
 RUN git clone --depth 1 --branch "${CUPY_REF}" --recursive \
     https://github.com/cupy/cupy.git /opt/cupy
 
 WORKDIR /opt/cupy
+
+# Mark the wheel as ours and as ROCm's. Unlike torch and triton, CuPy
+# offers no environment hook for this: pyproject.toml declares
+#
+#     [tool.setuptools.dynamic]
+#     version = { attr = "cupy._version.__version__" }
+#
+# so the single source of truth is that attribute, and patching it is
+# what makes `cupy.__version__` and the wheel agree. A version-only
+# override applied to the wheel afterwards would leave the two saying
+# different things.
+#
+# The grep is not decoration. A sed that stops matching after an
+# upstream reformat fails silently -- the build would simply publish an
+# unmarked 14.2.0 again, which is the bug this is fixing.
+RUN sed -i -E "s/^__version__ = '([^']+)'$/__version__ = '\\1+rocm${ROCM_VERSION%%-*}'/" \
+        cupy/_version.py && \
+    grep -qE "^__version__ = '.*\\+rocm${ROCM_VERSION%%-*}'$" cupy/_version.py && \
+    cat cupy/_version.py
 
 # Python 3.14 changed the default multiprocessing start method on Linux
 # from "fork" to "forkserver". Under forkserver every worker re-imports
@@ -152,11 +173,27 @@ RUN --mount=type=secret,id=aws,required=false \
     export CUPY_NUM_BUILD_JOBS="${njobs}"; \
     echo "CUPY_NUM_BUILD_JOBS=${njobs}, HCC_AMDGPU_TARGET=${HCC_AMDGPU_TARGET}"; \
     CC="sccache gcc" CXX="sccache g++" \
-    PYTHONDONTWRITEBYTECODE=1 python build-wheel.py bdist_wheel --dist-dir=/wheels \
+    PYTHONDONTWRITEBYTECODE=1 python build-wheel.py bdist_wheel --dist-dir=/raw-wheels \
     2>&1 | tee /wheels-build.log \
     && sccache --show-stats | tee /wheels-cupy-sccache-stats.txt
 
 SHELL ["/bin/sh", "-c"]
+
+# linux_x86_64 -> the lowest manylinux policy the symbols allow. The
+# exclude list is derived from the ROCm tree rather than written out
+# here; see the header of docker/auditwheel-rocm.sh for why.
+COPY docker/auditwheel-rocm.sh /usr/local/bin/auditwheel-rocm
+RUN auditwheel-rocm /raw-wheels /wheels
+
+# The version patch above must have survived into the wheel's name.
+RUN set -eu; \
+    test "$(find /wheels -maxdepth 1 -name '*.whl' | wc -l)" -eq 1; \
+    want="cupy-${CUPY_REF#v}+rocm${ROCM_VERSION%%-*}-"; \
+    case "$(basename /wheels/*.whl)" in \
+        "${want}"*) echo "version ok: ${want}" ;; \
+        *) echo "wheel is $(basename /wheels/*.whl), expected ${want}*" >&2; \
+           exit 1 ;; \
+    esac
 
 # Prove the wheel carries device code for the arch it claims. CuPy
 # compiles much of its kernel surface at run time through hipRTC, so

@@ -82,6 +82,11 @@ ENV PIP_CONSTRAINT=/etc/pip-constraints.txt
 FROM deps AS builder
 
 ARG LMCACHE_REF=v0.5.6
+# Redeclared, not inherited: ARG does not cross a FROM, and `deps`
+# declaring it does nothing for this stage. Without this the LABEL below
+# reads "for ROCm ," and the wheel's version suffix comes out "+rocm"
+# with no version in it -- both silent.
+ARG ROCM_VERSION=10.1.0-full
 ARG SCCACHE_WEBDAV_ENDPOINT=http://snoc-strix.fold-leaffish.ts.net:8081
 # Key namespace within the shared store, and a unix socket rather than a
 # TCP port — the builders run with --driver-opt network=host, so a fixed
@@ -188,7 +193,8 @@ RUN cp requirements/common.txt /tmp/common.txt.orig && \
 # grpcio-tools is what generates the multiprocess transport's stubs; the
 # build_py override in setup.py runs the generator, so it is a hard build
 # dependency for the MP deployment, not an optional one.
-RUN pip install --no-cache-dir -r requirements/build.txt && \
+# auditwheel (and its patchelf backend) are for the repair step below.
+RUN pip install --no-cache-dir -r requirements/build.txt auditwheel patchelf && \
     python -c "import grpc_tools; print('grpc_tools ok')"
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -223,13 +229,19 @@ RUN njobs="${MAX_JOBS}"; \
     offload_flags="$(printf '%s' "${PYTORCH_ROCM_ARCH}" \
         | sed 's/;/ --offload-arch=/g; s/^/--offload-arch=/')"; \
     echo "hipcc offload flags: ${offload_flags}"; \
-    SETUPTOOLS_SCM_PRETEND_VERSION="${LMCACHE_REF#v}" \
+    SETUPTOOLS_SCM_PRETEND_VERSION="${LMCACHE_REF#v}+rocm${ROCM_VERSION%%-*}" \
     HIPCC_COMPILE_FLAGS_APPEND="${offload_flags}" \
     BUILD_WITH_HIP=1 CXX=hipcc \
-    PYTHONDONTWRITEBYTECODE=1 python setup.py bdist_wheel --dist-dir=/wheels \
+    PYTHONDONTWRITEBYTECODE=1 python setup.py bdist_wheel --dist-dir=/raw-wheels \
     2>&1 | tee /wheels-build.log
 
 SHELL ["/bin/sh", "-c"]
+
+# linux_x86_64 -> the lowest manylinux policy the symbols allow. The
+# exclude list is derived from the ROCm tree and from torch rather than
+# written out here; see the header of docker/auditwheel-rocm.sh.
+COPY docker/auditwheel-rocm.sh /usr/local/bin/auditwheel-rocm
+RUN auditwheel-rocm /raw-wheels /wheels
 
 # The extension must carry code objects for the arch it claims. A wheel
 # built for the wrong gfx imports cleanly and dies at the first kernel
@@ -237,6 +249,12 @@ SHELL ["/bin/sh", "-c"]
 RUN --mount=type=tmpfs,target=/tmp/lmcache-wheel \
     set -eu; \
     test "$(find /wheels -maxdepth 1 -name '*.whl' | wc -l)" -eq 1; \
+    want="lmcache-${LMCACHE_REF#v}+rocm${ROCM_VERSION%%-*}-"; \
+    case "$(basename /wheels/*.whl)" in \
+        "${want}"*) echo "version ok: ${want}" ;; \
+        *) echo "wheel is $(basename /wheels/*.whl), expected ${want}*" >&2; \
+           exit 1 ;; \
+    esac; \
     python -m zipfile -e /wheels/*.whl /tmp/lmcache-wheel; \
     so=$(find /tmp/lmcache-wheel -type f -name 'cuda_ops*.so' | head -1); \
     test -n "${so}"; \
