@@ -1060,6 +1060,10 @@ target "aiter-wheel" {
     PYTORCH_IMAGE       = USE_PUB ? PUB_PYTORCH : "pytorch-img"
     TRITON_WHEEL_IMAGE  = USE_PUB ? PUB_TRITON : "triton-wheels"
     AITER_REF           = AITER_REF
+    # Dockerfile.aiter puts this in the wheel's +rocm local version
+    # segment. Without it the ARG default silently wins, so a build with
+    # ROCM_VERSION overridden would stamp the wheel with the wrong ROCm.
+    ROCM_VERSION        = ROCM_VERSION
     PREBUILD_KERNELS    = PREBUILD_LEVEL
     SCCACHE_VERSION     = SCCACHE_VERSION
     PYTORCH_ROCM_ARCH   = PYTORCH_ROCM_ARCH
