@@ -179,24 +179,30 @@ run gh release upload "${TAG}" --repo "${REPO}" --clobber \
 # name that IS current, and this loop deletes what it is handed.
 # grep -vxF needs no ordering at all, and matches whole lines literally.
 WANT=$(for f in "${WHLS[@]}" ${META[@]+"${META[@]}"}; do basename "${f}"; done)
-if [ "${DRY}" = 1 ]; then
-    say "   prune    would reconcile release assets against ${#WHLS[@]}+${#META[@]} files"
+
+# The query runs in --dry-run too, and deliberately. Deleting assets is
+# the one irreversible thing this script does, so the dry run has to be
+# able to answer "what exactly would go?" -- a summary count cannot be
+# checked against anything. `gh release view` is read-only; only the
+# delete below is gated on DRY.
+HAVE=$(gh release view "${TAG}" --repo "${REPO}" \
+           --json assets --jq '.assets[].name' 2>/dev/null \
+       | grep -E '\.whl$' || true)
+STALE=$(printf '%s\n' "${HAVE}" \
+        | grep -vxF -f <(printf '%s\n' "${WANT}") || true)
+if [ -z "${STALE}" ]; then
+    say "   prune    no stale assets"
 else
-    HAVE=$(gh release view "${TAG}" --repo "${REPO}" \
-               --json assets --jq '.assets[].name' 2>/dev/null \
-           | grep -E '\.whl$' || true)
-    STALE=$(printf '%s\n' "${HAVE}" \
-            | grep -vxF -f <(printf '%s\n' "${WANT}") || true)
-    if [ -n "${STALE}" ]; then
-        printf '%s\n' "${STALE}" | while read -r asset; do
-            [ -n "${asset}" ] || continue
+    printf '%s\n' "${STALE}" | while read -r asset; do
+        [ -n "${asset}" ] || continue
+        if [ "${DRY}" = 1 ]; then
+            say "   prune    would remove stale asset ${asset}"
+        else
             say "   prune    removing stale asset ${asset}"
             gh release delete-asset "${TAG}" "${asset}" \
                 --repo "${REPO}" --yes
-        done
-    else
-        say "   prune    no stale assets"
-    fi
+        fi
+    done
 fi
 
 # ── 3. the index to gh-pages ────────────────────────────────────────

@@ -228,6 +228,18 @@ def metapackage_wheel(arch, version, pins, out_dir, python):
 
     out = Path(out_dir) / f"{dist}-py3-none-any.whl"
     out.parent.mkdir(parents=True, exist_ok=True)
+    # Clear any previously generated metapackage first. This directory is
+    # generated output, so anything already in it is from an older run --
+    # and since the version now carries a digest of the pin set, a rebuild
+    # writes a NEW filename rather than overwriting the old one. They
+    # accumulate, and wheelpublish.sh globs this directory to decide what
+    # to upload: a dry run after three local rebuilds offered to publish
+    # four metapackages, three of which no index references. They also
+    # defeat the release-asset prune, which spares anything in the
+    # upload set.
+    for stale in out.parent.glob("*.whl"):
+        if stale != out:
+            stale.unlink()
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
         for name, body in files.items():
             z.writestr(name, body)
