@@ -112,21 +112,43 @@ run python3 -I "${HERE}/wheelindex.py" "${WHEELS}" \
     --wheel-url "${BASE}/"
 
 # ── 2. the release ──────────────────────────────────────────────────
+# The notes are rebuilt on every publish, not only at creation. They
+# quote versions and describe what the filenames do and do not say, and
+# both of those move: written once on 2026-11-05 and never revisited,
+# all four releases still claimed "architecture-specific despite their
+# filenames" after the filenames had gained a ROCm marker, and still
+# said "Built for ROCm 10.1.0-full" -- the image flavour, which the tag
+# itself strips and which means nothing to someone installing a wheel.
+SITE="https://${REPO%%/*}.github.io/${REPO##*/}"
+NOTES="PEP 503 index: ${SITE}/data/wheels/${ARCH}/
+
+    pip install --index-url ${SITE}/data/wheels/${ARCH}/ \\
+        --extra-index-url https://pypi.org/simple \\
+        \"rocm-torch[device-${ARCH}]\"
+
+Built for ROCm ${ROCM%%-*}, Python ${PYVER}, ${ARCH}.
+
+The version strings say which ROCm these were built against; nothing in
+a filename says which GPU. torch for gfx950 and for gfx1201 are the
+same filename and differ by about 40MB of device code, so install
+through the index — its path and the \`rocm-torch\` metapackage are what
+carry the architecture — rather than downloading an asset by hand.
+
+The extra index is not optional: ordinary dependencies resolve from
+PyPI. Our wheels win over same-named PyPI projects because the
+metapackage pins exact versions carrying a local segment (\`+rocm…\`)
+that upstream cannot match."
+
 if gh release view "${TAG}" --repo "${REPO}" >/dev/null 2>&1; then
-    say "   release  ${TAG} exists — replacing assets"
+    say "   release  ${TAG} exists — replacing assets, refreshing notes"
+    run gh release edit "${TAG}" --repo "${REPO}" \
+        --title "ROCm ${ROCM%%-*} wheels for ${ARCH}" \
+        --notes "${NOTES}"
 else
     say "   release  creating ${TAG}"
     run gh release create "${TAG}" --repo "${REPO}" \
         --title "ROCm ${ROCM%%-*} wheels for ${ARCH}" \
-        --notes "PEP 503 index: https://${REPO%%/*}.github.io/${REPO##*/}/data/wheels/${ARCH}/
-
-    pip install --index-url https://${REPO%%/*}.github.io/${REPO##*/}/data/wheels/${ARCH}/ \\
-        --extra-index-url https://pypi.org/simple \\
-        \"rocm-torch[device-${ARCH}]\"
-
-Built for ROCm ${ROCM}, Python ${PYVER}, ${ARCH}. These wheels are
-architecture-specific despite their filenames; install through the index
-rather than downloading assets directly."
+        --notes "${NOTES}"
 fi
 
 # The generated metapackage goes up too, because its href now points
@@ -228,8 +250,15 @@ cp -r "${INDEX}" "${DEST}"
 # the index points at it there.
 find "${DEST}" -name '*.whl' -delete
 
+# The landing page that lists every arch published so far. Regenerated
+# from what is on disk, so it reflects this publish and every previous
+# one without keeping a list of architectures anywhere. Without it
+# data/wheels/ is a 404 and an index is reachable only by typing an
+# arch name you already know.
+python3 -I "${HERE}/wheelsite.py" "${GHP}/data/wheels" --repo "${REPO}"
+
 cd "${GHP}"
-git add "data/wheels/${ARCH}"
+git add "data/wheels"
 if git diff --cached --quiet; then
     say "   pages    no change"
 else
