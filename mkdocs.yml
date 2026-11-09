@@ -85,8 +85,10 @@ plugins:
 nav:
   - Home: index.md
   - Quick Start: quickstart.md
+  - Install The Wheels: wheels.md
   - Live Reports:
       - reports.md
+      - Wheel Indexes ↗: https://sbates130272.github.io/rocm-bake/data/wheels/
       - Fleet Runs (SNOC) ↗: https://sbates130272.github.io/rocm-bake/data/perf/
       - Nightly Builds (AWS) ↗: https://sbates130272.github.io/rocm-bake/data/nightly/
   - Architecture:

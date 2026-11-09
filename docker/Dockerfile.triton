@@ -214,8 +214,21 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # cannot route to the container credential endpoint. The secret is a
 # tmpfs file for the life of this instruction, so it never lands in
 # image history or a published layer.
+#
+# TRITON_WHEEL_VERSION_SUFFIX marks the wheel as a ROCm build. setup.py
+# at the pinned commit builds its version as
+#
+#     env_sfx = os.environ.get("TRITON_WHEEL_VERSION_SUFFIX", "")
+#     return git_sfx + env_sfx                        # setup.py:341-343
+#
+# so this appends to the existing +git<sha> rather than replacing it,
+# and the commit stays visible in the filename:
+# 3.9.0+gitaad2a60d.rocm10.1.0. A leading dot, not a plus -- a version
+# may carry only one local segment, and git_sfx has already opened it.
 RUN --mount=type=secret,id=aws,required=false \
     if [ -s /run/secrets/aws ]; then set -a; . /run/secrets/aws; set +a; fi; \
+    export TRITON_WHEEL_VERSION_SUFFIX=".rocm${ROCM_VERSION%%-*}"; \
+    echo "TRITON_WHEEL_VERSION_SUFFIX=${TRITON_WHEEL_VERSION_SUFFIX}"; \
     if [ -z "${MAX_JOBS}" ]; then \
         cores=$(nproc); \
         jobs=$(awk -v per="${MEM_PER_JOB_GB}" '/^MemAvailable:/ {print int($2/1024/1024/per)}' /proc/meminfo); \
@@ -237,9 +250,33 @@ RUN --mount=type=secret,id=aws,required=false \
 # — otherwise it returns 1 and falls back to AMD's public index, which
 # has nothing newer than ROCm 7.2. Shipping only triton would silently
 # give us the mismatched build we are trying to avoid.
+#
+# No version suffix here, deliberately. triton_kernels is pure Python
+# (py3-none-any) and carries no ROCm code, so a +rocm marker on it would
+# claim a coupling that does not exist.
 RUN cd python/triton_kernels && \
     python -m build --wheel --no-isolation --outdir /wheels \
     2>&1 | tee -a /wheels-build.log
+
+# No auditwheel step here, unlike Dockerfile.lmcache and
+# Dockerfile.cupy. `auditwheel show` on the published gfx950 wheel ends
+# with "This constrains the platform tag to linux_x86_64" -- the
+# symbols this wheel references are newer than any policy auditwheel
+# knows, and no exclude list moves that. Measured 2026-11-06. Same
+# finding as Dockerfile.pytorch, which has the longer note.
+#
+# The suffix must have reached the wheel. A silently-unset
+# TRITON_WHEEL_VERSION_SUFFIX produces a perfectly good wheel with the
+# wrong name, which is exactly the failure this check exists for.
+RUN set -eu; \
+    found=$(find /wheels -maxdepth 1 -name 'triton-*.whl' | head -1); \
+    test -n "${found}"; \
+    case "$(basename "${found}")" in \
+        *"+git"*".rocm${ROCM_VERSION%%-*}-"*) \
+            echo "version ok: $(basename "${found}")" ;; \
+        *) echo "triton wheel is $(basename "${found}"), expected" \
+                "+git<sha>.rocm${ROCM_VERSION%%-*}" >&2; exit 1 ;; \
+    esac
 
 RUN ls -la /wheels/
 

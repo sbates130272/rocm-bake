@@ -27,6 +27,10 @@ FROM ${TRITON_WHEEL_IMAGE} AS tritonwheels
 FROM ${PYTORCH_IMAGE} AS builder
 
 ARG AITER_REF=main
+# For the wheel's +rocm local-version suffix below. ARG does not cross a
+# FROM, so this stage needs its own even though the base image was built
+# with the same value.
+ARG ROCM_VERSION=10.1.0-full
 ARG PYTORCH_ROCM_ARCH=gfx950
 ARG SCCACHE_WEBDAV_ENDPOINT=http://snoc-strix.fold-leaffish.ts.net:8081
 
@@ -307,11 +311,52 @@ RUN --mount=type=secret,id=aws,required=false \
     else \
         echo "MAX_JOBS=${MAX_JOBS} (pinned via build arg)"; \
     fi; \
-    python setup.py bdist_wheel --dist-dir=/wheels \
+    base=$(python -c 'from setuptools_scm import get_version; print(get_version())'); \
+    [ -n "${base}" ] || { echo "setuptools_scm returned nothing" >&2; exit 1; }; \
+    case "${base}" in \
+        0.1.dev*) echo "setuptools_scm found no tags (got ${base});" \
+                       "the clone has no tag to describe from" >&2; exit 1 ;; \
+    esac; \
+    case "${base}" in \
+        *+*) export SETUPTOOLS_SCM_PRETEND_VERSION="${base}.rocm${ROCM_VERSION%%-*}" ;; \
+        *)   export SETUPTOOLS_SCM_PRETEND_VERSION="${base}+rocm${ROCM_VERSION%%-*}" ;; \
+    esac; \
+    echo "aiter version: ${base} -> ${SETUPTOOLS_SCM_PRETEND_VERSION}"; \
+    python setup.py bdist_wheel --dist-dir=/raw-wheels \
     2>&1 | tee /wheels-build.log \
     && sccache --show-stats | tee /wheels-aiter-sccache-stats.txt
 
 SHELL ["/bin/sh", "-c"]
+
+# No auditwheel here, and not by oversight. At PREBUILD_KERNELS=0 this
+# wheel contains no x86_64 ELF at all -- it is Python plus GPU code
+# objects, and the kernels are JIT-compiled on the host at first use.
+# auditwheel refuses it outright:
+#
+#     Invalid binary wheel: no ELF executable or shared library file
+#     (including compiled Python C extension) with a 'x86_64'
+#     architecture found.
+#
+# A manylinux tag describes which glibc a wheel's CPU code needs. This
+# wheel has no CPU code, so there is nothing for the tag to describe,
+# and linux_x86_64 stays. Measured 2026-11-06 against the published
+# gfx950 wheel. The wheel is still genuinely arch-specific -- just for
+# the GPU arch, which no platform tag can express.
+RUN mkdir -p /wheels && mv /raw-wheels/*.whl /wheels/ && rm -rf /raw-wheels
+
+# setuptools_scm is the one mechanism here that fails by producing a
+# plausible wrong answer rather than an error: PRETEND_VERSION is only
+# read if the package actually uses scm for its version, and a clone
+# without tags yields 0.1.dev1 with no complaint.
+RUN set -eu; \
+    test "$(find /wheels -maxdepth 1 -name '*.whl' | wc -l)" -eq 1; \
+    case "$(basename /wheels/*.whl)" in \
+        *"+"*"rocm${ROCM_VERSION%%-*}-"*) \
+            echo "version ok: $(basename /wheels/*.whl)" ;; \
+        *) echo "aiter wheel is $(basename /wheels/*.whl)," \
+                "expected a +...rocm${ROCM_VERSION%%-*} local segment" >&2; \
+           exit 1 ;; \
+    esac
 
 RUN ls -la /wheels/
 

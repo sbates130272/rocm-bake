@@ -164,15 +164,33 @@ pip install \
   "rocm-torch[device-gfx950]"
 ```
 
-!!! warning "A downloaded asset does not say what it needs"
-    The filenames carry no ROCm version and no architecture —
-    `torch-2.15.0a0+git31a77fc-cp314-cp314-linux_x86_64.whl` is the same
-    string for every target. Installing *through the index* is always
-    correct, because the index path and the `rocm-torch` metapackage
-    both carry the architecture. Downloading a release asset by hand is
-    not: nothing in the file says it needs ROCm 10.1 and `gfx950`.
-    `torchvision` and `atom` already carry `+rocm10.1.0`; `torch`,
-    `triton` and `amd_aiter` do not yet.
+!!! warning "A downloaded asset does not say which GPU it is for"
+    The filenames say which ROCm, and not which architecture.
+    `torch-2.15.0a0+git31a77fc.rocm10.1.0-cp314-cp314-linux_x86_64.whl`
+    is the same string for gfx950 and gfx1201, and the two files differ
+    by about 40MB of device code. Installing *through the index* is
+    always correct, because the index path and the `rocm-torch`
+    metapackage both carry the architecture. Downloading a release
+    asset by hand is not.
+
+    Most wheels carry the ROCm version in their own version string —
+    `torchvision`, `atom`, `cupy` and `lmcache` as `+rocm10.1.0`, and
+    `torch`, `triton` and `amd_aiter` appended to the commit they were
+    built from, as in `2.15.0a0+git31a77fc.rocm10.1.0`. `vllm` carries
+    upstream's own `+rocm101`.
+
+    Three do not, each for its own reason. `nixl` and `triton_kernels`
+    are pure Python and contain no ROCm code to qualify. `nixl_rocm`
+    does contain ROCm code, but its version comes from meson with no
+    environment hook to extend, and its *distribution name* already
+    says `rocm` — so it is the one wheel here identified by name
+    rather than by version.
+
+    The architecture is in none of them. It could be — a local version
+    segment takes as many dot-separated parts as it likes — but it is
+    deliberately not, because then `torch` would resolve differently
+    per machine from a single index, which is precisely what the
+    per-arch index path and the metapackage exist to express.
 
 ### Why `device-<arch>` And Not A Variant
 

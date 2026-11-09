@@ -221,7 +221,7 @@ docker run --rm -it --device /dev/kfd --device /dev/dri \
 
 ```python
 import torch
-print(torch.__version__)           # 2.15.0+rocm10.1
+print(torch.__version__)           # 2.15.0a0+git31a77fc.rocm10.1.0
 print(torch.cuda.is_available())   # True
 print(torch.cuda.get_device_name(0))
 ```

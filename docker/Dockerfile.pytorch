@@ -382,8 +382,32 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # cannot route to the container credential endpoint. The secret is a
 # tmpfs file for the life of this instruction, so it never lands in
 # image history or a published layer.
+#
+# PYTORCH_BUILD_VERSION marks the wheel as a ROCm build. It is assembled
+# here rather than left to tools/generate_torch_version.py because that
+# file's default stops at version.txt + the sha:
+#
+#     version = Path(pytorch_root / "version.txt").read_text().strip()
+#     if sdist_version is None and sha != UNKNOWN:
+#         version += "+git" + sha[:7]
+#
+# so the same two inputs are reproduced here and ".rocm<ver>" appended,
+# keeping the commit visible: 2.15.0a0+git31a77fc.rocm10.1.0. A leading
+# dot, not a plus -- a version carries at most one local segment, and
+# "+git" has already opened it.
+#
+# PYTORCH_BUILD_NUMBER is not optional. The same file raises
+# AssertionError when PYTORCH_BUILD_VERSION is set without it, and a
+# number above 1 would append a .postN nobody asked for.
 RUN --mount=type=secret,id=aws,required=false \
     if [ -s /run/secrets/aws ]; then set -a; . /run/secrets/aws; set +a; fi; \
+    tv=$(tr -d '[:space:]' < version.txt); \
+    sha=$(git rev-parse HEAD | cut -c1-7); \
+    [ -n "${tv}" ] || { echo "version.txt is empty" >&2; exit 1; }; \
+    [ -n "${sha}" ] || { echo "git rev-parse produced no sha" >&2; exit 1; }; \
+    export PYTORCH_BUILD_VERSION="${tv}+git${sha}.rocm${ROCM_VERSION%%-*}"; \
+    export PYTORCH_BUILD_NUMBER=1; \
+    echo "PYTORCH_BUILD_VERSION=${PYTORCH_BUILD_VERSION}"; \
     if [ "${FORCE_RECACHE}" = "true" ] || [ "${FORCE_RECACHE}" = "1" ]; then \
         export SCCACHE_RECACHE=1; \
         echo "sccache: forced recache ON — cache reads disabled for this build"; \
@@ -410,6 +434,42 @@ SHELL ["/bin/sh", "-c"]
 
 # Verify the wheel was built
 RUN ls -la /opt/pytorch/dist/
+
+# No auditwheel step here, unlike Dockerfile.lmcache and
+# Dockerfile.cupy, and the reason is measured rather than assumed. This
+# wheel references GLIBC_2.43 from libm -- the base image's glibc is
+# newer than any manylinux policy auditwheel knows -- so `auditwheel
+# show` ends with
+#
+#     This constrains the platform tag to "linux_x86_64".
+#
+# No exclude list changes that: the symbol is in torch's own code, not
+# in a dependency that could be left to the consuming image. Repairing
+# the wheel would vendor libraries and rewrite RPATHs for no change of
+# tag, on the largest artifact here. Measured 2026-11-06 against the
+# published gfx950 wheel.
+#
+# The suffix must have reached the wheel. PYTORCH_BUILD_VERSION is read
+# at the start of a 45-minute build; discovering at publish time that it
+# was empty means doing all of it again.
+#
+# The expected name is recomputed from the same two inputs rather than
+# pattern-matched loosely. A glob like *"+git"*".rocm10.1.0-"* looks
+# strict and is not: it happily matches "torch-2.15.0a0+git.rocm10.1.0",
+# the exact output of a build whose `git rev-parse` produced nothing.
+RUN set -eu; \
+    tv=$(tr -d '[:space:]' < version.txt); \
+    sha=$(git rev-parse HEAD | cut -c1-7); \
+    [ -n "${tv}" ] && [ -n "${sha}" ] || { \
+        echo "cannot recompute expected version" >&2; exit 1; }; \
+    want="torch-${tv}+git${sha}.rocm${ROCM_VERSION%%-*}-"; \
+    found=$(find /opt/pytorch/dist -maxdepth 1 -name 'torch-*.whl' | head -1); \
+    [ -n "${found}" ] || { echo "no torch wheel in dist/" >&2; exit 1; }; \
+    case "$(basename "${found}")" in \
+        "${want}"*) echo "version ok: $(basename "${found}")" ;; \
+        *) echo "torch wheel is $(basename "${found}")," \
+                "expected ${want}*" >&2; exit 1 ;; \
+    esac
 
 # ─── Test stage (optional, run with --target pytorch-test) ───────
 FROM builder AS test
