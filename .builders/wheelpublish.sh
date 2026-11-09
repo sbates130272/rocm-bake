@@ -165,14 +165,28 @@ run gh release upload "${TAG}" --repo "${REPO}" --clobber \
 # So: after uploading, delete every .whl asset that is not in the set
 # just uploaded. Only .whl, and only after a successful upload, so a
 # half-finished publish cannot strand the release empty.
-WANT=$(for f in "${WHLS[@]}" ${META[@]+"${META[@]}"}; do basename "${f}"; done | sort -u)
+# grep -vxF against the wanted list, NOT sort + comm. comm requires its
+# inputs in the collation order it compares with, and `sort -u` under a
+# UTF-8 locale does not provide it for these names: punctuation is
+# weighted differently, so comm reports
+#
+#     comm: file 1 is not in sorted order
+#
+# and stops partway through. Measured on the real gfx950 asset list,
+# that deleted the stale amd_aiter wheel and then silently left three
+# generations of the rocm_torch metapackage behind. The failure mode in
+# the other direction is worse: an order comm disagrees with can emit a
+# name that IS current, and this loop deletes what it is handed.
+# grep -vxF needs no ordering at all, and matches whole lines literally.
+WANT=$(for f in "${WHLS[@]}" ${META[@]+"${META[@]}"}; do basename "${f}"; done)
 if [ "${DRY}" = 1 ]; then
     say "   prune    would reconcile release assets against ${#WHLS[@]}+${#META[@]} files"
 else
     HAVE=$(gh release view "${TAG}" --repo "${REPO}" \
                --json assets --jq '.assets[].name' 2>/dev/null \
-           | grep -E '\.whl$' | sort -u || true)
-    STALE=$(comm -23 <(printf '%s\n' "${HAVE}") <(printf '%s\n' "${WANT}") || true)
+           | grep -E '\.whl$' || true)
+    STALE=$(printf '%s\n' "${HAVE}" \
+            | grep -vxF -f <(printf '%s\n' "${WANT}") || true)
     if [ -n "${STALE}" ]; then
         printf '%s\n' "${STALE}" | while read -r asset; do
             [ -n "${asset}" ] || continue
