@@ -235,6 +235,133 @@ jobs:
             echo "::error::gfx950 index accepted the gfx1201 extra"; exit 1; }
           echo "  cross-arch extra correctly rejected"
 
+  # wheelpublish.sh deletes release assets, which is the only
+  # irreversible thing this repo does to something public, and until
+  # now nothing tested it.
+  #
+  # The bug that actually reached a release was the metapackage glob:
+  # dist/index/<arch>/rocm-torch/ accumulated a wheel per regeneration
+  # once the version gained a pin digest, wheelpublish.sh globs that
+  # directory, and everything in the upload set is spared by the prune.
+  # So four generations were uploaded and all four kept. That is what
+  # the metapackage-count assertion and the regeneration step below
+  # pin down.
+  #
+  # The prune's first implementation also used `sort -u | comm`, which
+  # under a UTF-8 locale prints "comm: file 1 is not in sorted order"
+  # for these names. Checked against the real gfx950 asset list, it
+  # still produced the correct set -- the warning went to stderr and
+  # the answer was right -- so it was not the cause of anything
+  # observed. It was replaced because comm on unsorted input is
+  # undefined, and the thing it decides is which public files to
+  # delete. The locale is pinned below so the test exercises that
+  # condition rather than the C-locale path where both forms agree.
+  #
+  # No network: `gh` is a stub on PATH that answers `release view` with
+  # a canned asset list, and --dry-run means nothing is uploaded or
+  # deleted. What is under test is which names the script decides are
+  # stale.
+  wheelpublish:
+    name: Publish prunes the right assets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stub gh with a release that has two generations in it
+        run: |
+          set -e
+          mkdir -p stub
+          cat > stub/gh <<'STUB'
+          #!/usr/bin/env bash
+          # Only the two subcommands wheelpublish.sh reaches in a dry run.
+          case "$1 $2" in
+            "release view")
+              # Present: one current wheel, one superseded wheel, and
+              # three generations of the metapackage. The names are the
+              # real ones -- "+" and "." in the places that made the
+              # locale-sensitive sort disagree with comm.
+              cat <<'JSON'
+          torch-2.15.0a0+git31a77fc.rocm10.1.0-cp314-cp314-linux_x86_64.whl
+          torch-2.15.0a0+git31a77fc-cp314-cp314-linux_x86_64.whl
+          rocm_torch-10.1.0+gfx950-py3-none-any.whl
+          rocm_torch-10.1.0+gfx950.13b9737a-py3-none-any.whl
+          rocm_torch-10.1.0+gfx950.424e84fe-py3-none-any.whl
+          JSON
+              ;;
+            "repo view") echo "sbates130272/rocm-bake" ;;
+            *) : ;;
+          esac
+          STUB
+          chmod +x stub/gh
+
+      # A UTF-8 locale on purpose: this is the condition under which
+      # `sort -u` and `comm` disagree about these names. Under LC_ALL=C
+      # the old implementation passed.
+      - name: Prune names exactly the superseded assets
+        env:
+          LC_ALL: en_US.UTF-8
+          LANG: en_US.UTF-8
+        run: |
+          set -e
+          sudo locale-gen en_US.UTF-8 >/dev/null 2>&1 || true
+          mkdir -p w i/rocm-torch
+          : > "w/torch-2.15.0a0+git31a77fc.rocm10.1.0-cp314-cp314-linux_x86_64.whl"
+          : > "i/rocm-torch/rocm_torch-10.1.0+gfx950.424e84fe-py3-none-any.whl"
+
+          out=$(PATH="$PWD/stub:$PATH" .builders/wheelpublish.sh \
+                  --arch gfx950 --wheels w --index i \
+                  --repo sbates130272/rocm-bake --dry-run --no-push 2>&1)
+          echo "$out"
+
+          want_gone='
+          torch-2.15.0a0+git31a77fc-cp314-cp314-linux_x86_64.whl
+          rocm_torch-10.1.0+gfx950-py3-none-any.whl
+          rocm_torch-10.1.0+gfx950.13b9737a-py3-none-any.whl'
+          for a in $want_gone; do
+            echo "$out" | grep -qF "would remove stale asset $a" || {
+              echo "::error::prune did not offer to remove $a"; exit 1; }
+          done
+
+          # The two current names must NOT be offered. This is the
+          # direction that loses data, so it is asserted explicitly
+          # rather than inferred from a count.
+          for a in \
+            "torch-2.15.0a0+git31a77fc.rocm10.1.0-cp314-cp314-linux_x86_64.whl" \
+            "rocm_torch-10.1.0+gfx950.424e84fe-py3-none-any.whl"; do
+            echo "$out" | grep -qF "would remove stale asset $a" && {
+              echo "::error::prune would delete the CURRENT asset $a"; exit 1; }
+          done
+
+          # Exactly one metapackage may be uploaded. Four was the bug.
+          echo "$out" | grep -qE 'upload +[0-9]+ wheel\(s\) \+ 1 metapackage' || {
+            echo "::error::expected exactly one metapackage in the upload set"
+            echo "$out" | grep -E 'upload ' ; exit 1; }
+          echo "  prune decisions correct under a UTF-8 locale"
+
+      # The generator must not leave previous metapackages behind, or
+      # the glob above picks them up again on the next publish.
+      - name: Regenerating an index clears the old metapackage
+        run: |
+          set -e
+          mkdir -p mi/rocm-torch
+          : > "mi/rocm-torch/rocm_torch-10.1.0+gfx950.deadbeef-py3-none-any.whl"
+          python - <<'EOF'
+          import pathlib, sys
+          sys.path.insert(0, ".builders")
+          from wheelindex import metapackage_wheel
+          out = metapackage_wheel("gfx950", "10.1.0+gfx950.abc12345",
+                                  [("torch", "2.15.0a0+git31a77fc.rocm10.1.0")],
+                                  pathlib.Path("mi/rocm-torch"), "3.14")
+          print("wrote", out.name)
+          EOF
+          left=$(find mi/rocm-torch -name '*.whl' | wc -l)
+          [ "$left" = 1 ] || {
+            echo "::error::expected 1 metapackage, found $left"
+            find mi/rocm-torch -name '*.whl'; exit 1; }
+          find mi/rocm-torch -name '*deadbeef*' | grep -q . && {
+            echo "::error::stale metapackage survived regeneration"; exit 1; }
+          echo "  index regeneration leaves exactly one metapackage"
+
   perfreport:
     name: Perf report renders
     runs-on: ubuntu-latest

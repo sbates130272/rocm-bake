@@ -1,0 +1,146 @@
+---
+# Resolve the published indexes the way a user would, and fail if
+# anything comes from the wrong place.
+#
+# WHY THIS IS A SCHEDULE AND NOT A PR CHECK. The failure this exists to
+# catch arrives with no commit of ours. `nixl` is a name NVIDIA also
+# publishes; when their 1.5.2 appeared at the same version as ours, pip
+# had no tiebreaker and took theirs -- so a ROCm index installed
+# nixl-cu12 and nixl-cu13, NVIDIA's CUDA backends, by default. Nothing
+# in this repository changed on the day that started being true, and it
+# was live across all four architectures for four days before anyone
+# resolved an index and looked at where the packages came from.
+#
+# Every wheel we publish now carries a local version segment upstream
+# cannot match, which is what makes the metapackage's exact pins
+# unsatisfiable by a same-named PyPI project. That defence is only as
+# good as its coverage: a wheel added later without a marker, or a new
+# upstream package taking a name we use unmarked, reopens it silently.
+# This notices within a week instead of whenever someone next looks.
+#
+# It is deliberately a *resolution* test, not a download test. pip's
+# --dry-run with --report gives the resolved set and the URL each
+# distribution would come from, which is the only thing being asserted.
+# Nothing is installed, so it costs a runner-minute.
+name: Wheels — probe the published indexes
+
+on:
+  schedule:
+    # Mondays, 06:19 UTC. An odd minute on purpose: every scheduled job
+    # in the world asks for :00, and GitHub queues them together.
+    - cron: '19 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      # Keep going: one architecture resolving wrongly says nothing
+      # about the others, and the point is to learn which.
+      fail-fast: false
+      matrix:
+        arch: [gfx950, gfx1201, gfx1151, gfx1250]
+    steps:
+      - uses: actions/checkout@v4
+
+      # 3.14 for the same reason the index CI job uses it: every wheel
+      # here is cp314 and the metapackage declares Requires-Python
+      # >=3.14.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Resolve rocm-torch[device-${{ matrix.arch }}]
+        env:
+          ARCH: ${{ matrix.arch }}
+          SITE: https://sbates130272.github.io/rocm-bake
+        run: |
+          set -e
+          python -m venv v
+          # --ignore-requires-python: lmcache caps at <3.14, which is a
+          # support statement rather than an ABI one -- the extension
+          # was built against this interpreter. Dockerfile.lmcache and
+          # Dockerfile.vllm install it the same way.
+          v/bin/pip install --dry-run --no-cache-dir \
+            --ignore-requires-python --report report.json \
+            --index-url "${SITE}/data/wheels/${ARCH}/" \
+            --extra-index-url https://pypi.org/simple \
+            "rocm-torch[device-${ARCH}]" > pip.log 2>&1 || {
+              echo "::error::resolution failed for ${ARCH}"
+              tail -40 pip.log
+              exit 1
+            }
+          echo "resolved $(python -c '
+          import json;print(len(json.load(open("report.json"))["install"]))') packages"
+
+      - name: Nothing of ours came from PyPI, and no CUDA came at all
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          python - <<'EOF'
+          import json, os, sys
+
+          arch = os.environ["ARCH"]
+          report = json.load(open("report.json"))
+
+          # Distributions this repo builds. If any of these resolves
+          # from somewhere other than our release assets, a same-named
+          # upstream project has taken it.
+          OURS = {
+              "torch", "torchvision", "triton", "triton-kernels",
+              "amd-aiter", "cupy", "lmcache", "atom", "vllm",
+              "nixl", "nixl-rocm", "rocm-torch",
+          }
+          # Substrings that should never appear in a ROCm resolution.
+          # nixl-cu12/cu13 are the ones that actually did.
+          CUDA = ("cu11", "cu12", "cu13", "cuda", "nvidia", "nccl",
+                  "cublas", "cudnn", "cufft", "curand", "cusparse")
+
+          def norm(n):
+              return n.lower().replace("_", "-")
+
+          shadowed, cuda_pkgs, mine = [], [], []
+          for item in report.get("install", []):
+              name = norm(item["metadata"]["name"])
+              version = item["metadata"]["version"]
+              url = item.get("download_info", {}).get("url", "")
+              ours_url = "github.com/sbates130272/rocm-bake" in url
+              if name in OURS:
+                  mine.append((name, version, ours_url))
+                  if not ours_url:
+                      shadowed.append((name, version, url))
+              if any(k in name for k in CUDA):
+                  cuda_pkgs.append((name, version, url))
+
+          for name, version, ours_url in sorted(mine):
+              print(f"  {'ours ' if ours_url else 'PYPI!'} {name:16} {version}")
+
+          rc = 0
+          if shadowed:
+              rc = 1
+              for name, version, url in shadowed:
+                  print(f"::error::{arch}: {name}=={version} resolved from "
+                        f"PyPI, not from our index -- {url}")
+              print("::error::A same-named upstream project is shadowing "
+                    "ours. The fix is a local version segment upstream "
+                    "cannot match (see docker/Dockerfile.nixl).")
+          if cuda_pkgs:
+              rc = 1
+              for name, version, url in cuda_pkgs:
+                  print(f"::error::{arch}: CUDA package {name}=={version} "
+                        f"pulled into a ROCm install -- {url}")
+
+          if not mine:
+              rc = 1
+              print(f"::error::{arch}: resolved nothing we publish -- "
+                    "is the index actually serving?")
+
+          if rc == 0:
+              print(f"{arch}: {len(mine)} of our distributions, all from "
+                    "our index, no CUDA packages")
+          sys.exit(rc)
+          EOF
