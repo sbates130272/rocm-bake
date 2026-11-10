@@ -54,6 +54,25 @@ jobs:
         with:
           python-version: "3.14"
 
+      # Retried, because a publish in flight makes this fail for a
+      # reason that is not a defect. `gh release upload --clobber`
+      # removes an asset before re-uploading it, and on a republish
+      # where filenames are unchanged the live index points at exactly
+      # that filename the whole time -- so there is a window, seconds
+      # long, where a published index resolves to a 404. The first run
+      # of this workflow hit it: gfx1201 failed with
+      #
+      #     ERROR: HTTP error 404 while getting .../releases/download/…
+      #
+      # while `make wheels-publish ARCH=gfx1201` was still running, and
+      # the same URL returned 200 a minute later.
+      #
+      # A weekly job that cries wolf whenever someone is publishing is
+      # a job people learn to ignore, which costs more than the class
+      # of bug it exists to catch. Three attempts spaced a minute apart
+      # outlast any publish window without hiding a real outage: an
+      # index that is genuinely broken is still broken three minutes
+      # later.
       - name: Resolve rocm-torch[device-${{ matrix.arch }}]
         env:
           ARCH: ${{ matrix.arch }}
@@ -65,15 +84,24 @@ jobs:
           # support statement rather than an ABI one -- the extension
           # was built against this interpreter. Dockerfile.lmcache and
           # Dockerfile.vllm install it the same way.
-          v/bin/pip install --dry-run --no-cache-dir \
-            --ignore-requires-python --report report.json \
-            --index-url "${SITE}/data/wheels/${ARCH}/" \
-            --extra-index-url https://pypi.org/simple \
-            "rocm-torch[device-${ARCH}]" > pip.log 2>&1 || {
-              echo "::error::resolution failed for ${ARCH}"
+          for attempt in 1 2 3; do
+            if v/bin/pip install --dry-run --no-cache-dir \
+                 --ignore-requires-python --report report.json \
+                 --index-url "${SITE}/data/wheels/${ARCH}/" \
+                 --extra-index-url https://pypi.org/simple \
+                 "rocm-torch[device-${ARCH}]" > pip.log 2>&1; then
+              [ "${attempt}" = 1 ] || echo "resolved on attempt ${attempt}"
+              break
+            fi
+            if [ "${attempt}" = 3 ]; then
+              echo "::error::resolution failed for ${ARCH} after 3 attempts"
               tail -40 pip.log
               exit 1
-            }
+            fi
+            echo "attempt ${attempt} failed, retrying in 60s"
+            tail -5 pip.log
+            sleep 60
+          done
           echo "resolved $(python -c '
           import json;print(len(json.load(open("report.json"))["install"]))') packages"
 
