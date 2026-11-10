@@ -80,13 +80,13 @@ jobs:
         run: |
           set -e
           python -m venv v
-          # --ignore-requires-python: lmcache caps at <3.14, which is a
-          # support statement rather than an ABI one -- the extension
-          # was built against this interpreter. Dockerfile.lmcache and
-          # Dockerfile.vllm install it the same way.
+          # This used to need --ignore-requires-python for lmcache's
+          # <3.14 cap; v0.5.7 admits cp314, so the resolve is now honest
+          # about every wheel's Requires-Python. If it starts failing on
+          # one, the cap is the thing to look at -- not the flag.
           for attempt in 1 2 3; do
             if v/bin/pip install --dry-run --no-cache-dir \
-                 --ignore-requires-python --report report.json \
+                 --report report.json \
                  --index-url "${SITE}/data/wheels/${ARCH}/" \
                  --extra-index-url https://pypi.org/simple \
                  "rocm-torch[device-${ARCH}]" > pip.log 2>&1; then

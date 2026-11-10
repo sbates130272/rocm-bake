@@ -118,13 +118,13 @@ def capped_below(spec, python):
     """True if spec's upper bound excludes `python` (e.g. "<3.14" vs 3.14).
 
     Only the "<" and "<=" clauses, which is the case that actually
-    bites: LMCache v0.5.6 declares ">=3.10,<3.14" while this repo is
-    cp314 throughout, because Ubuntu 26.04 — the only base AMD
-    publishes ROCm 10.1 for — ships no other Python. Both Dockerfiles
-    already install it with --ignore-requires-python and say why; this
-    is the same fact reaching the index, where it would otherwise
-    surface as an opaque pip resolution failure a long way from the
-    cause.
+    bites. This repo is cp314 throughout, because Ubuntu 26.04 — the
+    only base AMD publishes ROCm 10.1 for — ships no other Python, so
+    any upstream capping below 3.14 is uninstallable from our index. At
+    LMCache v0.5.6 that was a live problem; v0.5.7 raised its cap to
+    "<3.15" and nothing in the set is capped today. The check stays
+    because the next one would otherwise surface as an opaque pip
+    resolution failure a long way from the cause.
 
     A deliberately partial reading of PEP 440, not a specifier engine:
     a wrong answer here only mislabels a warning.
@@ -467,10 +467,10 @@ def main():
               f"--ignore-requires-python")
         for project, spec in capped:
             print(f"    {project:<14} declares Requires-Python: {spec}")
-        print("    The cap is a support statement, not an ABI one — the"
-              "\n    extension was built against this interpreter here."
-              "\n    docker/Dockerfile.lmcache and .vllm already install"
-              "\n    it the same way, for the same reason.")
+        print("    Check whether the cap is a support statement or a"
+              "\n    real ABI bound before reaching for that flag — the"
+              "\n    extensions here are built against this interpreter,"
+              "\n    but that is an argument to make per wheel.")
 
     # A note rather than a failure. Shipping a narrower tag than the
     # symbols require installs correctly everywhere it would have

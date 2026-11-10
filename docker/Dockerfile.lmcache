@@ -280,13 +280,12 @@ LABEL org.opencontainers.image.description="LMCache ${LMCACHE_REF} multi-process
 COPY --from=builder /wheels-build.log /wheels-arch.txt /var/log/lmcache-build/
 COPY --from=builder /opt/lmcache/requirements/ /opt/lmcache-requirements/
 
-# --ignore-requires-python: carried from v0.5.6, which declared
-# requires-python ">=3.10,<3.14" against this cp314 lane — cp314 because
-# Ubuntu 26.04, the only base AMD publishes ROCm 10.1 for, ships no
-# other Python. v0.5.7 raised the cap to "<3.15", so the flag is now a
-# no-op here; kept until the whole set of them comes out together
-# (Dockerfile.vllm, Makefile wheels-smoke, wheels-probe.yml,
-# wheelindex.py all encode the same fact).
+# This install used to need --ignore-requires-python: LMCache capped at
+# ">=3.10,<3.14" and this lane is cp314, because Ubuntu 26.04 — the only
+# base AMD publishes ROCm 10.1 for — ships no other Python. v0.5.7
+# raised the cap to "<3.15", so cp314 is in range and the flag is gone
+# from every lane that carried it. Restoring it is not the fix if this
+# ever fails again; the wheel declaring a cap we do not satisfy is.
 #
 # --no-deps on the wheel itself, with the patched requirements installed
 # first: pip would otherwise re-resolve install_requires and reintroduce
@@ -296,7 +295,7 @@ COPY --from=builder /opt/lmcache/requirements/ /opt/lmcache-requirements/
 RUN --mount=type=bind,from=builder,source=/wheels,target=/w/lmcache \
     pip install --no-cache-dir -r /opt/lmcache-requirements/common.txt && \
     pip install --no-cache-dir -r /opt/lmcache-requirements/rocm_core.txt && \
-    pip install --no-cache-dir --no-deps --ignore-requires-python \
+    pip install --no-cache-dir --no-deps \
         /w/lmcache/*.whl && \
     python -c "import lmcache; from lmcache import cuda_ops; print('LMCache', lmcache.__version__)" && \
     python -c "import torch; assert torch.version.hip, 'torch lost its HIP build'"
