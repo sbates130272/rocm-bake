@@ -172,3 +172,113 @@ jobs:
                     "our index, no CUDA packages")
           sys.exit(rc)
           EOF
+
+      # The published half of the platform-tag check.
+      #
+      # docker/wheel-verdict.py gates each wheel at build time, inside
+      # the image that produced it. That proves the wheel was right when
+      # it was made; it says nothing about what is actually public now.
+      # A publish that uploaded a stale asset, or an index regenerated
+      # against a different set of wheels, drifts without either half
+      # noticing. This reads the measurements wheelindex.py published
+      # alongside the index and checks them against the filenames pip
+      # just resolved -- the artifacts a user would really get.
+      #
+      # No wheel is downloaded. verdicts.json is a few KB and the
+      # resolution report already carries every filename, so this costs
+      # one HTTP request on top of a job that was running anyway.
+      # Re-deriving the tags here instead would mean pulling roughly a
+      # gigabyte per arch every Monday to learn something the publisher
+      # already measured.
+      - name: Published tags match their published verdicts
+        env:
+          ARCH: ${{ matrix.arch }}
+          SITE: https://sbates130272.github.io/rocm-bake
+        run: |
+          python - <<'EOF'
+          import json, os, re, sys, urllib.error, urllib.request
+
+          arch = os.environ["ARCH"]
+          url = f"{os.environ['SITE']}/data/wheels/{arch}/verdicts.json"
+
+          try:
+              with urllib.request.urlopen(url, timeout=30) as r:
+                  published = json.load(r)
+          except urllib.error.HTTPError as e:
+              if e.code == 404:
+                  # Expected until this arch is next published. Not a
+                  # failure: the index predates the measurement, and
+                  # saying so is more useful than inventing a verdict.
+                  print(f"::notice::{arch} has no verdicts.json yet -- it "
+                        "has not been republished since platform-tag "
+                        "measurement landed. Run `make wheels-publish "
+                        f"ARCH={arch}`.")
+                  sys.exit(0)
+              raise
+
+          by = {v["project"]: v for v in published["wheels"]}
+          print(f"{arch}: {len(by)} published verdicts, ROCm "
+                f"{published.get('rocm', '?')}")
+
+          # PEP 427; the platform is the last field before .whl.
+          WHEEL_RE = re.compile(
+              r"^(?P<name>[^-]+)-[^-]+(?:-\d[^-]*)?-[^-]+-[^-]+"
+              r"-(?P<platform>[^-]+)\.whl$")
+
+          def norm(n):
+              return re.sub(r"[-_.]+", "-", n).lower()
+
+          report = json.load(open("report.json"))
+          rc = 0
+          seen = 0
+          for item in report.get("install", []):
+              url = item.get("download_info", {}).get("url", "")
+              if "github.com/sbates130272/rocm-bake" not in url:
+                  continue
+              fn = url.rsplit("/", 1)[-1]
+              m = WHEEL_RE.match(fn)
+              if not m:
+                  continue
+              project = norm(m.group("name"))
+              seen += 1
+
+              v = by.get(project)
+              if v is None:
+                  rc = 1
+                  print(f"::error::{arch}: {project} is published but the "
+                        "index carries no platform-tag verdict for it. A "
+                        "wheel reached the index without being measured.")
+                  continue
+
+              bad = False
+              if m.group("platform") != v["tag"]:
+                  rc = 1
+                  bad = True
+                  print(f"::error::{arch}: {project} resolves to "
+                        f"{m.group('platform')} but the published verdict "
+                        f"says {v['tag']}. The index and the release "
+                        "assets disagree about what is published.")
+
+              # The published-artifact form of the build-time tripwire:
+              # a wheel that could carry a manylinux tag and does not.
+              if v.get("best") is False:
+                  rc = 1
+                  print(f"::error::{arch}: {project} ships {v['tag']} but "
+                        f"its symbols need only glibc {v['needs_glibc']}, "
+                        f"which {v['newest_policy']} covers. pip refuses "
+                        "it on hosts that could run it. Add an "
+                        "auditwheel-rocm step to its Dockerfile.")
+              elif v.get("best") is None:
+                  print(f"::warning::{arch}: {project} was measured "
+                        "without auditwheel, so its tag was described "
+                        "but never judged.")
+              elif not bad:
+                  print(f"  ok  {project:16} {v['tag']:<24} "
+                        f"needs glibc {v['needs_glibc'] or '—'}")
+
+          if seen == 0:
+              rc = 1
+              print(f"::error::{arch}: matched no wheels of ours in the "
+                    "resolution, so this checked nothing")
+          sys.exit(rc)
+          EOF

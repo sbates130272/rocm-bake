@@ -262,9 +262,14 @@ RUN cd python/triton_kernels && \
 # Dockerfile.cupy. `auditwheel show` on the published gfx950 wheel ends
 # with "This constrains the platform tag to linux_x86_64" -- the
 # symbols this wheel references are newer than any policy auditwheel
-# knows, and no exclude list moves that. Measured 2026-11-06. Same
-# finding as Dockerfile.pytorch, which has the longer note.
-#
+# knows, and no exclude list moves that. First measured 2026-11-06.
+# Same finding as Dockerfile.pytorch, which has the longer note -- and
+# the same re-measurement, so a base-image glibc change cannot leave
+# this paragraph asserting something that stopped being true.
+COPY docker/wheel-verdict.py /usr/local/bin/wheel-verdict
+RUN pip install --no-cache-dir auditwheel && \
+    wheel-verdict '/wheels/triton-*.whl' no-manylinux
+
 # The suffix must have reached the wheel. A silently-unset
 # TRITON_WHEEL_VERSION_SUFFIX produces a perfectly good wheel with the
 # wrong name, which is exactly the failure this check exists for.

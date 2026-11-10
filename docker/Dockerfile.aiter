@@ -339,10 +339,19 @@ SHELL ["/bin/sh", "-c"]
 #
 # A manylinux tag describes which glibc a wheel's CPU code needs. This
 # wheel has no CPU code, so there is nothing for the tag to describe,
-# and linux_x86_64 stays. Measured 2026-11-06 against the published
-# gfx950 wheel. The wheel is still genuinely arch-specific -- just for
-# the GPU arch, which no platform tag can express.
+# and linux_x86_64 stays. First measured 2026-11-06 against the
+# published gfx950 wheel. The wheel is still genuinely arch-specific --
+# just for the GPU arch, which no platform tag can express.
 RUN mkdir -p /wheels && mv /raw-wheels/*.whl /wheels/ && rm -rf /raw-wheels
+
+# "Contains no x86_64 ELF" is a property of one build of one wheel, not
+# a law. Flip PREBUILD_KERNELS to 1, or let upstream add a C extension,
+# and this wheel grows CPU code that a platform tag could describe --
+# with the paragraph above still explaining why it cannot. The check
+# reads the first 20 bytes of each zip member and looks for an ELF
+# header; it needs no auditwheel and takes under a second.
+COPY docker/wheel-verdict.py /usr/local/bin/wheel-verdict
+RUN wheel-verdict /wheels no-cpu-code
 
 # setuptools_scm is the one mechanism here that fails by producing a
 # plausible wrong answer rather than an error: PRETEND_VERSION is only

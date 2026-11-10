@@ -45,11 +45,37 @@ import base64
 import csv
 import hashlib
 import html
+import importlib.util
 import io
+import json
 import re
 import sys
 import zipfile
 from pathlib import Path
+
+
+def _load_wheel_verdict():
+    """Import docker/wheel-verdict.py, which is not an importable name.
+
+    It lives in docker/ because the Dockerfiles COPY it into the images
+    as a standalone file, and it is hyphenated because it is installed
+    as a command there. Neither makes it a package, and wheelpublish.sh
+    runs this script with `python3 -I`, so sys.path holds .builders and
+    nothing else. A spec loaded from an explicit path is the honest way
+    to share the measurement rather than keeping a second copy of the
+    ELF scan here -- a second copy being exactly how the two halves
+    would come to disagree about what a wheel needs.
+    """
+    path = Path(__file__).resolve().parent.parent / "docker" / "wheel-verdict.py"
+    spec = importlib.util.spec_from_file_location("wheel_verdict", path)
+    if spec is None or spec.loader is None:
+        sys.exit(f"error: cannot load {path}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+wheel_verdict = _load_wheel_verdict()
 
 # PEP 427: {name}-{version}(-{build})?-{python}-{abi}-{platform}.whl
 WHEEL_RE = re.compile(
@@ -258,6 +284,59 @@ def write_project(index_root, project, entries):
     (page / "index.html").write_text("\n".join(lines) + "\n")
 
 
+def verdict_why(v):
+    """One line saying why this wheel carries the tag it carries."""
+    pol = v.get("newest_policy")
+    if v["kind"] == "pure":
+        return "no compiled code at all"
+    if v["kind"] == "no-cpu-code":
+        return ("GPU code objects only — no x86-64 code for a platform "
+                "tag to describe")
+    if v["kind"] == "manylinux":
+        return f"granted by auditwheel; symbols need glibc {v['needs_glibc']}"
+    if v.get("best") is False:
+        return (f"ELIGIBLE for {pol} — symbols need only glibc "
+                f"{v['needs_glibc']}, so this tag is narrower than it "
+                "needs to be")
+    if pol:
+        return (f"symbols need glibc {v['needs_glibc']}, newer than "
+                f"{pol}, the newest policy auditwheel knows")
+    return f"symbols need glibc {v['needs_glibc']}"
+
+
+def render_verdicts(verdicts):
+    """The platform-tag table appended to the per-arch index page.
+
+    Appended to the PEP 503 root, which is safe because pip never
+    fetches it: with --index-url URL, pip requests URL/<project>/ and
+    nothing else. The root has always been a human landing page that
+    happens to live at an index URL. No <a> is emitted here all the
+    same, so the page cannot start advertising a distribution by
+    accident if that ever changes.
+    """
+    rows = []
+    for v in sorted(verdicts, key=lambda x: x["project"]):
+        flag = ' style="background:#fff4f4"' if v.get("best") is False else ""
+        rows.append(
+            f"<tr{flag}><td><code>{html.escape(v['project'])}</code></td>"
+            f"<td><code>{html.escape(v['tag'])}</code></td>"
+            f"<td><code>{html.escape(v['needs_glibc'] or '—')}</code></td>"
+            f"<td>{html.escape(verdict_why(v))}</td></tr>"
+        )
+    return (
+        "<h2>Platform tags</h2>"
+        "<p>Measured from each wheel's own ELF symbols at publish time, "
+        "not asserted. A <code>manylinux</code> tag is granted only "
+        "where the compiled code's glibc requirement allows one; a "
+        "wheel needing a glibc newer than every defined policy stays "
+        "<code>linux_x86_64</code>, which is a statement about this "
+        "build, not a defect.</p>"
+        "<table>"
+        "<tr><th>project</th><th>tag</th><th>needs glibc</th>"
+        "<th>why</th></tr>" + "".join(rows) + "</table>"
+    )
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("wheel_dir", help="directory of .whl files for one arch")
@@ -291,6 +370,7 @@ def main():
     projects = {}
     pins = []
     capped = []
+    verdicts = []
     for project, version, path in found:
         projects.setdefault(project, []).append(
             (f"{prefix}{path.name}#sha256={sha256_of(path)}", path.name))
@@ -298,6 +378,12 @@ def main():
         spec = requires_python(path)
         if capped_below(spec, args.python):
             capped.append((project, spec))
+        # Measured here rather than taken from the Dockerfiles, because
+        # only four of them say anything about their tag and twelve
+        # wheels get published. See docker/wheel-verdict.py.
+        v = wheel_verdict.measure(path)
+        v["project"] = project
+        verdicts.append(v)
 
     # The metapackage version carries the arch as a PEP 440 local
     # segment, so two indexes hold genuinely different versions of
@@ -343,6 +429,13 @@ def main():
                  else meta_whl.name)
     projects[METAPACKAGE] = [
         (f"{meta_href}#sha256={sha256_of(meta_whl)}", meta_whl.name)]
+    # Measured like the rest, not assumed pure. It is generated three
+    # lines above and is obviously py3-none-any today, but a table that
+    # silently omits one of the twelve projects invites the reader to
+    # wonder which others it omits.
+    meta_v = wheel_verdict.measure(meta_whl)
+    meta_v["project"] = METAPACKAGE
+    verdicts.append(meta_v)
 
     for project, entries in projects.items():
         write_project(out, project, entries)
@@ -350,8 +443,17 @@ def main():
     root = ["<!DOCTYPE html><html><body>", f"<h1>{html.escape(args.arch)}</h1>"]
     for project in sorted(projects):
         root.append(f'<a href="{project}/">{html.escape(project)}</a><br/>')
+    root.append(render_verdicts(verdicts))
     root.append("</body></html>")
     (out / "index.html").write_text("\n".join(root) + "\n")
+
+    # The same facts as data, so the weekly probe can check the live
+    # site without downloading a 400MB wheel to re-derive them, and so
+    # the landing page can summarise every arch without parsing HTML.
+    (out / "verdicts.json").write_text(
+        json.dumps({"arch": args.arch, "rocm": args.version,
+                    "wheels": sorted(verdicts, key=lambda v: v["project"])},
+                   indent=1, sort_keys=True) + "\n")
 
     print(f"index: {out}  arch={args.arch}  projects={len(projects)}")
     if recorded:
@@ -369,6 +471,26 @@ def main():
               "\n    extension was built against this interpreter here."
               "\n    docker/Dockerfile.lmcache and .vllm already install"
               "\n    it the same way, for the same reason.")
+
+    # A note rather than a failure. Shipping a narrower tag than the
+    # symbols require installs correctly everywhere it would have
+    # installed before — it is a missed opportunity, not a broken
+    # wheel, and refusing to publish an arch over one would be a worse
+    # trade. The hard gates are upstream, in the Dockerfiles that
+    # assert their own verdict, and downstream in wheels-probe.yml.
+    narrow = [v for v in verdicts if v.get("best") is False]
+    if narrow:
+        print("\n  note: a wheel is tagged more narrowly than its symbols"
+              "\n  require, so pip will refuse it on hosts that could run it:")
+        for v in narrow:
+            print(f"    {v['project']:<14} {v['tag']} but needs only glibc "
+                  f"{v['needs_glibc']} ({v['newest_policy']} exists)")
+        print("    Add an auditwheel-rocm step to that wheel's Dockerfile;"
+              "\n    docker/auditwheel-rocm.sh carries the exclude rules.")
+    if any(v.get("best") is None for v in verdicts):
+        print("\n  note: auditwheel is not installed here, so the tags above"
+              "\n  are described but not judged. `pip install auditwheel`"
+              "\n  to have this say whether each one is the best available.")
 
 
 if __name__ == "__main__":

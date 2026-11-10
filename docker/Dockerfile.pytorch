@@ -446,9 +446,25 @@ RUN ls -la /opt/pytorch/dist/
 # No exclude list changes that: the symbol is in torch's own code, not
 # in a dependency that could be left to the consuming image. Repairing
 # the wheel would vendor libraries and rewrite RPATHs for no change of
-# tag, on the largest artifact here. Measured 2026-11-06 against the
-# published gfx950 wheel.
+# tag, on the largest artifact here. First measured 2026-11-06 against
+# the published gfx950 wheel.
 #
+# ...and re-measured on every build since, because that paragraph is a
+# fact about one day and nothing above is pinned. Bump the ROCm base to
+# one built on an older glibc, or let auditwheel learn a policy for a
+# newer one, and torch becomes manylinux-eligible while this comment
+# goes on asserting it is not. wheel-verdict.py fails the build at that
+# point instead; see its header. It streams the wheel's ELF members out
+# of the zip rather than unpacking 350MB with `auditwheel show`, so it
+# costs seconds.
+#
+# auditwheel is installed here rather than with the build requirements
+# so that this does not invalidate the 45-minute layer above it. Only
+# its policy list is used -- no repair runs.
+COPY docker/wheel-verdict.py /usr/local/bin/wheel-verdict
+RUN pip install --no-cache-dir auditwheel && \
+    wheel-verdict /opt/pytorch/dist no-manylinux
+
 # The suffix must have reached the wheel. PYTORCH_BUILD_VERSION is read
 # at the start of a 45-minute build; discovering at publish time that it
 # was empty means doing all of it again.
