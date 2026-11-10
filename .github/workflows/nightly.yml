@@ -44,6 +44,16 @@ on:
         type: boolean
         required: false
         default: false
+      # Consumed as `github.event_name == 'workflow_dispatch' && !inputs.push`,
+      # NOT as `inputs.push == false`. A scheduled run sends no inputs,
+      # and `default:` is only materialised for workflow_dispatch, so on
+      # a schedule `inputs.push` is null — and GitHub's comparison coerces
+      # both null and false to 0, making `null == false` TRUE. Every
+      # scheduled night from 2026-11-04 to 2026-11-10 therefore ran with
+      # --no-push: cache was exported, no artifact image was ever
+      # published, and ECR's newest wheel stayed stuck on 2026-11-03
+      # while the reports said SUCCEEDED. The event_name guard is what
+      # keeps a null from reading as an opt-out.
       push:
         description: 'Push the warm build to ECR'
         type: boolean
@@ -215,7 +225,7 @@ jobs:
             --ensure-ecr \
             ${{ inputs.targets && format('--targets ''{0}''', inputs.targets) || '' }} \
             ${{ (inputs.run_cold || vars.NIGHTLY_COLD == 'true') && '' || '--skip-cold' }} \
-            ${{ inputs.push == false && '--no-push' || '' }}
+            ${{ (github.event_name == 'workflow_dispatch' && !inputs.push) && '--no-push' || '' }}
 
       # The report travels as an artifact. The job that ran the build
       # holds registry credentials and third-party build code; it is

@@ -71,6 +71,23 @@ jobs:
             | docker login --username AWS --password-stdin \
                 "${{ vars.ECR_REGISTRY }}"
 
+      # A docker-container builder, because `make wheel-index` extracts
+      # each wheel with `docker buildx build --output type=local`, and
+      # the default `docker` driver cannot do a local export at all.
+      #
+      # And it has to be named here. BUILDER defaults to
+      # `fleet_var,FLEET_DEFAULT_BUILDER` -- snoc-strix, a machine on a
+      # tailnet this runner cannot reach. wheel-index sends buildx's
+      # stderr to /dev/null and swallows a per-repo failure with
+      # "(not published for $a -- skipped)", so an unreachable builder
+      # does not fail the step: it silently fetches nothing, and the
+      # first thing to notice is wheelpublish.sh exiting on "no .whl".
+      - name: A builder this machine actually has
+        run: |
+          docker buildx inspect rocm-publish >/dev/null 2>&1 \
+            || docker buildx create --name rocm-publish \
+                 --driver docker-container --bootstrap
+
       # Fetches this arch's wheels out of the registry and builds the
       # local index. wheels-publish then regenerates that index with the
       # release URL as its href prefix -- same script, different
@@ -80,8 +97,21 @@ jobs:
           REGISTRY: ${{ vars.ECR_REGISTRY }}
           REGISTRY_INSECURE: "false"
         run: |
-          make wheel-index ARCHES="${{ inputs.arch }}"
+          make wheel-index ARCHES="${{ inputs.arch }}" BUILDER=rocm-publish
           ls -la "dist/wheels/${{ inputs.arch }}/"
+          # Assert here rather than letting wheelpublish.sh discover it.
+          # Every repo wheel-index cannot fetch is skipped with a notice
+          # and a zero exit, so "fetched nothing at all" and "fetched
+          # everything" differ only in scrollback. An arch nobody has
+          # pushed yet is a real thing to be told about, not a step that
+          # should quietly go on to publish an empty release.
+          n=$(find "dist/wheels/${{ inputs.arch }}" -name '*.whl' | wc -l)
+          echo "fetched ${n} wheel(s) for ${{ inputs.arch }}"
+          if [ "$n" -eq 0 ]; then
+            echo "::error::no wheels in ECR for ${{ inputs.arch }} —" \
+                 "has a nightly pushed this arch yet?"
+            exit 1
+          fi
 
       - name: Publish
         env:
