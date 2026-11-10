@@ -325,6 +325,26 @@ variable "ATOM_REF" {
   default = "v0.1.9"
 }
 
+# Which ATOM to build. Upstream by default; set it to a fork to build a
+# branch of ATOM without editing Dockerfile.atom.
+#
+# The reason a fork exists at all: ATOM v0.1.9's vLLM plugin declares
+# VLLM_COMMIT=db9527a4 / VLLM_VERSION=0.31.0 in
+# atom/plugin/vllm/vllm-version.env, and this repo pins VLLM_REF=v0.33.0
+# — two minor releases ahead. Three symbols moved and one of them also
+# changed arity; worse, all seven functions ATOM monkeypatches onto
+# vllm.v1.core.kv_cache_utils moved to kv_cache_planning while that
+# module itself kept existing, so the installers imported fine and
+# patched nothing. See docs/architecture/atom-vllm-skew.md.
+#
+# Pair this with an ATOM_REF that is a TAG on the fork, not a branch:
+# Dockerfile.atom's clone is layer-cached on the ref string, so a branch
+# name would be served from cache forever and an "update" would be a
+# silent no-op.
+variable "ATOM_REPO" {
+  default = "https://github.com/ROCm/ATOM.git"
+}
+
 # Optional Cargo features for atomesh, ATOM's Rust orchestrator. Empty
 # matches upstream: the only non-default feature is ext-proc, which
 # needs protoc in the image to compile the Envoy ext_proc protos.
@@ -376,6 +396,9 @@ PUB_LMCACHE = "${REGISTRY}/${REGISTRY_NAME}/lmcache-wheel:${LMCACHE_REF}-${ROCM_
 PUB_CUPY    = "${REGISTRY}/${REGISTRY_NAME}/cupy-wheel:${CUPY_REF}-${ROCM_VERSION}-${ARCH_TAG}"
 PUB_TORCHVISION = "${REGISTRY}/${REGISTRY_NAME}/torchvision-wheel:${TORCHVISION_REF}-${ROCM_VERSION}-${ARCH_TAG}"
 PUB_ATOM    = "${REGISTRY}/${REGISTRY_NAME}/atom-wheel:${ATOM_REF}-${ROCM_VERSION}-${ARCH_TAG}"
+# The serving image as an input, for atom-vllm, which layers onto it the
+# way the wheel targets layer onto pytorch.
+PUB_VLLM    = "${REGISTRY}/${REGISTRY_NAME}/vllm:${VLLM_REF}-${ROCM_VERSION}-${ARCH_TAG}"
 
 USE_PUB = PUBLISHED_INPUTS != ""
 
@@ -1221,6 +1244,7 @@ target "atom-wheel" {
     SOURCE_DATE_EPOCH   = EPOCH_ATOM
     PYTORCH_IMAGE       = USE_PUB ? PUB_PYTORCH : "pytorch-img"
     ATOM_REF            = ATOM_REF
+    ATOM_REPO           = ATOM_REPO
     ATOM_MESH_FEATURES  = ATOM_MESH_FEATURES
     PYTORCH_ROCM_ARCH   = PYTORCH_ROCM_ARCH
     ROCM_VERSION        = ROCM_VERSION
@@ -1512,6 +1536,61 @@ target "vllm" {
     SCCACHE_BUCKET       = SCCACHE_BUCKET
     SCCACHE_REGION       = SCCACHE_REGION
     SCCACHE_S3_KEY_PREFIX = SCCACHE_S3_KEY_PREFIX
+  }
+
+  output = ["type=image,compression=zstd"]
+}
+
+# ─── vLLM + ATOM plugin ──────────────────────────────────────────
+# The vllm image with ATOM's wheel installed into it, and a build-time
+# gate on the version skew between the two. See Dockerfile.atom-vllm for
+# what the gate does and — more importantly — what it does not.
+#
+# Not in ALL_TARGETS and not in the nightly: this lane exists so the
+# combination is buildable and measured, not because anything depends on
+# it. The plugin ships disabled (ATOM_DISABLE_VLLM_PLUGIN=1) and no model
+# has been generated end-to-end through it, because ATOM needs
+# gfx942/gfx950/gfx1250 and this fleet has none.
+target "atom-vllm" {
+  dockerfile = "docker/Dockerfile.atom-vllm"
+  target     = "final"
+  platforms  = ["linux/amd64"]
+
+  tags = compact([
+    "${REGISTRY}/${REGISTRY_NAME}/atom-vllm:${VLLM_REF}-${ATOM_REF}-${ROCM_VERSION}-${ARCH_TAG}",
+    "${REGISTRY}/${REGISTRY_NAME}/atom-vllm:latest",
+    VCS_REF != "" ? "${REGISTRY}/${REGISTRY_NAME}/atom-vllm:${VLLM_REF}-${ATOM_REF}-${ROCM_VERSION}-${ARCH_TAG}-g${VCS_REF}" : "",
+  ])
+
+  labels = merge(OCI_LABELS, {
+    "org.opencontainers.image.title"       = "atom-vllm"
+    "org.opencontainers.image.description" = "vLLM ${VLLM_REF} with the ATOM ${ATOM_REF} plugin, ROCm ${ROCM_VERSION}, ${PYTORCH_ROCM_ARCH}"
+    "org.opencontainers.image.version"     = "${VLLM_REF}-${ATOM_REF}-${ROCM_VERSION}-${ARCH_TAG}"
+  })
+
+  cache-from = [
+    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/atom-vllm-cache:latest${CACHE_ARCH},mode=max,registry.insecure=${REGISTRY_INSECURE}",
+    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/atom-vllm-cache:latest${CACHE_ARCH}-ref,mode=max,registry.insecure=${REGISTRY_INSECURE}",
+  ]
+  cache-to   = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/atom-vllm-cache:latest${CACHE_ARCH}${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=${REGISTRY_INSECURE},ignore-error=true"]
+
+  contexts = USE_PUB ? {} : {
+    vllm-img    = "target:vllm"
+    atom-wheels = "target:atom-wheel"
+  }
+
+  args = {
+    BUILDKIT_BUILD_NAME = "rocm-pytorch-build/atom-vllm/${PYTORCH_ROCM_ARCH}/${RUN_ID}"
+    # ATOM's epoch, not vLLM's: the only thing this target builds is the
+    # install of the ATOM wheel on top of an image someone else made.
+    SOURCE_DATE_EPOCH   = EPOCH_ATOM
+    VLLM_IMAGE          = USE_PUB ? PUB_VLLM : "vllm-img"
+    ATOM_WHEEL_IMAGE    = USE_PUB ? PUB_ATOM : "atom-wheels"
+    VLLM_REF            = VLLM_REF
+    ATOM_REF            = ATOM_REF
+    ATOM_REPO           = ATOM_REPO
+    PYTORCH_ROCM_ARCH   = PYTORCH_ROCM_ARCH
+    ROCM_VERSION        = ROCM_VERSION
   }
 
   output = ["type=image,compression=zstd"]
