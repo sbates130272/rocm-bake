@@ -41,14 +41,14 @@ default — `PERF_BIND=` narrows it, `make perf-serve-stop` ends it.
 | ROCm | [rocm/dev-ubuntu-26.04](https://hub.docker.com/r/rocm/dev-ubuntu-26.04) | `ROCM_VERSION` | `10.1.0-full` |
 | Python | [python.org](https://www.python.org/) | `PYTHON_VERSION` | `3.14` |
 | Triton | [triton-lang/triton](https://github.com/triton-lang/triton) | `TRITON_VERSION` | `3.9.0` |
-| AITER | [ROCm/aiter](https://github.com/ROCm/aiter) | `AITER_REF` | `v0.1.28` |
+| AITER | [ROCm/aiter](https://github.com/ROCm/aiter) | `AITER_REF` | `v0.1.29` |
 | torchvision | [pytorch/vision](https://github.com/pytorch/vision) | `TORCHVISION_REF` | `v0.29.2` |
 | ATOM | [ROCm/ATOM](https://github.com/ROCm/ATOM) | `ATOM_REF` | `v0.1.9` |
 | NIXL | [ai-dynamo/nixl](https://github.com/ai-dynamo/nixl) | `NIXL_REF` | `v1.5.2` |
 | UCX | [openucx/ucx](https://github.com/openucx/ucx) | `UCX_REF` | `v1.22.0` |
 | vLLM | [vllm-project/vllm](https://github.com/vllm-project/vllm) | `VLLM_REF` | `v0.33.0` |
 | CuPy | [cupy/cupy](https://github.com/cupy/cupy) | `CUPY_REF` | `v14.2.0` |
-| LMCache | [LMCache/LMCache](https://github.com/LMCache/LMCache) | `LMCACHE_REF` | `v0.5.6` |
+| LMCache | [LMCache/LMCache](https://github.com/LMCache/LMCache) | `LMCACHE_REF` | `v0.5.7` |
 
 <!-- END VERSIONS -->
 

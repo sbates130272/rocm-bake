@@ -41,8 +41,8 @@ cupy-wheel:v14.2.0-10.1.0-full-gfx950
 nixl-wheel:v1.5.2-10.1.0-full-gfx950
 vllm:v0.33.0-10.1.0-full-gfx950
 vllm-wheel:v0.33.0-10.1.0-full-gfx950
-lmcache:v0.5.6-10.1.0-full-gfx950
-lmcache-wheel:v0.5.6-10.1.0-full-gfx950
+lmcache:v0.5.7-10.1.0-full-gfx950
+lmcache-wheel:v0.5.7-10.1.0-full-gfx950
 ```
 
 `make zot-tags REPO=rocm-pytorch/pytorch` lists what is actually

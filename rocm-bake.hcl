@@ -293,7 +293,7 @@ variable "RUN_ID" {
 }
 
 variable "AITER_REF" {
-  default = "v0.1.28"
+  default = "v0.1.29"
 }
 
 # torchvision, built from source because PyPI publishes it only as a
@@ -316,7 +316,7 @@ variable "TORCHVISION_REF" {
 #
 # v0.1.9 is the newest tag. Note that ATOM declares no `aiter`
 # dependency or version range at all, so nothing checks our
-# AITER_REF = v0.1.28 against what this tag expects — ATOM dispatches
+# AITER_REF = v0.1.29 against what this tag expects — ATOM dispatches
 # into AITER per-op across 701 call sites, so a mismatch surfaces deep
 # in one model's path rather than at import. Unassessed, deliberately:
 # the import check in Dockerfile.atom is the first thing that would
@@ -428,7 +428,7 @@ variable "CUPY_REF" {
 }
 
 variable "LMCACHE_REF" {
-  default = "v0.5.6"
+  default = "v0.5.7"
 }
 
 # vLLM builds vllm/vllm-rs during setup.py; this tracks the channel in
