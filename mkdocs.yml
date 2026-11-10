@@ -99,6 +99,7 @@ nav:
       - Reproducibility: architecture/reproducibility.md
       - Multiple GFX Targets: architecture/multi-arch.md
       - Serving Stack: architecture/serving.md
+      - ATOM and vLLM Skew: architecture/atom-vllm-skew.md
   - Performance:
       - performance/index.md
       - Methodology: performance/methodology.md

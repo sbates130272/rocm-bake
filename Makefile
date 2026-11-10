@@ -269,6 +269,7 @@ BAKE_PRINT = docker buildx bake -f rocm-bake.hcl
         push-cupy-wheel build-cupy-wheel fetch-cupy-wheel \
         push-torchvision-wheel build-torchvision-wheel fetch-torchvision-wheel \
         push-atom-wheel build-atom-wheel fetch-atom-wheel \
+        build-atom-vllm push-atom-vllm atom-vllm-doctor atom-vllm-check \
         wheels-publish wheels-publish-dry \
         build-vllm push-vllm push-vllm-wheel build-vllm-wheel fetch-vllm-wheel \
         build-lmcache push-lmcache push-lmcache-wheel build-lmcache-wheel \
@@ -362,7 +363,7 @@ IMAGE_REPOS ?= rocm-runtime base pytorch runtime vllm lmcache
 CACHE_REPOS ?= rocm-runtime-cache base-cache pytorch-cache runtime-cache \
                vllm-cache lmcache-cache triton-wheel-cache \
                aiter-wheel-cache cupy-wheel-cache nixl-wheel-cache \
-               torchvision-wheel-cache atom-wheel-cache
+               torchvision-wheel-cache atom-wheel-cache atom-vllm-cache
 
 # IMAGE_ARCH, not PYTORCH_ROCM_ARCH directly, so one table can be asked
 # for while a build for another architecture is in flight. Scoping to
@@ -1481,6 +1482,51 @@ fetch-atom-wheel: ## Fetch the ATOM wheel (and atomesh) from Zot into ./dist
 		| docker buildx build --builder $(BUILDER) \
 			--output type=local,dest=dist -
 	@ls -la dist/wheels/ dist/atomesh
+
+# ─── vLLM + the ATOM plugin ──────────────────────────────────────
+# ATOM v0.1.9's plugin targets vLLM 0.31.0; this repo pins v0.33.0.
+# These targets exist so that pairing is buildable, gated and measured
+# rather than assumed. See docs/architecture/atom-vllm-skew.md and
+# docker/Dockerfile.atom-vllm.
+#
+# To build against the fork that carries the 0.33 compat layer:
+#
+#   make build-atom-vllm \
+#        ATOM_REPO=https://github.com/sbates130272/ATOM.git \
+#        ATOM_REF=v0.1.9-vllm0.33-1
+#
+# ATOM_REF must be a TAG on that fork, not a branch: the clone in
+# Dockerfile.atom is layer-cached on the ref string, so a branch name
+# builds once and then never updates.
+build-atom-vllm: builder-ensure ## Build the vLLM image with the ATOM plugin installed (no push)
+	$(call bake,atom-vllm)
+
+push-atom-vllm: builder-ensure ## * Build and push the vLLM+ATOM image to Zot
+	$(call bake,atom-vllm,--push,pub)
+
+# The static half of the gate, run on its own against an already-built
+# image. The same check runs inside the build; this is for asking an
+# image that already exists, without rebuilding it. No GPU needed.
+atom-vllm-check: ## Re-run the ATOM/vLLM symbol-skew check inside the image
+	docker run --rm --entrypoint python \
+		$(REGISTRY)/$(REGISTRY_NAME)/atom-vllm:latest \
+		-m atom.plugin.vllm.compat_check
+
+# The runtime half, and the only one that can see a patch standing
+# down. Needs a GPU because it imports vLLM and runs both registration
+# hooks for real. Deliberately not part of any build.
+#
+# Note what this does NOT establish: ATOM's kernels need
+# gfx942/gfx950/gfx1250 and this fleet has neither, so a clean report
+# here means the plugin installed itself correctly, not that a model
+# generates tokens through it.
+atom-vllm-doctor: ## Report which ATOM plugin patches installed (needs a GPU)
+	docker run --rm --device=/dev/kfd --device=/dev/dri \
+		--group-add video --security-opt seccomp=unconfined \
+		-e ATOM_DISABLE_VLLM_PLUGIN=0 \
+		--entrypoint python \
+		$(REGISTRY)/$(REGISTRY_NAME)/atom-vllm:latest \
+		-m atom.plugin.vllm.doctor
 
 # CuPy is not an optional extra: LMCache's MP server imports it at
 # module scope, and no published wheel matches ROCm 10.1 on cp314.

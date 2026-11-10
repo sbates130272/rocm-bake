@@ -43,6 +43,20 @@ ref would be served from the layer cache indefinitely once built, so an
 `RUST_VERSION` tracks the channel in vLLM's `rust-toolchain.toml`, which
 v0.33 still pins to 1.95; `setup.py` builds `vllm/vllm-rs`.
 
+`ATOM_REPO` (default `https://github.com/ROCm/ATOM.git`) selects which ATOM
+to build, so a fork can be built without editing `docker/Dockerfile.atom`.
+It is not in the table above because it is a URL rather than a version, and
+`make version-check` has nothing upstream to compare it against.
+
+The rule about tags applies to it with force. Pair `ATOM_REPO` with an
+`ATOM_REF` that is a **tag on that fork**, never a branch name: the clone is
+layer-cached on the ref string, so a branch builds once and then silently
+stops updating.
+
+Why a fork exists at all: ATOM `v0.1.9`'s vLLM plugin targets vLLM 0.31.0
+while `VLLM_REF` is `v0.33.0`, and nothing in either project checks. See
+[ATOM and vLLM: the skew](../architecture/atom-vllm-skew.md).
+
 ## Registry
 
 | Variable | Default |

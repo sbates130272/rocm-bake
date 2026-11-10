@@ -1,0 +1,113 @@
+# syntax=docker/dockerfile:1
+# vLLM with ATOM's V1 platform plugin installed — and a build-time gate on
+# the version skew between them.
+#
+# WHAT THIS IMAGE IS. The `vllm` image from Dockerfile.vllm, plus the ATOM
+# wheel from Dockerfile.atom, plus the atomesh binary. vLLM discovers ATOM
+# through two entry points ATOM's pyproject.toml declares:
+#
+#     [project.entry-points."vllm.platform_plugins"]  atom = ...:register_platform
+#     [project.entry-points."vllm.general_plugins"]   atom_model_registry = ...:register_model
+#
+# so merely installing the wheel arms the plugin. That is the whole reason
+# this file carries a gate rather than just a `pip install`.
+#
+# WHY THE SKEW MATTERS. ATOM v0.1.9's plugin declares VLLM_VERSION=0.31.0;
+# this repo pins VLLM_REF=v0.33.0. The plugin reaches into ~150 distinct
+# private vLLM symbols and monkeypatches 48 call sites, and nothing upstream
+# checks the version — there is no reference to `vllm.__version__` anywhere
+# under `atom/`, and `pyproject.toml` declares no `vllm` dependency, so pip
+# resolves the pair happily and the mismatch surfaces mid-serving.
+#
+# The failure that matters is not the loud one. `vllm.v1.core.kv_cache_utils`
+# still EXISTS at 0.33 — every function ATOM patches onto it moved to
+# `kv_cache_planning`. An installer reading its target with
+# `getattr(module, name, None)` therefore installs nothing, returns, and says
+# nothing. See docs/architecture/atom-vllm-skew.md.
+#
+# WHAT THE GATE IS. `atom.plugin.vllm.compat_check`, run against the vLLM
+# actually installed in this image. It is pure AST on both sides: no GPU, no
+# model, no import of vllm itself, under a second. So it runs here, on the
+# fleet and on CodeBuild alike, and a future VLLM_REF bump that moves a symbol
+# fails this build with a named list instead of failing a serving run quietly.
+#
+# WHAT THE GATE IS NOT. It cannot see a patch that stands down at runtime.
+# That is `atom.plugin.vllm.doctor`, which needs the GPU and is therefore a
+# deliberate on-hardware step: `make atom-vllm-doctor`. A green build here
+# means "nothing will fail to import", not "the plugin works".
+#
+# THE PLUGIN SHIPS DISABLED. ATOM_DISABLE_VLLM_PLUGIN=1 is set below, so this
+# image behaves exactly like the plain vllm image until someone opts in with
+# `-e ATOM_DISABLE_VLLM_PLUGIN=0`. Two reasons: the plugin replaces vLLM's
+# model classes for 30 architectures, which is not a change to make by
+# default; and no model has been generated end-to-end through it on this
+# fleet, because ATOM needs gfx942/gfx950/gfx1250 and this fleet has neither.
+
+ARG VLLM_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/vllm:latest
+ARG ATOM_WHEEL_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/atom-wheel:latest
+
+FROM ${ATOM_WHEEL_IMAGE} AS atomwheels
+
+FROM ${VLLM_IMAGE} AS final
+
+ARG VLLM_REF=v0.33.0
+ARG ATOM_REF=v0.1.9
+ARG ATOM_REPO=https://github.com/ROCm/ATOM.git
+ARG PYTORCH_ROCM_ARCH
+ARG ROCM_VERSION
+
+LABEL org.opencontainers.image.source="${ATOM_REPO}"
+LABEL org.opencontainers.image.description="vLLM ${VLLM_REF} with the ATOM ${ATOM_REF} plugin, ROCm ${ROCM_VERSION}, ${PYTORCH_ROCM_ARCH}"
+
+# Default OFF. See the header: installing the wheel is what arms the entry
+# points, so this flag is the only thing standing between a pull of this image
+# and ATOM owning the model registry.
+ENV ATOM_DISABLE_VLLM_PLUGIN=1
+
+COPY --from=atomwheels /wheels/ /tmp/atom-wheels/
+COPY --from=atomwheels /atomesh /usr/local/bin/atomesh
+
+# PIP_CONSTRAINT, for the reason Dockerfile.atom and Dockerfile.vllm both
+# give: ATOM declares `transformers==5.16.1` and a dozen other runtime
+# dependencies, and its closure must not be allowed to replace the ROCm torch
+# — or the vLLM — this pipeline exists to produce with something off PyPI.
+RUN pip list --format=freeze > /tmp/pip-freeze.txt && \
+    grep -E '^(torch|torchvision|triton|vllm)==' /tmp/pip-freeze.txt \
+        > /etc/pip-constraints-atom.txt && \
+    rm /tmp/pip-freeze.txt && \
+    cat /etc/pip-constraints-atom.txt
+
+RUN PIP_CONSTRAINT=/etc/pip-constraints-atom.txt \
+    pip install --no-cache-dir /tmp/atom-wheels/*.whl && \
+    rm -rf /tmp/atom-wheels
+
+# vLLM must still be the one this image was built with. A dependency of ATOM
+# pulling a different vllm off PyPI would be caught by the constraint above,
+# but asserting it costs nothing and the failure would otherwise be silent in
+# the specific way this whole image is about.
+RUN python -c "\
+import vllm, atom;\
+from importlib.metadata import version;\
+print('vllm', vllm.__version__, '+ atom', version('atom'));\
+assert '+rocm' in version('atom'), 'atom wheel is not the +rocm local build'"
+
+# ─── The gate ────────────────────────────────────────────────────
+# Non-zero exit fails the build. Run from / so the installed package is the
+# one under test, not a source tree — the same trap Dockerfile.torchvision and
+# Dockerfile.atom both document.
+#
+# `python -m` rather than the file path: inside this image torch IS installed,
+# so the package import works and the module path is the documented entry.
+RUN cd / && python -m atom.plugin.vllm.compat_check \
+    | tee /atom-vllm-compat-check.txt
+
+# AITER as well, for the same reason and at no extra cost: ATOM declares no
+# `aiter` version or range at all — 700 call sites, nothing checking them —
+# which rocm-bake.hcl has been carrying as a known-unassessed risk. Not a
+# gate: `|| true` because this is the first time it has ever been measured
+# and a finding here is information, not a reason to fail a vLLM build.
+# Promote it to a gate once a clean baseline exists.
+RUN cd / && (python -m atom.plugin.vllm.compat_check --package aiter \
+    | tee /atom-vllm-compat-check-aiter.txt) || true
+
+RUN atomesh --version | tee /atom-vllm-atomesh-version.txt
