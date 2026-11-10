@@ -242,8 +242,40 @@ variable "PREBUILD_KERNELS" {
 # frozen "-ref" baseline; writes go to the rolling tag unless this is
 # set to "-ref", which is how the baseline is deliberately refreshed.
 # Without it one bad build overwrites the only cache everyone reads.
+#
+# A lane may also set this to scope its writes away from the fleet's
+# rolling tag -- the nightly sets "-nightly" for exactly that reason.
+# Reads of that tier go through cache_own() below; see the note there
+# before adding a suffix anywhere new.
 variable "CACHE_TAG_SUFFIX" {
   default = ""
+}
+
+# The lane's own cache tier, as a cache-from entry, or nothing.
+#
+# WHY THIS EXISTS. CACHE_TAG_SUFFIX used to scope a lane's *writes*
+# only. Nothing read the suffixed tag back, so a lane that set one
+# wrote a cache with no reader: the AWS nightly exported ~242 GB to
+# ECR every night, and reported 0 CACHED against 561-582 DONE on
+# every run from 2026-11-04 to 2026-11-10 -- a "warm" build that
+# re-executed every vertex, for its entire life. It could not warm up
+# by running more nights, because the 46 refs it imported and the 15
+# tags it exported had no member in common. Measured across five
+# runs; see .aws-analysis/aws-analysis.md section 5.
+#
+# This goes FIRST in every cache-from, ahead of the fleet's rolling
+# tag and the frozen baseline, so a lane prefers layers it built
+# itself and falls back to the shared tiers only for what it has not
+# built yet.
+#
+# An empty suffix yields an empty list, so the fleet's own builds
+# resolve to byte-identical cache-from lists to before this existed.
+# `make bake-print` is the check.
+function "cache_own" {
+  params = [repo, arch]
+  result = CACHE_TAG_SUFFIX == "" ? [] : [
+    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/${repo}:latest${arch}${CACHE_TAG_SUFFIX},mode=max,registry.insecure=${REGISTRY_INSECURE}",
+  ]
 }
 
 # Stamped into every BuildKit history record name, so records from one
@@ -674,10 +706,10 @@ target "rocm-runtime" {
   })
   platforms = ["linux/amd64"]
 
-  cache-from = [
+  cache-from = distinct(concat(cache_own("rocm-runtime-cache", CACHE_ARCH), [
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/rocm-runtime-cache:latest${CACHE_ARCH},mode=max,registry.insecure=${REGISTRY_INSECURE}",
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/rocm-runtime-cache:latest${CACHE_ARCH}-ref,mode=max,registry.insecure=${REGISTRY_INSECURE}",
-  ]
+  ]))
   cache-to = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/rocm-runtime-cache:latest${CACHE_ARCH}${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=${REGISTRY_INSECURE},ignore-error=true"]
 
   args = {
@@ -715,9 +747,9 @@ target "pytorch-src" {
   })
   platforms = ["linux/amd64"]
 
-  cache-from = [
+  cache-from = distinct(concat(cache_own("pytorch-src-cache", ""), [
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/pytorch-src-cache:latest,mode=max,registry.insecure=${REGISTRY_INSECURE}",
-  ]
+  ]))
   cache-to = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/pytorch-src-cache:latest${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=${REGISTRY_INSECURE},ignore-error=true"]
 
   args = {
@@ -755,10 +787,10 @@ target "pytorch-base" {
   # layers on top are architecture-independent, but the ROCm underneath
   # them is not — so one arch reading another's cache would take the
   # wrong kernel libraries as a hit.
-  cache-from = [
+  cache-from = distinct(concat(cache_own("base-cache", CACHE_ARCH), [
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/base-cache:latest${CACHE_ARCH},mode=max,registry.insecure=${REGISTRY_INSECURE}",
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/base-cache:latest${CACHE_ARCH}-ref,mode=max,registry.insecure=${REGISTRY_INSECURE}",
-  ]
+  ]))
   cache-to   = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/base-cache:latest${CACHE_ARCH}${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=${REGISTRY_INSECURE},ignore-error=true"]
 
   # Same pattern as pytorch's base-img edge below: a named context, so
@@ -799,8 +831,12 @@ target "pytorch-common" {
   dockerfile = "docker/Dockerfile.pytorch"
   platforms  = ["linux/amd64"]
 
-  # Inherit base cache + pytorch-specific cache
-  cache-from = [
+  # Inherit base cache + pytorch-specific cache. Both own-tiers, not
+  # just pytorch-cache: this target reads base-cache too, and a lane
+  # that rebuilt the base would otherwise import the fleet's copy of
+  # it and miss its own.
+  cache-from = distinct(concat(cache_own("pytorch-cache", CACHE_ARCH),
+                      cache_own("base-cache", CACHE_ARCH), [
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/pytorch-cache:latest${CACHE_ARCH},mode=max,registry.insecure=${REGISTRY_INSECURE}",
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/pytorch-cache:latest${CACHE_ARCH}-ref,mode=max,registry.insecure=${REGISTRY_INSECURE}",
     # Transitional: the pre-arch-scoping ref, read-only. Every arch
@@ -809,7 +845,7 @@ target "pytorch-common" {
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/pytorch-cache:latest,mode=max,registry.insecure=${REGISTRY_INSECURE}",
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/base-cache:latest,mode=max,registry.insecure=${REGISTRY_INSECURE}",
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/base-cache:latest-ref,mode=max,registry.insecure=${REGISTRY_INSECURE}",
-  ]
+  ]))
   # cache-to lives on the two concrete targets, not here. CI asserts
   # that a target's cache ref and its tags agree about the arch, and
   # this target has no tags of its own — it inherits pytorch-base's,
@@ -974,10 +1010,10 @@ target "triton-wheel" {
     "org.opencontainers.image.version"     = "${ROCM_VERSION}-${ARCH_TAG}"
   })
 
-  cache-from = [
+  cache-from = distinct(concat(cache_own("triton-wheel-cache", ""), [
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/triton-wheel-cache:latest,mode=max,registry.insecure=${REGISTRY_INSECURE}",
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/triton-wheel-cache:latest-ref,mode=max,registry.insecure=${REGISTRY_INSECURE}",
-  ]
+  ]))
   cache-to   = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/triton-wheel-cache:latest${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=${REGISTRY_INSECURE},ignore-error=true"]
 
   # Same missing edge pytorch had: Dockerfile.triton does
@@ -1035,14 +1071,14 @@ target "aiter-wheel" {
     "org.opencontainers.image.version"     = "${PYTORCH_VERSION}-${ROCM_VERSION}-${ARCH_TAG}"
   })
 
-  cache-from = [
+  cache-from = distinct(concat(cache_own("aiter-wheel-cache", CACHE_ARCH), [
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/aiter-wheel-cache:latest${CACHE_ARCH},mode=max,registry.insecure=${REGISTRY_INSECURE}",
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/aiter-wheel-cache:latest${CACHE_ARCH}-ref,mode=max,registry.insecure=${REGISTRY_INSECURE}",
     # Transitional: the pre-arch-scoping ref, read-only. Every arch
     # starts cold without it. Delete once each arch in ARCHES has
     # been built once and has a warm ${CACHE_ARCH} cache.
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/aiter-wheel-cache:latest,mode=max,registry.insecure=${REGISTRY_INSECURE}",
-  ]
+  ]))
   cache-to   = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/aiter-wheel-cache:latest${CACHE_ARCH}${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=${REGISTRY_INSECURE},ignore-error=true"]
 
   # Named contexts, not registry refs: bake resolves "target:x" by
@@ -1106,10 +1142,10 @@ target "torchvision-wheel" {
     "org.opencontainers.image.version"     = "${TORCHVISION_REF}-${ROCM_VERSION}-${ARCH_TAG}"
   })
 
-  cache-from = [
+  cache-from = distinct(concat(cache_own("torchvision-wheel-cache", CACHE_ARCH), [
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/torchvision-wheel-cache:latest${CACHE_ARCH},mode=max,registry.insecure=${REGISTRY_INSECURE}",
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/torchvision-wheel-cache:latest${CACHE_ARCH}-ref,mode=max,registry.insecure=${REGISTRY_INSECURE}",
-  ]
+  ]))
   cache-to   = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/torchvision-wheel-cache:latest${CACHE_ARCH}${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=${REGISTRY_INSECURE},ignore-error=true"]
 
   # No transitional un-arch-scoped cache ref, unlike the targets above:
@@ -1166,10 +1202,10 @@ target "atom-wheel" {
     "org.opencontainers.image.version"     = "${ATOM_REF}-${ROCM_VERSION}-${ARCH_TAG}"
   })
 
-  cache-from = [
+  cache-from = distinct(concat(cache_own("atom-wheel-cache", CACHE_ARCH), [
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/atom-wheel-cache:latest${CACHE_ARCH},mode=max,registry.insecure=${REGISTRY_INSECURE}",
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/atom-wheel-cache:latest${CACHE_ARCH}-ref,mode=max,registry.insecure=${REGISTRY_INSECURE}",
-  ]
+  ]))
   cache-to   = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/atom-wheel-cache:latest${CACHE_ARCH}${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=${REGISTRY_INSECURE},ignore-error=true"]
 
   # No transitional un-arch-scoped cache ref: this target has never
@@ -1225,7 +1261,8 @@ target "pytorch-run" {
   platforms  = ["linux/amd64"]
 
   # Inherit pytorch build cache
-  cache-from = [
+  cache-from = distinct(concat(cache_own("runtime-cache", CACHE_ARCH),
+                      cache_own("pytorch-cache", CACHE_ARCH), [
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/runtime-cache:latest${CACHE_ARCH},mode=max,registry.insecure=${REGISTRY_INSECURE}",
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/runtime-cache:latest${CACHE_ARCH}-ref,mode=max,registry.insecure=${REGISTRY_INSECURE}",
     # Transitional: the pre-arch-scoping ref, read-only. Every arch
@@ -1238,7 +1275,7 @@ target "pytorch-run" {
     # starts cold without it. Delete once each arch in ARCHES has
     # been built once and has a warm ${CACHE_ARCH} cache.
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/pytorch-cache:latest,mode=max,registry.insecure=${REGISTRY_INSECURE}",
-  ]
+  ]))
   cache-to = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/runtime-cache:latest${CACHE_ARCH}${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=${REGISTRY_INSECURE},ignore-error=true"]
 
   args = {
@@ -1306,14 +1343,14 @@ target "cupy-wheel" {
     "org.opencontainers.image.version"     = "${CUPY_REF}-${ROCM_VERSION}-${ARCH_TAG}"
   })
 
-  cache-from = [
+  cache-from = distinct(concat(cache_own("cupy-wheel-cache", CACHE_ARCH), [
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/cupy-wheel-cache:latest${CACHE_ARCH},mode=max,registry.insecure=${REGISTRY_INSECURE}",
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/cupy-wheel-cache:latest${CACHE_ARCH}-ref,mode=max,registry.insecure=${REGISTRY_INSECURE}",
     # Transitional: the pre-arch-scoping ref, read-only. Every arch
     # starts cold without it. Delete once each arch in ARCHES has
     # been built once and has a warm ${CACHE_ARCH} cache.
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/cupy-wheel-cache:latest,mode=max,registry.insecure=${REGISTRY_INSECURE}",
-  ]
+  ]))
   cache-to   = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/cupy-wheel-cache:latest${CACHE_ARCH}${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=${REGISTRY_INSECURE},ignore-error=true"]
 
   contexts = USE_PUB ? {} : {
@@ -1362,14 +1399,14 @@ target "nixl-wheel" {
     "org.opencontainers.image.version"     = "${NIXL_REF}-${ROCM_VERSION}-${ARCH_TAG}"
   })
 
-  cache-from = [
+  cache-from = distinct(concat(cache_own("nixl-wheel-cache", CACHE_ARCH), [
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/nixl-wheel-cache:latest${CACHE_ARCH},mode=max,registry.insecure=${REGISTRY_INSECURE}",
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/nixl-wheel-cache:latest${CACHE_ARCH}-ref,mode=max,registry.insecure=${REGISTRY_INSECURE}",
     # Transitional: the pre-arch-scoping ref, read-only. Every arch
     # starts cold without it. Delete once each arch in ARCHES has
     # been built once and has a warm ${CACHE_ARCH} cache.
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/nixl-wheel-cache:latest,mode=max,registry.insecure=${REGISTRY_INSECURE}",
-  ]
+  ]))
   cache-to   = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/nixl-wheel-cache:latest${CACHE_ARCH}${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=${REGISTRY_INSECURE},ignore-error=true"]
 
   contexts = USE_PUB ? {} : {
@@ -1418,14 +1455,14 @@ target "vllm" {
     "org.opencontainers.image.version"     = "${VLLM_REF}-${ROCM_VERSION}-${ARCH_TAG}"
   })
 
-  cache-from = [
+  cache-from = distinct(concat(cache_own("vllm-cache", CACHE_ARCH), [
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/vllm-cache:latest${CACHE_ARCH},mode=max,registry.insecure=${REGISTRY_INSECURE}",
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/vllm-cache:latest${CACHE_ARCH}-ref,mode=max,registry.insecure=${REGISTRY_INSECURE}",
     # Transitional: the pre-arch-scoping ref, read-only. Every arch
     # starts cold without it. Delete once each arch in ARCHES has
     # been built once and has a warm ${CACHE_ARCH} cache.
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/vllm-cache:latest,mode=max,registry.insecure=${REGISTRY_INSECURE}",
-  ]
+  ]))
   cache-to   = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/vllm-cache:latest${CACHE_ARCH}${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=${REGISTRY_INSECURE},ignore-error=true"]
 
   contexts = USE_PUB ? {} : {
@@ -1535,14 +1572,14 @@ target "lmcache" {
     "org.opencontainers.image.version"     = "${LMCACHE_REF}-${ROCM_VERSION}-${ARCH_TAG}"
   })
 
-  cache-from = [
+  cache-from = distinct(concat(cache_own("lmcache-cache", CACHE_ARCH), [
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/lmcache-cache:latest${CACHE_ARCH},mode=max,registry.insecure=${REGISTRY_INSECURE}",
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/lmcache-cache:latest${CACHE_ARCH}-ref,mode=max,registry.insecure=${REGISTRY_INSECURE}",
     # Transitional: the pre-arch-scoping ref, read-only. Every arch
     # starts cold without it. Delete once each arch in ARCHES has
     # been built once and has a warm ${CACHE_ARCH} cache.
     "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/lmcache-cache:latest,mode=max,registry.insecure=${REGISTRY_INSECURE}",
-  ]
+  ]))
   cache-to   = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/lmcache-cache:latest${CACHE_ARCH}${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=${REGISTRY_INSECURE},ignore-error=true"]
 
   contexts = USE_PUB ? {} : {
