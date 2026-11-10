@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import json
 import re
 import sys
 from pathlib import Path
@@ -43,6 +44,52 @@ def arch_dirs(root: Path):
     for d in sorted(root.iterdir()):
         if d.is_dir() and (d / "index.html").is_file():
             out.append(d)
+    return out
+
+
+def verdicts(arch_dir: Path) -> list[dict]:
+    """The measured platform tags wheelindex.py published for this arch.
+
+    Absent for an arch published before this existed, which is a reason
+    to say nothing about it rather than to guess. The landing page
+    degrades to the prose it had before.
+    """
+    page = arch_dir / "verdicts.json"
+    if not page.is_file():
+        return []
+    try:
+        return json.loads(page.read_text(encoding="utf-8"))["wheels"]
+    except (ValueError, KeyError):
+        return []
+
+
+def tag_summary(arch_dir: Path) -> str:
+    """"5 manylinux · 4 linux_x86_64 · 3 pure", or an em dash."""
+    found = verdicts(arch_dir)
+    if not found:
+        return "—"
+    counts = {}
+    for v in found:
+        kind = {"pure": "pure", "no-cpu-code": "linux_x86_64",
+                "constrained": "linux_x86_64",
+                "manylinux": "manylinux"}.get(v.get("kind"), "other")
+        counts[kind] = counts.get(kind, 0) + 1
+    order = ("manylinux", "linux_x86_64", "pure", "other")
+    return " · ".join(f"{counts[k]} {k}" for k in order if k in counts)
+
+
+def narrow_wheels(root: Path) -> list[tuple[str, dict]]:
+    """Every published wheel tagged more narrowly than its symbols need.
+
+    Surfaced on the landing page rather than only in a build log: this
+    is the one state in the table a reader can act on, because it means
+    pip will refuse the wheel on a host that could have run it.
+    """
+    out = []
+    for d in arch_dirs(root):
+        for v in verdicts(d):
+            if v.get("best") is False:
+                out.append((d.name, v))
     return out
 
 
@@ -79,11 +126,41 @@ def render(root: Path, repo: str) -> str:
         rows.append(
             f'<tr><td><a href="{html.escape(d.name)}/">'
             f"<code>{html.escape(d.name)}</code></a></td>"
-            f"{cells}<td><code>{html.escape(meta)}</code></td></tr>"
+            f"{cells}<td><code>{html.escape(meta)}</code></td>"
+            f"<td>{html.escape(tag_summary(d))}</td></tr>"
         )
 
     head = "".join(f"<th><code>{p}</code></th>" for p in HIGHLIGHT)
     first = archs[0].name if archs else "gfx950"
+
+    # The note this replaces said the same thing from memory, and said
+    # it about whichever wheels were published the day it was written.
+    # Each arch index now carries the measurement, so this links to it
+    # and names anything a reader could act on.
+    narrow = narrow_wheels(root)
+    tagnote = (
+        '<p class="note">Platform tags differ by wheel and are not a '
+        "choice: <code>auditwheel</code> grants a <code>manylinux</code> "
+        "tag only where the compiled code's glibc symbols allow one. "
+        "Some wheels here reference symbols newer than any defined "
+        "policy and stay <code>linux_x86_64</code>; some contain no CPU "
+        "code at all. Each architecture's index lists the measured tag "
+        "and the glibc behind it, under "
+        '<em>Platform tags</em>.</p>'
+    )
+    if narrow:
+        items = "".join(
+            f"<li><code>{html.escape(a)}</code> · "
+            f"<code>{html.escape(v['project'])}</code> is tagged "
+            f"<code>{html.escape(v['tag'])}</code> but needs only glibc "
+            f"{html.escape(v['needs_glibc'] or '?')}</li>"
+            for a, v in narrow
+        )
+        tagnote += (
+            '<p class="note"><strong>Tagged more narrowly than '
+            "required.</strong> pip will refuse these on hosts that "
+            f"could run them:</p><ul class=\"note\">{items}</ul>"
+        )
 
     return f"""<!doctype html>
 <html lang="en">
@@ -116,9 +193,10 @@ GitHub release assets; these pages point at them, with a
   "rocm-torch[device-{html.escape(first)}]"</pre>
 
 <table>
-<thead><tr><th>architecture</th>{head}<th><code>rocm-torch</code></th></tr></thead>
+<thead><tr><th>architecture</th>{head}<th><code>rocm-torch</code></th>
+<th>platform tags</th></tr></thead>
 <tbody>
-{chr(10).join(rows) if rows else '<tr><td colspan="5">none published</td></tr>'}
+{chr(10).join(rows) if rows else '<tr><td colspan="6">none published</td></tr>'}
 </tbody>
 </table>
 
@@ -136,11 +214,7 @@ dependencies resolve from PyPI. Our wheels win over same-named PyPI
 projects because the metapackage pins exact versions whose local
 segment (<code>+rocm…</code>) upstream cannot match.</p>
 
-<p class="note">Platform tags differ by wheel and are not a choice:
-<code>auditwheel</code> grants a <code>manylinux</code> tag only where
-the compiled code's glibc symbols allow one. Some wheels here reference
-symbols newer than any defined policy and stay
-<code>linux_x86_64</code>; one contains no CPU code at all.</p>
+{tagnote}
 
 <p><a href="../perf/">Build performance</a> ·
 <a href="https://github.com/{html.escape(repo)}">Source</a></p>

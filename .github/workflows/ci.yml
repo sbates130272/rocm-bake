@@ -4,7 +4,11 @@ on:
   pull_request:
     paths:
       - "rocm-bake.hcl"
-      - "docker/Dockerfile.*"
+      # docker/**, not docker/Dockerfile.*: the shared scripts
+      # the Dockerfiles COPY in -- auditwheel-rocm.sh and
+      # wheel-verdict.py -- are build logic too, and a change to
+      # one of them ran no job here at all.
+      - "docker/**"
       - "Makefile"
       - "serving/docker-compose.yml"
       - ".builders/**"
@@ -15,7 +19,11 @@ on:
     branches: [main]
     paths:
       - "rocm-bake.hcl"
-      - "docker/Dockerfile.*"
+      # docker/**, not docker/Dockerfile.*: the shared scripts
+      # the Dockerfiles COPY in -- auditwheel-rocm.sh and
+      # wheel-verdict.py -- are build logic too, and a change to
+      # one of them ran no job here at all.
+      - "docker/**"
       - "Makefile"
       - "serving/docker-compose.yml"
       - ".builders/**"
@@ -234,6 +242,227 @@ jobs:
           echo "$out" | grep -q "does not provide the extra" || {
             echo "::error::gfx950 index accepted the gfx1201 extra"; exit 1; }
           echo "  cross-arch extra correctly rejected"
+
+  # The platform-tag verdicts: docker/wheel-verdict.py and the index
+  # table it feeds.
+  #
+  # WHY THIS IS A PR GATE AND NOT ONLY A BUILD-TIME CHECK. The build
+  # -time check lives in four Dockerfiles and fires only on a real
+  # 45-minute GPU-arch build, which no pull request runs. So the thing
+  # that asserts the tripwire still works has to be here, on a bare
+  # runner, with synthetic wheels: the failing case matters more than
+  # the passing one, and the failing case is by definition not
+  # something any of our real wheels currently does.
+  #
+  # The fixtures are 20-byte ELF headers with a version string glued
+  # on, not compiled objects. wheel-verdict reads e_machine at offset
+  # 18 to find CPU code and scans for GLIBC_x.y to size it; a real
+  # toolchain would add nothing to the test but a dependency and a
+  # minute. GLIBC_2.99 is deliberately a version no policy will ever
+  # cover, so the "verdict holds" case cannot start failing the day
+  # auditwheel learns manylinux_2_43.
+  wheelverdict:
+    name: Platform-tag verdicts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      # Only its policy list is used. No wheel is repaired here.
+      - name: auditwheel, for the list of manylinux policies
+        run: pip install auditwheel
+
+      - name: Each mode passes what it should and fails what it should
+        run: |
+          set -e
+          python - <<'EOF'
+          import os, subprocess, sys, zipfile
+          from pathlib import Path
+
+          # ELFCLASS64, ELFDATA2LSB, ET_DYN, EM_X86_64 at offset 18.
+          ELF = b"\x7fELF\x02\x01\x01" + b"\x00" * 9 + b"\x03\x00\x3e\x00"
+
+          def wheel(name, glibc=None):
+              d = Path("fx"); d.mkdir(exist_ok=True)
+              p = d / name
+              with zipfile.ZipFile(p, "w") as z:
+                  z.writestr("pkg/__init__.py", "")
+                  z.writestr("pkg-1.0.dist-info/METADATA",
+                             "Metadata-Version: 2.1\nName: pkg\nVersion: 1.0\n")
+                  if glibc:
+                      z.writestr("pkg/_c.so", ELF + f"GLIBC_{glibc}\x00".encode())
+              return p
+
+          def run(path, mode):
+              r = subprocess.run(
+                  [sys.executable, "docker/wheel-verdict.py", str(path), mode],
+                  capture_output=True, text=True)
+              return r.returncode, r.stdout + r.stderr
+
+          # A version no manylinux policy will ever cover, and one every
+          # policy already covers.
+          newer = wheel("a-1.0-cp314-cp314-linux_x86_64.whl", "2.99")
+          older = wheel("b-1.0-cp314-cp314-linux_x86_64.whl", "2.17")
+          nocpu = wheel("c-1.0-cp314-cp314-linux_x86_64.whl")
+
+          fail = 0
+          def expect(what, got, want, log=""):
+              global fail
+              if got != want:
+                  fail = 1
+                  print(f"::error::{what}: got {got}, expected {want}")
+                  print(log)
+              else:
+                  print(f"ok  {what}")
+
+          rc, log = run(newer, "no-manylinux")
+          expect("glibc newer than every policy -> verdict holds", rc, 0, log)
+
+          # THE one that matters. If this ever returns 0, the tripwire
+          # this whole mechanism exists to be has stopped working.
+          rc, log = run(older, "no-manylinux")
+          expect("glibc every policy covers -> verdict is stale", rc, 1, log)
+          if "STALE" not in log:
+              fail = 1
+              print("::error::it failed, but not with the message that "
+                    "tells a reader what to do:")
+              print(log)
+
+          rc, log = run(nocpu, "no-cpu-code")
+          expect("no ELF -> no-cpu-code holds", rc, 0, log)
+
+          rc, log = run(newer, "no-cpu-code")
+          expect("ELF present -> no-cpu-code is stale", rc, 1, log)
+
+          rc, log = run(nocpu, "no-manylinux")
+          expect("no ELF -> no-manylinux is the wrong question", rc, 1, log)
+
+          sys.exit(fail)
+          EOF
+
+      - name: report classifies every kind of wheel we publish
+        run: |
+          set -e
+          python - <<'EOF'
+          import json, subprocess, sys, zipfile
+          from pathlib import Path
+
+          ELF = b"\x7fELF\x02\x01\x01" + b"\x00" * 9 + b"\x03\x00\x3e\x00"
+          d = Path("fy"); d.mkdir(exist_ok=True)
+
+          def wheel(name, glibc=None):
+              p = d / name
+              with zipfile.ZipFile(p, "w") as z:
+                  z.writestr("pkg/__init__.py", "")
+                  z.writestr("pkg-1.0.dist-info/METADATA",
+                             "Metadata-Version: 2.1\nName: pkg\nVersion: 1.0\n")
+                  if glibc:
+                      z.writestr("pkg/_c.so", ELF + f"GLIBC_{glibc}\x00".encode())
+              return p
+
+          # name -> (kind, best). The four shapes this repo publishes,
+          # plus the one it must never publish silently (narrow).
+          cases = {
+              "torchlike-1.0-cp314-cp314-linux_x86_64.whl":
+                  ("2.99", "constrained", True),
+              "narrow-1.0-cp314-cp314-linux_x86_64.whl":
+                  ("2.17", "constrained", False),
+              "aiterlike-1.0-cp314-cp314-linux_x86_64.whl":
+                  (None, "no-cpu-code", True),
+              "nixllike-1.0-py3-none-any.whl":
+                  (None, "pure", True),
+              "cupylike-1.0-cp314-cp314-manylinux_2_39_x86_64.whl":
+                  ("2.38", "manylinux", True),
+          }
+
+          fail = 0
+          for name, (glibc, kind, best) in cases.items():
+              p = wheel(name, glibc)
+              out = subprocess.run(
+                  [sys.executable, "docker/wheel-verdict.py", str(p), "report"],
+                  capture_output=True, text=True, check=True).stdout
+              got = json.loads(out)
+              if (got["kind"], got["best"]) != (kind, best):
+                  fail = 1
+                  print(f"::error::{name}: got kind={got['kind']} "
+                        f"best={got['best']}, expected {kind}/{best}")
+              else:
+                  print(f"ok  {name:<52} {kind}, best={best}")
+          sys.exit(fail)
+          EOF
+
+      - name: The index publishes a tag and a reason for every wheel
+        run: |
+          set -e
+          python - <<'EOF'
+          import json, subprocess, sys, zipfile
+          from pathlib import Path
+
+          ELF = b"\x7fELF\x02\x01\x01" + b"\x00" * 9 + b"\x03\x00\x3e\x00"
+          d = Path("fz/wheels"); d.mkdir(parents=True, exist_ok=True)
+          for name, glibc in (
+                  ("good-1.0-cp314-cp314-linux_x86_64.whl", "2.99"),
+                  ("narrow-1.0-cp314-cp314-linux_x86_64.whl", "2.17"),
+                  ("pure-1.0-py3-none-any.whl", None)):
+              with zipfile.ZipFile(d / name, "w") as z:
+                  z.writestr("pkg/__init__.py", "")
+                  z.writestr("pkg-1.0.dist-info/METADATA",
+                             "Metadata-Version: 2.1\nName: pkg\nVersion: 1.0\n")
+                  if glibc:
+                      z.writestr("pkg/_c.so", ELF + f"GLIBC_{glibc}\x00".encode())
+
+          r = subprocess.run(
+              [sys.executable, ".builders/wheelindex.py", str(d),
+               "--arch", "gfx950", "--out", "fz/index", "--version", "10.1.0"],
+              capture_output=True, text=True)
+          print(r.stdout, r.stderr)
+          if r.returncode:
+              sys.exit("::error::wheelindex failed")
+
+          fail = 0
+          data = json.loads(Path("fz/index/verdicts.json").read_text())
+          by = {w["project"]: w for w in data["wheels"]}
+
+          # Every project in the index, including the generated
+          # metapackage, carries a measurement. A wheel with no entry is
+          # exactly the gap this exists to close.
+          for want in ("good", "narrow", "pure", "rocm-torch"):
+              if want not in by:
+                  fail = 1
+                  print(f"::error::no verdict published for {want}")
+
+          if by.get("narrow", {}).get("best") is not False:
+              fail = 1
+              print("::error::a wheel tagged narrower than its symbols "
+                    "require was published without being flagged")
+          if by.get("good", {}).get("best") is not True:
+              fail = 1
+              print("::error::a correctly-tagged wheel was flagged")
+
+          page = Path("fz/index/index.html").read_text()
+          if "Platform tags" not in page or "ELIGIBLE" not in page:
+              fail = 1
+              print("::error::the index page does not show the verdicts")
+
+          # The page pip actually reads must not have grown links. pip
+          # never fetches this root, but a stray <a> here would be a
+          # distribution offered by accident.
+          import re
+          hrefs = set(re.findall(r'<a href="([^"]+)"', page))
+          extra = hrefs - {f"{p}/" for p in by}
+          if extra:
+              fail = 1
+              print(f"::error::unexpected links on the index root: {extra}")
+
+          if "note: a wheel is tagged more narrowly" not in r.stdout:
+              fail = 1
+              print("::error::publishing a narrow wheel printed no note")
+
+          sys.exit(fail)
+          EOF
 
   # wheelpublish.sh deletes release assets, which is the only
   # irreversible thing this repo does to something public, and until

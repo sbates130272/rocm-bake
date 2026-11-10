@@ -420,6 +420,17 @@ RUN --mount=type=tmpfs,target=/tmp/vllm-wheel \
             echo "wheel has no code objects for ${arch}" >&2; exit 1; }; \
     done
 
+# No auditwheel step here, for the same reason as Dockerfile.pytorch
+# and Dockerfile.triton: vllm/vllm-rs references GLIBC_2.43, newer than
+# any manylinux policy auditwheel knows, so linux_x86_64 is the only
+# tag the symbols allow. Unlike those two, that was never written down
+# here -- the wheel just came out linux_x86_64 and nobody said why.
+# This states the reason and checks it, so a base-image glibc change
+# cannot leave vLLM shipping the narrowest possible tag by accident.
+COPY docker/wheel-verdict.py /usr/local/bin/wheel-verdict
+RUN pip install --no-cache-dir auditwheel && \
+    wheel-verdict /wheels no-manylinux
+
 RUN ls -la /wheels/
 
 # ─── Serving image ───────────────────────────────────────────────
