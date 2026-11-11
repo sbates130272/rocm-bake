@@ -120,10 +120,8 @@ def capped_below(spec, python):
     Only the "<" and "<=" clauses, which is the case that actually
     bites. This repo is cp314 throughout, because Ubuntu 26.04 — the
     only base AMD publishes ROCm 10.1 for — ships no other Python, so
-    any upstream capping below 3.14 is uninstallable from our index. At
-    LMCache v0.5.6 that was a live problem; v0.5.7 raised its cap to
-    "<3.15" and nothing in the set is capped today. The check stays
-    because the next one would otherwise surface as an opaque pip
+    any upstream capping below 3.14 is uninstallable from our index.
+    Naming it here is what keeps that from surfacing as an opaque pip
     resolution failure a long way from the cause.
 
     A deliberately partial reading of PEP 440, not a specifier engine:

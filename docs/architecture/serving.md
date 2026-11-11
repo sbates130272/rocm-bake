@@ -135,12 +135,6 @@ docker run --rm --device /dev/kfd --device /dev/dri -p 8100:8100 \
 
 ## Two Upstream Constraints
 
-(There used to be a third: LMCache declared
-`requires-python >=3.10,<3.14` while this lane is cp314 — Ubuntu 26.04,
-the only base AMD publishes ROCm 10.1 for, ships no other Python — so
-the wheel went in with `--ignore-requires-python`. v0.5.7 raised the
-cap to `<3.15` and the flag is gone everywhere.)
-
 **Both projects' requirement files carry CUDA-only or x86-wheel-only
 pins** — `cufile-python`, `nvtx`, `tilelang`, `amd-quark` and others.
 These are stripped before the build, which also keeps them out of the

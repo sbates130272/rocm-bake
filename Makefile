@@ -1173,13 +1173,7 @@ wheel-index: ## Fetch each arch's wheels and build a pip index (ARCHES=)
 # so without it the first wheel with an ordinary dependency (numpy, via
 # triton-kernels) fails to resolve. download.pytorch.org has the same
 # property and the same workaround.
-#
-# This used to pass --ignore-requires-python as well, for LMCache's
-# ">=3.10,<3.14" against this cp314 lane; v0.5.7 raised that cap and the
-# flag came out. wheelindex.py still measures every wheel's
-# Requires-Python and names any that excludes our interpreter, so a
-# future cap surfaces as a note here rather than as an opaque pip
-# resolution failure.
+
 # Publish one arch publicly: wheels to a GitHub release, index to
 # gh-pages. The split is forced — a wheel is 300-500MB and GitHub
 # refuses anything over 100MB in git, so the index (28KB) can live on

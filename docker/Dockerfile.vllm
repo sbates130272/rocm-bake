@@ -509,10 +509,6 @@ print(f'grpcio=={md.version(\"grpcio\")}')" \
     sort -u /etc/pip-constraints.txt -o /etc/pip-constraints.txt && \
     cat /etc/pip-constraints.txt
 
-# This install used to need --ignore-requires-python, for the LMCache
-# python cap — dropped at v0.5.7, which admits cp314. See the longer
-# note in Dockerfile.lmcache.
-#
 # --no-deps on the wheel with the patched requirements installed first,
 # so pip cannot re-resolve install_requires and reintroduce the
 # CUDA-only entries that build stripped.
