@@ -133,13 +133,7 @@ docker run --rm --device /dev/kfd --device /dev/dri -p 8100:8100 \
     positional arguments — host, port, storage. Giving the server flags
     makes it print a usage line and exit 1.
 
-## Three Upstream Constraints
-
-**LMCache declares `requires-python >=3.10,<3.14`.** This lane is cp314,
-because Ubuntu 26.04 — the only base AMD publishes ROCm 10.1 for —
-ships no other Python. The wheel is installed with
-`--ignore-requires-python`; the extension is compiled here against this
-interpreter, so the ABI matches by construction.
+## Two Upstream Constraints
 
 **Both projects' requirement files carry CUDA-only or x86-wheel-only
 pins** — `cufile-python`, `nvtx`, `tilelang`, `amd-quark` and others.

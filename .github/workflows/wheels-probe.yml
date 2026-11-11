@@ -80,13 +80,9 @@ jobs:
         run: |
           set -e
           python -m venv v
-          # --ignore-requires-python: lmcache caps at <3.14, which is a
-          # support statement rather than an ABI one -- the extension
-          # was built against this interpreter. Dockerfile.lmcache and
-          # Dockerfile.vllm install it the same way.
           for attempt in 1 2 3; do
             if v/bin/pip install --dry-run --no-cache-dir \
-                 --ignore-requires-python --report report.json \
+                 --report report.json \
                  --index-url "${SITE}/data/wheels/${ARCH}/" \
                  --extra-index-url https://pypi.org/simple \
                  "rocm-torch[device-${ARCH}]" > pip.log 2>&1; then

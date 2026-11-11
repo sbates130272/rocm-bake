@@ -133,13 +133,8 @@ starts the day somebody else publishes a colliding name.
 The wheels are `cp314`. Ubuntu 26.04 is the only base AMD publishes
 ROCm 10.1 for and it ships no other Python, so there is no other build.
 
-`lmcache` declares `Requires-Python: <3.14`, which is a support
-statement from upstream rather than an ABI constraint — its extension
-was compiled against this interpreter here. Installing the full set on
-3.14 therefore needs:
-
-```bash
-pip install --ignore-requires-python ...
-```
-
-The images in this repo install it the same way, for the same reason.
+Nothing in the set caps below 3.14, so the full install needs no
+special flags. `make wheel-index` measures each wheel's
+`Requires-Python` and names any that excludes the interpreter here, so
+if an upstream does cap it shows up as a note rather than an opaque
+resolution failure.

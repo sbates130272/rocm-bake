@@ -211,8 +211,12 @@ WORKDIR /opt/aiter
 # broken in the expected way nor already correct, because a third shape
 # means this patch no longer understands the file it is editing.
 #
-# v0.1.28 is the newest AITER tag as of 2026-11-02; there is no ref to
-# bump to that avoids this. Upstream issue still to be filed.
+# v0.1.29 is the newest AITER tag as of 2026-11-10, and it pins the
+# same CK commit as v0.1.28 (96afae1d), so the defect is still here and
+# this patch still applies — checked by running it against the header
+# at that commit: one match, the stray brace removed, second run a
+# no-op. There is no ref to bump to that avoids this.
+# Upstream issue still to be filed.
 # Written to a file rather than passed to `python3 -c`: the check needs
 # real if/else, which semicolon-chaining cannot express, and hadolint
 # cannot parse a `RUN cmd <<'EOF'` heredoc — see the same note in

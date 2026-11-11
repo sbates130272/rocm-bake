@@ -81,7 +81,7 @@ ENV PIP_CONSTRAINT=/etc/pip-constraints.txt
 # ─── Builder ─────────────────────────────────────────────────────
 FROM deps AS builder
 
-ARG LMCACHE_REF=v0.5.6
+ARG LMCACHE_REF=v0.5.7
 # Redeclared, not inherited: ARG does not cross a FROM, and `deps`
 # declaring it does nothing for this stage. Without this the LABEL below
 # reads "for ROCm ," and the wheel's version suffix comes out "+rocm"
@@ -270,7 +270,7 @@ RUN ls -la /wheels/
 # ─── Multi-process runtime image ─────────────────────────────────
 FROM deps AS final
 
-ARG LMCACHE_REF=v0.5.6
+ARG LMCACHE_REF=v0.5.7
 ARG PYTORCH_ROCM_ARCH
 ARG ROCM_VERSION
 
@@ -280,13 +280,6 @@ LABEL org.opencontainers.image.description="LMCache ${LMCACHE_REF} multi-process
 COPY --from=builder /wheels-build.log /wheels-arch.txt /var/log/lmcache-build/
 COPY --from=builder /opt/lmcache/requirements/ /opt/lmcache-requirements/
 
-# --ignore-requires-python: LMCache v0.5.6 declares requires-python
-# ">=3.10,<3.14" and this lane is cp314, because Ubuntu 26.04 — the only
-# base AMD publishes ROCm 10.1 for — ships no other Python. The cap is a
-# support statement rather than a technical one; the extension is built
-# here against this interpreter, so the ABI matches by construction.
-# Revisit when upstream raises the bound.
-#
 # --no-deps on the wheel itself, with the patched requirements installed
 # first: pip would otherwise re-resolve install_requires and reintroduce
 # the CUDA-only entries stripped during the build.
@@ -295,7 +288,7 @@ COPY --from=builder /opt/lmcache/requirements/ /opt/lmcache-requirements/
 RUN --mount=type=bind,from=builder,source=/wheels,target=/w/lmcache \
     pip install --no-cache-dir -r /opt/lmcache-requirements/common.txt && \
     pip install --no-cache-dir -r /opt/lmcache-requirements/rocm_core.txt && \
-    pip install --no-cache-dir --no-deps --ignore-requires-python \
+    pip install --no-cache-dir --no-deps \
         /w/lmcache/*.whl && \
     python -c "import lmcache; from lmcache import cuda_ops; print('LMCache', lmcache.__version__)" && \
     python -c "import torch; assert torch.version.hip, 'torch lost its HIP build'"

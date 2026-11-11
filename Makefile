@@ -1173,12 +1173,7 @@ wheel-index: ## Fetch each arch's wheels and build a pip index (ARCHES=)
 # so without it the first wheel with an ordinary dependency (numpy, via
 # triton-kernels) fails to resolve. download.pytorch.org has the same
 # property and the same workaround.
-#
-# --ignore-requires-python for the same reason the Dockerfiles use it:
-# LMCache v0.5.6 declares ">=3.10,<3.14" and this lane is cp314
-# throughout. See docker/Dockerfile.lmcache, which carries the full
-# rationale. wheelindex.py names every wheel this applies to rather
-# than letting the flag hide them.
+
 # Publish one arch publicly: wheels to a GitHub release, index to
 # gh-pages. The split is forced — a wheel is 300-500MB and GitHub
 # refuses anything over 100MB in git, so the index (28KB) can live on
@@ -1213,7 +1208,7 @@ wheel-index-check: ## Install each generated index into a throwaway venv
 		v=$$(mktemp -d); python3 -m venv "$$v" >/dev/null; \
 		echo "== $$a"; \
 		no_proxy=127.0.0.1,localhost NO_PROXY=127.0.0.1,localhost \
-		"$$v/bin/pip" install -q --no-cache-dir --ignore-requires-python \
+		"$$v/bin/pip" install -q --no-cache-dir \
 			--index-url "http://127.0.0.1:$$port/index/$$a/" \
 			--extra-index-url https://pypi.org/simple \
 			"rocm-torch[device-$$a]" \

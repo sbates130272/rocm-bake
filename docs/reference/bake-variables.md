@@ -18,14 +18,14 @@ is authoritative if this page has aged.
 | `PYTHON_VERSION` | `3.14` |
 | `TRITON_VERSION` | `3.9.0` |
 | `TRITON_REF` | `aad2a60d958f945420c5c40936b37d411fb02e89` |
-| `AITER_REF` | `v0.1.28` |
+| `AITER_REF` | `v0.1.29` |
 | `TORCHVISION_REF` | `v0.29.2` |
 | `ATOM_REF` | `v0.1.9` |
 | `NIXL_REF` | `v1.5.2` |
 | `UCX_REF` | `v1.22.0` |
 | `VLLM_REF` | `v0.33.0` |
 | `CUPY_REF` | `v14.2.0` |
-| `LMCACHE_REF` | `v0.5.6` |
+| `LMCACHE_REF` | `v0.5.7` |
 | `RUST_VERSION` | `1.95` |
 | `GIT_REF` | `""` - a specific PyTorch ref to build |
 
