@@ -123,15 +123,18 @@ docker run --rm -p 9000:9000 \
     snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/lmcache:latest \
     lmcache_controller --host 0.0.0.0 --port 9000
 
-docker run --rm --device /dev/kfd --device /dev/dri -p 8100:8100 \
+docker run --rm --device /dev/kfd --device /dev/dri -p 5555:5555 \
     snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/lmcache:latest \
-    lmcache_server 0.0.0.0 8100 cpu
+    lmcache server --host 0.0.0.0 --port 5555
 ```
 
-!!! warning "The two LMCache CLIs take arguments differently"
-    `lmcache_controller` takes flags. `lmcache_server` takes three
-    positional arguments — host, port, storage. Giving the server flags
-    makes it print a usage line and exit 1.
+!!! warning "The cache server lost its console script in v0.5.7"
+    LMCache v0.5.7 restructured the package: the single-process engine
+    moved to `lmcache.inprocess.v1.*`, the multiprocess stack took over
+    `lmcache.v1.*`, and the standalone `lmcache_server` entry point was
+    dropped in favour of the `lmcache server` subcommand. Both roles are
+    argparse and take flags; `--transport` defaults to `zmq`, so pass
+    `--transport grpc` for the gRPC path.
 
 ## Two Upstream Constraints
 
