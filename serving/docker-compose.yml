@@ -103,7 +103,7 @@ volumes:
 
 services:
   lmcache:
-    image: ${REGISTRY:-snoc-strix.fold-leaffish.ts.net:8080}/rocm-pytorch/lmcache:${LMCACHE_TAG:-v0.5.6-10.1.0-full-gfx1201}
+    image: ${REGISTRY:-snoc-strix.fold-leaffish.ts.net:8080}/rocm-pytorch/lmcache:${LMCACHE_TAG:-v0.5.7-10.1.0-full-gfx1201}
     # These tags move: every build of this ref overwrites them. Docker
     # will not re-pull a tag it already has locally, so without this the
     # GPU host serves whatever it happened to pull first and no amount
@@ -162,8 +162,9 @@ services:
       # a fabricated event, and a never-recorded event reports as
       # already complete, so every wait becomes a no-op: 9 of 12 reads
       # came back as unwritten data. No error, no hang — just wrong
-      # output on long contexts. v0.5.6 does not carry it, which is the
-      # outcome we want.
+      # output on long contexts. Upstream does not carry it — v0.5.7's
+      # CUDA/HIP path is timeline_semaphore_event_ipc.py, a real
+      # implementation — which is the outcome we want.
       #
       # If the first request never returns, that is the #4419 hang:
       # set TRANSFER_MODE=engine_driven, which uses PREPARE/COMMIT and

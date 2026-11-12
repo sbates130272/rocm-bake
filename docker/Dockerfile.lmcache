@@ -4,10 +4,20 @@
 #
 # "Multi-process" is LMCache's own term for splitting the KV cache out
 # of the inference process: a controller (`lmcache_controller`) holding
-# the cluster-wide index, one or more cache servers (`lmcache_server`)
+# the cluster-wide index, one or more cache servers (`lmcache server`)
 # holding the KV blocks, and the serving engine talking to them over the
-# gRPC transport under lmcache/v1/multiprocess/. All three CLIs ship in
-# this image; which one a container runs is chosen at `docker run` time.
+# transport under lmcache/v1/multiprocess/. Both CLIs ship in this
+# image; which one a container runs is chosen at `docker run` time.
+#
+# v0.5.7 restructured the package and this file follows it: the
+# single-process engine moved from `lmcache.v1.*` to
+# `lmcache.inprocess.v1.*`, the multiprocess stack now owns
+# `lmcache.v1.*`, and the `lmcache_server` console script was dropped in
+# favour of the `lmcache server` subcommand. `lmcache_controller`
+# survived the move but now resolves to
+# lmcache.inprocess.v1.api_server.__main__:main. That rename is what
+# broke the 2026-11-11 nightly: the old import smoke test below still
+# named lmcache.v1.server, which no longer exists.
 #
 # Why build it: LMCache's `cuda_ops` extension is a torch C++ extension.
 # It hipifies its CUDA sources and compiles them with hipcc against the
@@ -293,9 +303,12 @@ RUN --mount=type=bind,from=builder,source=/wheels,target=/w/lmcache \
     python -c "import lmcache; from lmcache import cuda_ops; print('LMCache', lmcache.__version__)" && \
     python -c "import torch; assert torch.version.hip, 'torch lost its HIP build'"
 
-# The multiprocess transport's gRPC stubs are generated into the wheel at
-# build time; importing the server module is what proves they landed.
-RUN python -c "import lmcache.v1.server.__main__; import lmcache.v1.api_server.__main__; print('MP entrypoints ok')"
+# Both server roles must import, and the multiprocess transport's gRPC
+# stubs must have been generated into the wheel at build time.
+# get_service_bindings() walks _proto_gen for the generated *_service_pb2
+# modules and raises if it finds none, so it proves the stubs landed
+# rather than merely proving the transport package is importable.
+RUN python -c "import lmcache.v1.multiprocess.http_server; import lmcache.inprocess.v1.api_server.__main__; from lmcache.v1.multiprocess.transport.grpc_impl.descriptors import get_service_bindings; print('MP entrypoints ok —', len(get_service_bindings()), 'gRPC services')"
 
 # No HSA_OVERRIDE_GFX_VERSION — see the note in Dockerfile.base. It was
 # pinned to 11.0.2 here too, inherited from that file, and it is what
@@ -303,24 +316,25 @@ RUN python -c "import lmcache.v1.server.__main__; import lmcache.v1.api_server._
 # ways on snoc-think: with it, no GPU visible to torch; without it, the
 # card enumerates as gfx1201 and lmcache's cuda_ops loads.
 
-# 9000 is lmcache_controller's argparse default. 8100 is a convention,
-# not a default — lmcache_server has no default port, it requires one
-# positionally. Change it freely; it is documentation, not a binding.
-EXPOSE 9000 8100
+# 9000 is lmcache_controller's argparse default; 5555 is the cache
+# server's --port default. Change them freely; this is documentation,
+# not a binding.
+EXPOSE 9000 5555
 
 # ENTRYPOINT is reset because the parent image sets ENTRYPOINT
 # ["python"], which would make every argument below a script name. An
 # empty entrypoint lets a container pick its role directly.
 #
-# The two server CLIs are NOT symmetric, which is an easy and silent
-# mistake to make. lmcache_controller is argparse and takes flags;
-# lmcache_server (lmcache/v1/server/__main__.py) parses sys.argv by
-# position — `if len(sys.argv) not in [3, 4]: usage; exit(1)` — so the
-# flag form logs a usage line and exits 1 before binding anything:
+# Both server roles are argparse and take flags. The standalone
+# `lmcache_server` console script is gone as of v0.5.7; the cache server
+# is now the `server` subcommand of the `lmcache` CLI, which is what
+# serving/docker-compose.yml already invokes:
 #
 #   docker run <img> lmcache_controller --host 0.0.0.0 --port 9000
-#   docker run <img> lmcache_server 0.0.0.0 8100 cpu   # host port storage
+#   docker run <img> lmcache server --host 0.0.0.0 --port 5555
 #   docker run <img> lmcache --help
+#
+# --transport defaults to zmq; pass --transport grpc for the gRPC path.
 ENTRYPOINT []
 CMD ["lmcache_controller", "--help"]
 
