@@ -18,14 +18,40 @@ rest of the account, and what a night costs.
 | | |
 | --- | --- |
 | CodeBuild project | One runner project, EC2 compute, privileged |
-| ECR | 23 repositories — images plus their `*-cache` siblings |
+| ECR | 27 repositories — images plus their `*-cache` siblings |
 | S3 | `rocm-bake-sccache-<account>`, 30-day object expiry |
 | IAM | One service role, scoped to those two and nothing else |
 
-The `*-cache` repositories carry a 14-image lifecycle policy. They hold
-BuildKit's `mode=max` exports, which is every intermediate layer rather
-than the ones in the final image, and without a policy they grow
-without bound.
+Every repository carries a lifecycle policy that keeps the **three
+newest untagged images** and never expires a tagged one. The `*-cache`
+repositories hold BuildKit's `mode=max` exports — every intermediate
+layer, not just the ones in the final image — and the artifact
+repositories reuse mutable tags, so in both cases each push orphans its
+predecessor and without a policy they grow without bound.
+
+Untagged, by count, and never a tag: all three parts are load-bearing.
+
+- **Untagged is what actually accumulates.** BuildKit only ever reads
+  the tagged ref, so an orphaned cache manifest is dead weight from the
+  moment it is created. Measured 2026-11-12: `pytorch-cache` held 16
+  manifests, 14 of them untagged.
+- **By count, not by age.** The policy here used to be `tagStatus: any,
+  sinceImagePushed, 14 days`, which expires the live
+  `latest-<arch>-nightly` tag along with the orphans. The
+  has-main-moved gate already skips unchanged nights, so a quiet
+  fortnight would have deleted the whole layer cache and left the next
+  build silently cold.
+- **Three, not one.** A run in flight may still be reading the
+  generation it is about to replace, and one bad export should leave
+  something to fall back to.
+
+This matters more than it used to: billed ECR storage went from 264 GB
+to 738 GB in the six days to 2026-11-11 — about +79 GB a day, a
+$74/month run rate and climbing — and two cache repositories
+(`atom-wheel-cache`, `torchvision-wheel-cache`, 347 GB between them)
+had no policy at all, because they were added to the bake file after
+`codebuild-setup.sh` was last run. Nothing re-applies these on its own;
+re-run the script after adding a target.
 
 The compiler cache is S3 because sccache speaks it natively and a
 rented machine has no WebDAV endpoint to reach. `SCCACHE_BUCKET`
