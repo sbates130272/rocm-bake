@@ -34,11 +34,18 @@ REGISTRY_NAME="${REGISTRY_NAME:-rocm-pytorch}"
 # Account-suffixed because S3 bucket names are globally unique.
 SCCACHE_BUCKET="${SCCACHE_BUCKET:-}"
 CONNECTION_ARN=""
+# Secrets Manager ARN holding Docker Hub credentials, for the pull
+# through cache rule. Optional: without it the rule is skipped and the
+# nightly keeps resolving Docker Hub directly, which works until the
+# shared CodeBuild egress IP hits the anonymous rate limit.
+DOCKERHUB_SECRET_ARN=""
+DOCKERHUB_PREFIX="${DOCKERHUB_PREFIX:-dockerhub}"
 DRY=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --connection-arn) CONNECTION_ARN="${2:-}"; shift 2 ;;
+        --dockerhub-secret-arn) DOCKERHUB_SECRET_ARN="${2:-}"; shift 2 ;;
         --region)         REGION="${2:-}"; shift 2 ;;
         --project)        PROJECT="${2:-}"; shift 2 ;;
         --dry-run)        DRY=1; shift ;;
@@ -241,6 +248,57 @@ for name in "${REPOS[@]}"; do
         || echo "      (could not set lifecycle policy)"
 done
 
+# ── 2a. the Docker Hub pull through cache ────────────────────────
+# CodeBuild egresses from a shared AWS IP and Docker Hub's anonymous
+# limit is 100 pulls per 6 hours against that IP, shared with every
+# other tenant on it. The 2026-11-12 gfx1151 run died two seconds in
+# on `429 Too Many Requests` resolving ubuntu:26.04. A cold
+# architecture exposed it because a warm one answers those from the
+# layer cache.
+#
+# buildkitd-nightly.toml mirrors Docker Hub through mirror.gcr.io,
+# which covers ubuntu and docker/dockerfile. It does NOT reliably
+# cover rocm/dev-ubuntu-26.04 — mirror.gcr.io caches frequently
+# accessed images and proxies the rest, and that one proxied through
+# to another 429 when tested. The 8.67 GB ROCm SDK is precisely the
+# image most worth caching, so it gets this instead.
+#
+# OPTIONAL, and skipped without --dockerhub-secret-arn. Docker Hub is
+# one of the upstreams AWS requires credentials for; ECR Public, Quay
+# and the Kubernetes registry are not. The secret must live in this
+# account and region and its NAME must begin with
+# `ecr-pullthroughcache/` — AWS rejects it otherwise. Creating it is
+# the one step this script cannot do for you:
+#
+#   aws secretsmanager create-secret --region <region> \
+#     --name ecr-pullthroughcache/dockerhub \
+#     --secret-string '{"username":"<dockerhub-user>","accessToken":"<dockerhub-PAT>"}'
+#
+# A read-only PAT is enough; the rule only pulls.
+say "Docker Hub pull through cache"
+if [ -z "${DOCKERHUB_SECRET_ARN}" ]; then
+    echo "   skipped — no --dockerhub-secret-arn"
+    echo "   (the nightly will resolve Docker Hub directly and may hit its rate limit)"
+elif aws ecr describe-pull-through-cache-rules --region "${REGION}" \
+        --ecr-repository-prefixes "${DOCKERHUB_PREFIX}" >/dev/null 2>&1; then
+    echo "   exists  ${DOCKERHUB_PREFIX}/ -> registry-1.docker.io"
+else
+    echo "   create  ${DOCKERHUB_PREFIX}/ -> registry-1.docker.io"
+    run_quiet aws ecr create-pull-through-cache-rule --region "${REGION}" \
+        --ecr-repository-prefix "${DOCKERHUB_PREFIX}" \
+        --upstream-registry-url registry-1.docker.io \
+        --credential-arn "${DOCKERHUB_SECRET_ARN}" \
+        || echo "      (could not create the rule)"
+fi
+# Repositories are created by ECR on first pull, so there is nothing to
+# pre-create here. Point the build at it with DOCKERHUB — see the
+# variable's note in rocm-bake.hcl:
+#
+#   DOCKERHUB=${ECR_REGISTRY}/${DOCKERHUB_PREFIX}
+#
+# which the nightly workflow sets from the NIGHTLY_DOCKERHUB
+# repository variable.
+
 # ── 2b. the sccache bucket ───────────────────────────────────────
 # Objects are content-addressed and numerous, so no versioning (it
 # would double the object count for no benefit — a cache entry is
@@ -331,6 +389,15 @@ POLICY=$(cat <<EOF
       "Effect": "Allow",
       "Action": "ecr:CreateRepository",
       "Resource": "*"
+    },
+    {
+      "Sid": "EcrPullThroughCache",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:BatchImportUpstreamImage",
+        "ecr:CreateRepository"
+      ],
+      "Resource": "arn:aws:ecr:${REGION}:${ACCOUNT_ID}:repository/${DOCKERHUB_PREFIX}/*"
     },
     {
       "Sid": "SccacheObjects",

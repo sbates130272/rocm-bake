@@ -205,6 +205,20 @@ jobs:
           # here fails every cache export rather than falling back.
           REGISTRY_INSECURE: "false"
           CACHE_TAG_SUFFIX: -nightly
+          # Where `ubuntu` and `rocm/dev-ubuntu-26.04` come from. Unset
+          # means Docker Hub directly, which is what the fleet does and
+          # what this lane did until it hit Docker Hub's anonymous rate
+          # limit on 2026-11-12 — a 429 two seconds into the gfx1151
+          # run, because CodeBuild egresses from an IP shared with every
+          # other tenant on it.
+          #
+          # Set NIGHTLY_DOCKERHUB to an ECR pull-through prefix, e.g.
+          # <account>.dkr.ecr.<region>.amazonaws.com/dockerhub, after
+          # running codebuild-setup.sh --dockerhub-secret-arn. Left
+          # unset the build still works and still mirrors Docker Hub
+          # through mirror.gcr.io via buildkitd-nightly.toml; that
+          # covers ubuntu but not the ROCm SDK.
+          DOCKERHUB: ${{ vars.NIGHTLY_DOCKERHUB }}
           # The compute this job runs on, for the cost line in the report.
           # It is the `instance-size:` label in `runs-on:` above; AWS
           # exposes no environment variable naming the compute type, so the

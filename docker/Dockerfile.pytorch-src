@@ -25,7 +25,18 @@ ARG GIT_REF=""
 # Ubuntu rather than a git-specific image, to add no new upstream to
 # the supply chain — every other Dockerfile here starts from Ubuntu or
 # from something built on it.
-FROM ubuntu:26.04 AS clone
+#
+# An ARG so the registry can be swapped without editing this line: bake
+# sets it from DOCKERHUB, which is empty for the fleet and an ECR
+# pull-through prefix for the AWS nightly, whose shared egress IP hits
+# Docker Hub's anonymous rate limit. The default is the bare name, so
+# nothing changes for anyone who does not set it.
+#
+# ARG-before-FROM, and deliberately not re-declared after it: a global
+# ARG is visible to FROM but not inside the stage, and nothing in this
+# stage needs the value.
+ARG UBUNTU_IMAGE=ubuntu:26.04
+FROM ${UBUNTU_IMAGE} AS clone
 
 ARG PYTORCH_VERSION
 ARG GIT_REF

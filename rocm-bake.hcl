@@ -238,6 +238,34 @@ variable "PREBUILD_KERNELS" {
   default = ""
 }
 
+# Where to fetch the two images this build takes from Docker Hub:
+# `ubuntu` and `rocm/dev-ubuntu-26.04`. Empty means Docker Hub itself,
+# which is what the fleet does and what every ref in this file resolved
+# to before this variable existed.
+#
+# Set it to an ECR pull-through prefix -- e.g.
+# 472426151104.dkr.ecr.us-west-2.amazonaws.com/dockerhub -- and both
+# images are fetched through ECR instead, authenticated, same-region,
+# and cached in the account after the first pull.
+#
+# WHY. CodeBuild egresses from a shared AWS IP, and Docker Hub's
+# anonymous limit is 100 pulls per 6 hours against that IP across every
+# tenant using it. The 2026-11-12 gfx1151 run died two seconds in on a
+# 429 resolving `ubuntu:26.04`. buildkitd-nightly.toml mirrors Docker
+# Hub through mirror.gcr.io, which covers `ubuntu` and
+# `docker/dockerfile` -- but mirror.gcr.io only caches
+# frequently-accessed images and proxied `rocm/dev-ubuntu-26.04`
+# straight through to another 429 when tested. The 8.67 GB ROCm SDK is
+# the one that most needs a cache, so it needs this.
+#
+# The empty default is load-bearing, not tidiness: a build arg is part
+# of a layer's cache key, so a prefix that differs by even a hostname
+# invalidates rocm-runtime and pytorch-src for everyone who does not
+# set it. `make bake-print` with and without proves they are identical.
+variable "DOCKERHUB" {
+  default = ""
+}
+
 # Two-tier layer cache. Reads always consult both the rolling tag and a
 # frozen "-ref" baseline; writes go to the rolling tag unless this is
 # set to "-ref", which is how the baseline is deliberately refreshed.
@@ -741,6 +769,9 @@ target "rocm-runtime" {
     ROCM_VERSION        = ROCM_VERSION
     PYTORCH_ROCM_ARCH   = PYTORCH_ROCM_ARCH
     ROCM_PRUNE_PROFILE  = ROCM_PRUNE_PROFILE
+    # Byte-identical to Dockerfile.rocm-runtime's own ARG default when
+    # DOCKERHUB is empty, so passing it changes no cache key.
+    SDK_IMAGE = DOCKERHUB == "" ? "rocm/dev-ubuntu-26.04:${ROCM_VERSION}" : "${DOCKERHUB}/rocm/dev-ubuntu-26.04:${ROCM_VERSION}"
   }
 
   attest = NO_PROVENANCE
@@ -784,6 +815,9 @@ target "pytorch-src" {
     SOURCE_DATE_EPOCH   = EPOCH_PYTORCH
     PYTORCH_VERSION     = PYTORCH_VERSION
     GIT_REF             = GIT_REF
+    # Byte-identical to Dockerfile.pytorch-src's own ARG default when
+    # DOCKERHUB is empty, so passing it changes no cache key.
+    UBUNTU_IMAGE = DOCKERHUB == "" ? "ubuntu:26.04" : "${DOCKERHUB}/library/ubuntu:26.04"
   }
 
   attest = NO_PROVENANCE
