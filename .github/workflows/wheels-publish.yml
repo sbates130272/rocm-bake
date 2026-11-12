@@ -56,7 +56,24 @@ jobs:
     name: ${{ inputs.arch }}
     runs-on:
       - codebuild-${{ vars.CODEBUILD_PROJECT }}-${{ github.run_id }}-${{ github.run_attempt }}
-      - instance-size:2xlarge
+      # small: 2 vCPU / 4 GiB / 64 GB at $0.005 a build-minute, against
+      # 2xlarge's 72 / 144 / 824 at $0.200 — forty times cheaper, and
+      # this job compiles nothing. It pulls nine finished wheel images,
+      # extracts them, regenerates an index and uploads. The whole
+      # payload is 1,240 MB compressed as of 2026-11-12, dominated by
+      # pytorch-wheel at 466 MB and triton-wheel at 457 MB, so 64 GB of
+      # disk is roughly twenty times what it needs.
+      #
+      # UNMEASURED, unlike the nightly's move to xlarge. This workflow
+      # has never been run, so there is no footprint to point at and
+      # the sizing is an argument rather than an observation. The
+      # plausible failure is memory — dockerd, buildkitd and a layer
+      # decompression inside 4 GiB — not disk or CPU.
+      #
+      # Cheap to find out: dry_run defaults true and does everything
+      # except the upload, so a wrong guess costs about five cents.
+      # Step up to medium (4 vCPU / 8 GiB) if it OOMs.
+      - instance-size:small
     steps:
       - uses: actions/checkout@v4
         with:

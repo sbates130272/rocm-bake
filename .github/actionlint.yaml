@@ -10,6 +10,18 @@
 #
 # See docs/operations/runners.md for what these mean and where the
 # project that answers to them is configured.
+# The whole ladder is declared, not just the sizes in use, so changing
+# a workflow's instance size stays a one-line edit rather than two
+# files that have to agree. An undeclared label is an actionlint error,
+# which is the right default — a typo would otherwise be a job that
+# queues until the workflow times out.
+#
+# In use as of 2026-11-12: nightly.yml on xlarge, wheels-publish.yml on
+# small.
 self-hosted-runner:
   labels:
+    - instance-size:small
+    - instance-size:medium
+    - instance-size:large
+    - instance-size:xlarge
     - instance-size:2xlarge

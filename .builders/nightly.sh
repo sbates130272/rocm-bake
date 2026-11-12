@@ -37,10 +37,12 @@ PUSH=1
 ENSURE_ECR=0
 
 # Which CodeBuild compute the job is on, for the cost line in the report.
-# The workflow hardcodes it in `runs-on:` as `instance-size:2xlarge`, and
+# The workflow hardcodes it in `runs-on:` as `instance-size:xlarge`, and
 # AWS exposes no environment variable naming the compute type, so it is
-# passed in rather than detected. Empty means "unknown": the rate table
-# misses, and summary.json reports a null cost instead of a wrong one.
+# passed in rather than detected. The two have to be kept in step by
+# hand; disagreeing means a wrong cost, not a failed build. Empty means
+# "unknown": the rate table misses, and summary.json reports a null cost
+# instead of a wrong one.
 NIGHTLY_INSTANCE="${NIGHTLY_INSTANCE:-}"
 
 usage() { sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
@@ -484,17 +486,22 @@ try:
 except ValueError:
     metrics = {}
 
-# CodeBuild on-demand Linux, USD per build-minute. Only 2xlarge is
-# measured here: $17.80 billed across 88.2 minutes on 2026-11-04 gives
-# $0.2018/min, which matches AWS's published rate. The rest are AWS's
-# published figures, carried so a resized project still reports a cost
-# -- check one against a bill before trusting it.
-# xlarge corrected from 0.080 to 0.0798 against the live Price List
-# API on 2026-11-11: usagetype USW2-Build-Min:Linux:g1.xlarge. The
-# ladder has five rungs and nothing between xlarge (36 vCPU / 72 GiB)
-# and 2xlarge (72 / 144) -- the 48- and 64-core shapes exist only as
-# reserved-capacity SKUs, which bill while idle and are ~29x worse at
-# this cadence.
+# CodeBuild on-demand Linux, USD per build-minute.
+#
+# 2xlarge is the one checked against an invoice: $17.80 billed across
+# 88.2 minutes on 2026-11-04 gives $0.2018/min, matching AWS's
+# published rate. xlarge comes from the live Price List API on
+# 2026-11-11 (usagetype USW2-Build-Min:Linux:g1.xlarge) and is
+# corrected from the 0.080 that used to sit here.
+#
+# The lane now runs on xlarge, so the report carries "(rate unverified)"
+# until a bill confirms $0.0798 — which is the honest state, not an
+# oversight. Move it into VERIFIED once Cost Explorer agrees.
+#
+# The ladder has five rungs and nothing between xlarge (36 vCPU /
+# 72 GiB) and 2xlarge (72 / 144) -- the 48- and 64-core shapes exist
+# only as reserved-capacity SKUs, which bill while idle and are ~29x
+# worse at this cadence.
 RATES = {"small": 0.005, "medium": 0.010, "large": 0.020,
          "xlarge": 0.0798, "2xlarge": 0.200}
 VERIFIED = {"2xlarge"}

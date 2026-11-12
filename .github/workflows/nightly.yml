@@ -176,13 +176,41 @@ jobs:
     #
     # The trailing label overrides the project's instance size per
     # job, which is why one project serves the whole matrix.
+    #
+    # xlarge (36 vCPU / 72 GiB / 256 GB) rather than 2xlarge (72 / 144
+    # / 824), at $0.0798 a build-minute against $0.200 — 2.5x cheaper.
+    # Three measurements, each of which had to clear before this was
+    # safe, all from CloudWatch per-build metrics and the footprint
+    # block nightly.sh writes:
+    #
+    #   CPU   peaks at 66% of 72 vCPU for about one minute and spends
+    #         most of the run under 10%; mean 6-16% across six runs.
+    #         The five genuinely wide steps total ~8 minutes, so the
+    #         worst case is wall clock growing by roughly that, against
+    #         a minute that costs 40% as much.
+    #   DISK  was the real gate: xlarge cuts 824 GB to 256 GB, a bigger
+    #         cut than CPU or RAM, and nothing had ever measured it.
+    #         The 2026-11-12 gfx1151 run — a COLD architecture, the
+    #         most expensive shape there is — used 122.7 GiB with a
+    #         113.7 GB BuildKit store. Roughly 2x headroom.
+    #   RAM   looked like the blocker at 113-116 GB of "MemoryUtilized",
+    #         which AWS never defines. The footprint block split it:
+    #         anon 0.2 GiB against 1.5 GiB of page cache. It is
+    #         reclaimable, so a 72 GiB box evicts rather than OOMs, and
+    #         Dockerfile.pytorch derives MAX_JOBS from MemAvailable so
+    #         the build self-throttles on a smaller machine anyway.
+    #
+    # Revert by changing this label and NIGHTLY_INSTANCE below; they
+    # must agree or the cost line reports the wrong rate.
     runs-on:
       - codebuild-${{ vars.CODEBUILD_PROJECT }}-${{ github.run_id }}-${{ github.run_attempt }}
-      - instance-size:2xlarge
+      - instance-size:xlarge
 
     # Measured on snoc-think (32 cores), the targets total 9089 s of
     # work and the cold half runs them from nothing. Six hours is
-    # generous on 72 vCPU and still bounds a wedged build.
+    # generous on 36 vCPU and still bounds a wedged build — and it is
+    # now also the worst-case bill: 360 min x $0.0798 = $28.73, where
+    # on 2xlarge the same hang cost $72.
     timeout-minutes: 360
 
     steps:
@@ -225,7 +253,7 @@ jobs:
           # two have to be kept in step by hand. Wrong here means a wrong
           # cost, not a failed build, so it is reported with the rate it
           # used rather than silently.
-          NIGHTLY_INSTANCE: 2xlarge
+          NIGHTLY_INSTANCE: xlarge
           # sccache on S3 rather than the fleet's tailnet WebDAV store,
           # which this machine cannot reach. Unset SCCACHE_BUCKET and
           # the build falls back to WebDAV and fails at server start —
