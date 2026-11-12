@@ -24,7 +24,7 @@ job, then terminates it. Workflows name it:
 ```yaml
 runs-on:
   - codebuild-<project>-${{ github.run_id }}-${{ github.run_attempt }}
-  - instance-size:2xlarge
+  - instance-size:xlarge
 ```
 
 The trailing segments override image and instance size per job: one

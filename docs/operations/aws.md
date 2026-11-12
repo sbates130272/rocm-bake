@@ -61,26 +61,35 @@ fleets, and the SNOC nodes keep nginx.
 
 ## What A Night Costs
 
-Measured, on the first full run: **$13.94**.
-
-| | |
-| --- | --- |
-| duration | 1h09m, 13 targets, `gfx1201` |
-| billed | 69.7 min × $0.20/min |
-| cache errors | 0 |
+The lane runs on `instance-size:xlarge` — 36 vCPU / 72 GiB / 256 GB at
+**$0.0798** a build-minute, against 2xlarge's 72 / 144 / 824 at
+$0.200. Every figure below that predates 2026-11-12 was measured on
+2xlarge and is marked as such.
 
 | Scenario | Cost | Basis |
 | --- | --- | --- |
-| warm, one arch | ~$14 | measured |
-| warm, three arches | ~$42 | 3× measured; arches are independent |
-| cold + warm, one arch | ~$28 | unmeasured; cold roughly doubles it |
+| warm, one arch | ~$2.70 | 34 min, xlarge rate, not yet invoiced |
+| warm, one arch (2xlarge) | $6.76 | measured 2026-11-12 |
+| cold arch, first build | ~$4.34 | 54m24s gfx1151, xlarge rate |
+| cold arch, first build (2xlarge) | $10.88 | measured 2026-11-12 |
+| warm, three arches | ~$8 | 3× warm; arches are independent |
 
-The schedule is **warm-only**, which puts a quiet month at about $420
-at one architecture. A cold run pushes nothing and deletes its own
-sccache prefix, so it buys a measurement and nothing else — ask for it
-deliberately with `-f run_cold=true`.
+The schedule is **warm-only** and gated on `main` having moved, so a
+quiet week bills nothing at all — 2026-11-08 and 11-09 both came to
+$0.00. A cold run pushes nothing and deletes its own sccache prefix,
+so it buys a measurement and nothing else: ask for it deliberately
+with `-f run_cold=true`.
 
-ECR and S3 round to nothing against that. Build minutes are the bill.
+**ECR no longer rounds to nothing.** Billed storage reached 738 GB by
+2026-11-11, about $74/month and growing ~79 GB a day, at which point it
+exceeded CodeBuild on any day the gate skipped the build. See the
+lifecycle section above; the rules that bound it landed 2026-11-12.
+
+!!! warning "The xlarge rate is not yet invoice-confirmed"
+    $0.0798/min comes from the Price List API, not a bill. The nightly
+    report prints `(rate unverified)` next to the cost until it is
+    confirmed and moved into `VERIFIED` in `nightly.sh`. Check Cost
+    Explorer against a run before quoting these numbers.
 
 !!! note "Credential lifetime is the thing to watch"
     CodeBuild vends temporary credentials, and `nightly.sh` snapshots

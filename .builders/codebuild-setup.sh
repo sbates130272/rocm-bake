@@ -350,6 +350,24 @@ EOF
 # it to "*" — and nightly.sh --ensure-ecr needs it. DescribeRepositories
 # sits with pull/push because it is the existence probe, and denying it
 # makes --ensure-ecr fall through to a create that also denies.
+#
+# EcrPullThroughCache carries the ORDINARY pull actions as well as the
+# two pull-through ones, and that is not redundancy. AWS documents
+# BatchImportUpstreamImage and CreateRepository as the permissions
+# needed "in addition to the Amazon ECR API permissions needed to
+# authenticate to a private registry and to push and pull images" —
+# and the pull actions above are scoped to rocm-pytorch/*, which does
+# not cover the pull-through prefix. Granting the import without the
+# reads lets the role trigger the cache fill and then be denied the
+# result: the 2026-11-12 gfx1151 run got
+#
+#   403 Forbidden on HEAD /v2/dockerhub/library/ubuntu/manifests/26.04
+#
+# having just fixed the 429 that preceded it. All five actions belong
+# on the prefix.
+#
+# No comment keys inside the document itself: IAM rejects unknown keys
+# in a statement, and a multi-line JSON string is invalid anyway.
 POLICY=$(cat <<EOF
 {
   "Version": "2012-10-17",
@@ -395,7 +413,10 @@ POLICY=$(cat <<EOF
       "Effect": "Allow",
       "Action": [
         "ecr:BatchImportUpstreamImage",
-        "ecr:CreateRepository"
+        "ecr:CreateRepository",
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:BatchGetImage"
       ],
       "Resource": "arn:aws:ecr:${REGION}:${ACCOUNT_ID}:repository/${DOCKERHUB_PREFIX}/*"
     },
@@ -462,7 +483,13 @@ say "CodeBuild project ${PROJECT}"
 if aws codebuild batch-get-projects --region "${REGION}" \
     --names "${PROJECT}" --query 'projects[0].name' --output text 2>/dev/null \
     | grep -q "^${PROJECT}$"; then
-    echo "   exists"
+    # Not updated in place, and that is fine: computeType in the
+    # --environment above is only the project DEFAULT, and every
+    # workflow here overrides it per job with an `instance-size:`
+    # label in runs-on. An existing project created when this script
+    # said 2XLARGE therefore still runs xlarge jobs. Only a workflow
+    # that omits the label would see the stale default.
+    echo "   exists  (computeType is the per-job label's default only)"
 else
     # Retried, because IAM is eventually consistent and CodeBuild
     # validates the service role at CreateProject. A role created
@@ -476,7 +503,7 @@ else
         --name "${PROJECT}" \
         --source "{\"type\":\"GITHUB\",\"location\":\"https://github.com/${REPO_SLUG}\",\"buildspec\":\"\",\"reportBuildStatus\":false}" \
         --artifacts '{"type":"NO_ARTIFACTS"}' \
-        --environment '{"type":"LINUX_CONTAINER","image":"aws/codebuild/amazonlinux-x86_64-standard:5.0","computeType":"BUILD_GENERAL1_2XLARGE","privilegedMode":true,"imagePullCredentialsType":"CODEBUILD"}' \
+        --environment '{"type":"LINUX_CONTAINER","image":"aws/codebuild/amazonlinux-x86_64-standard:5.0","computeType":"BUILD_GENERAL1_XLARGE","privilegedMode":true,"imagePullCredentialsType":"CODEBUILD"}' \
         --service-role "${ROLE_ARN}" \
         --timeout-in-minutes 480 \
         --queued-timeout-in-minutes 60 >/dev/null
