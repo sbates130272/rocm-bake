@@ -73,6 +73,12 @@ export CACHE_TAG_SUFFIX="${CACHE_TAG_SUFFIX:--nightly}"
 export PYTORCH_ROCM_ARCH="${ARCH}"
 export REGISTRY REGISTRY_NAME
 
+# An ECR pull-through prefix for the two Docker Hub images, or empty
+# for Docker Hub itself. bake reads it as the DOCKERHUB variable; see
+# the note there. Exported unconditionally so an empty value is still
+# an explicit empty rather than inheriting a stale one.
+export DOCKERHUB="${DOCKERHUB:-}"
+
 log() { printf '%s %s\n' "$(date -u +%H:%M:%S)" "$*" >&2; }
 
 # sccache: WebDAV on the fleet, S3 off it. Empty SCCACHE_BUCKET leaves
@@ -141,8 +147,21 @@ ensure_builder() {
         log "builder ${BUILDER_NAME} exists"
     else
         log "creating builder ${BUILDER_NAME} (docker-container)"
+        # --config, not a bare create. Without it the builder has no
+        # registry mirror and resolves every base image anonymously
+        # from Docker Hub over CodeBuild's shared egress IP, which is
+        # rate limited across every tenant sharing it. That killed the
+        # 2026-11-12 gfx1151 run two seconds in with a 429 on
+        # `load metadata for docker.io/library/ubuntu:26.04`. See the
+        # header of buildkitd-nightly.toml.
+        #
+        # The config is baked in at create time — an existing builder
+        # does NOT pick up edits to the file. On CodeBuild that is
+        # moot, since the machine is new every run, but on a
+        # workstation re-running this: docker buildx rm rocm-nightly.
         docker buildx create --name "${BUILDER_NAME}" \
-            --driver docker-container --bootstrap >/dev/null || {
+            --driver docker-container \
+            --config "${HERE}/buildkitd-nightly.toml" --bootstrap >/dev/null || {
                 echo "nightly: could not create a docker-container builder;" \
                      "cache export would silently fail" >&2
                 exit 1
