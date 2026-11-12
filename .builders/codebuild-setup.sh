@@ -139,18 +139,38 @@ done
 # Cache repositories receive a mode=max export every run and grow
 # without bound. Images are kept by count rather than age: a nightly
 # that stops running should not quietly expire the last good image.
-say "ECR lifecycle policies on the *-cache repositories"
+#
+# THAT COMMENT USED TO BE A LIE, and it cost real money. The policy it
+# described was `tagStatus: any, sinceImagePushed, 14 days` — age-based,
+# and `any` means it expires the LIVE `latest-<arch>-nightly` tag along
+# with everything else. The has-main-moved gate already skips unchanged
+# nights (2026-11-08 and 11-09 both billed $0), so a quiet fortnight
+# would have deleted the whole layer cache and the next build would
+# have been cold with no error anywhere — the same shape as the
+# write-only-cache bug: a failure that reports success.
+#
+# What actually grows is UNTAGGED manifests. Every push to
+# `latest-<arch>-nightly` orphans the previous one, and BuildKit only
+# ever reads the tagged ref, so an orphan is dead weight the moment it
+# is created. Measured 2026-11-12: pytorch-cache held 16 manifests, 14
+# of them untagged; billed ECR storage went 264 GB -> 738 GB in six
+# days, +79 GB/day, a $74/month run rate climbing.
+#
+# So: bound the untagged generations by COUNT, and never touch a tag.
+# Three rather than one because a run in flight may still be reading
+# the generation it is about to replace, and because one bad export
+# should leave something to fall back to.
+say "ECR lifecycle policies on every repository"
 LIFECYCLE=$(cat <<'EOF'
 {
   "rules": [
     {
       "rulePriority": 1,
-      "description": "Expire cache blobs older than 14 days",
+      "description": "Keep the 3 newest untagged cache generations; a tagged ref is never expired",
       "selection": {
-        "tagStatus": "any",
-        "countType": "sinceImagePushed",
-        "countUnit": "days",
-        "countNumber": 14
+        "tagStatus": "untagged",
+        "countType": "imageCountMoreThan",
+        "countNumber": 3
       },
       "action": { "type": "expire" }
     }
@@ -158,15 +178,66 @@ LIFECYCLE=$(cat <<'EOF'
 }
 EOF
 )
+
+# Artifact repositories had NO policy at all. That was harmless while
+# the nightly was silently running with --no-push, and stopped being
+# harmless on 2026-11-12 when it started pushing again: tags here are
+# mutable and reused (`latest`, `<version>-<rocm>-<arch>`), so every
+# night orphans the previous image, permanently.
+#
+# Same shape as the cache rule and for the same reason — bound the
+# orphans, never expire a tag. A tagged artifact is something a
+# `wheels-publish` run or a `docker pull` may still want; an untagged
+# one is a digest nothing can name.
+ARTIFACT_LIFECYCLE=$(cat <<'EOF'
+{
+  "rules": [
+    {
+      "rulePriority": 1,
+      "description": "Keep the 3 newest untagged artifact images; a tagged ref is never expired",
+      "selection": {
+        "tagStatus": "untagged",
+        "countType": "imageCountMoreThan",
+        "countNumber": 3
+      },
+      "action": { "type": "expire" }
+    }
+  ]
+}
+EOF
+)
+
+# Both loops run over every repo bake knows about, which is why this is
+# also the fix for the two cache repositories that had no policy at all
+# (atom-wheel-cache, torchvision-wheel-cache, 347 GB between them on
+# 2026-11-12). They were added to the bake file after this script was
+# last run, and nothing re-applies the policy on its own.
+# The documents themselves, once, rather than inlined into 27
+# near-identical "would run:" lines. A dry run exists to be read, and
+# the thing worth reading here is the rule, not the repository list.
+if [ "${DRY}" = 1 ]; then
+    printf '   cache rule:    %s\n' \
+        "$(printf '%s' "${LIFECYCLE}" | tr '\n' ' ' | tr -s ' ')"
+    printf '   artifact rule: %s\n' \
+        "$(printf '%s' "${ARTIFACT_LIFECYCLE}" | tr '\n' ' ' | tr -s ' ')"
+fi
 for name in "${REPOS[@]}"; do
     case "${name}" in
-        *-cache) ;;
-        *) continue ;;
+        *-cache) policy="${LIFECYCLE}";          kind=cache ;;
+        *)       policy="${ARTIFACT_LIFECYCLE}"; kind=artifact ;;
     esac
-    printf '   policy  %s/%s\n' "${REGISTRY_NAME}" "${name}"
-    run_quiet aws ecr put-lifecycle-policy --region "${REGION}" \
+    printf '   %-9s %s/%s\n' "${kind}" "${REGISTRY_NAME}" "${name}"
+    # The line above is the dry run's preview, so skip run_quiet
+    # rather than let it print the whole policy document 27 times.
+    [ "${DRY}" = 1 ] && continue
+    # NOT `>/dev/null 2>&1`. The `2>&1` that used to be here swallowed
+    # every error AWS returned, leaving "(could not set lifecycle
+    # policy)" as the only signal that anything was wrong and no
+    # reason attached to it. Plain `>/dev/null` drops the JSON echo
+    # and lets stderr through.
+    aws ecr put-lifecycle-policy --region "${REGION}" \
         --repository-name "${REGISTRY_NAME}/${name}" \
-        --lifecycle-policy-text "${LIFECYCLE}" >/dev/null 2>&1 \
+        --lifecycle-policy-text "${policy}" >/dev/null \
         || echo "      (could not set lifecycle policy)"
 done
 
@@ -288,21 +359,29 @@ if aws iam get-role --role-name "${ROLE_NAME}" >/dev/null 2>&1; then
     echo "   role ${ROLE_NAME} exists — updating its policy"
 else
     echo "   creating role ${ROLE_NAME}"
-    run aws iam create-role --role-name "${ROLE_NAME}" \
-        --assume-role-policy-document "${TRUST}" >/dev/null || exit 1
+    run_quiet aws iam create-role --role-name "${ROLE_NAME}" \
+        --assume-role-policy-document "${TRUST}" || exit 1
 fi
-run aws iam put-role-policy --role-name "${ROLE_NAME}" \
+# run_quiet, not `run ... >/dev/null`. The redirect form sends run()'s
+# own "would run:" preview to /dev/null along with the command's
+# output, so a dry run printed "policy attached" and showed nothing
+# of the policy it would attach. run_quiet drops stdout on a live run
+# and prints the preview on a dry one, which is the whole point.
+run_quiet aws iam put-role-policy --role-name "${ROLE_NAME}" \
     --policy-name "${ROLE_NAME}-policy" \
-    --policy-document "${POLICY}" >/dev/null || exit 1
-echo "   policy attached"
+    --policy-document "${POLICY}" || exit 1
+[ "${DRY}" = 1 ] || echo "   policy attached"
 
 # ── 4. the GitHub credential ─────────────────────────────────────
 # Per account AND per region. The "token" for a connection is its ARN.
 say "CodeBuild source credential"
-run aws codebuild import-source-credentials --region "${REGION}" \
+if run_quiet aws codebuild import-source-credentials --region "${REGION}" \
     --auth-type CODECONNECTIONS --server-type GITHUB \
-    --token "${CONNECTION_ARN}" >/dev/null \
-    && echo "   imported" || echo "   (already present, or import failed)"
+    --token "${CONNECTION_ARN}"; then
+    [ "${DRY}" = 1 ] || echo "   imported"
+else
+    echo "   (already present, or import failed)"
+fi
 
 # ── 5. the runner project ────────────────────────────────────────
 # The name must equal vars.CODEBUILD_PROJECT exactly: the workflow's
@@ -399,7 +478,13 @@ cat <<EOF
 == Then calibrate on one cheap target before trusting the schedule:
 
   gh workflow run nightly.yml --repo ${REPO_SLUG} \\
-    -f arches=gfx1201 -f targets=cupy-wheel -f skip_cold=true -f push=false
+    -f arches=gfx1201 -f targets=cupy-wheel -f push=false
+
+  (No cold flag: the input is \`run_cold\` and it is opt-IN, defaulting
+  to false, so omitting it is what skips the cold half. This used to
+  say \`-f skip_cold=true\`, which \`gh\` rejects outright — that input
+  was renamed when cold became something you ask for rather than
+  something you suppress.)
 
 == And read what it actually cost:
 
