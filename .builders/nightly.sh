@@ -277,7 +277,7 @@ WARM_RC=$?
 # thing that fails a green build.
 footprint() {
     local f="${OUT}/footprint.json"
-    local docker_root avail_kb used_kb du_bytes anon file
+    local docker_root avail_kb used_kb du_human anon file
     docker_root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)"
     # POSIX -P: one line, 1K blocks, no wrapping on long device names.
     read -r _ _ used_kb avail_kb _ < <(df -Pk "${docker_root}" 2>/dev/null | tail -1) || true
