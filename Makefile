@@ -1752,11 +1752,21 @@ print('     torch', torch.__version__, '/ vLLM', vllm.__version__)"; \
 	VLLM_EMULATOR_ENABLE_ORACLE=1 "$$v/bin/vllm-emu-selftest" --require-platform; \
 	rm -rf "$$v"
 
+# The script directly rather than through wheels-publish, so the title
+# and notes can be this lane's own. The generated ones describe a
+# per-card ROCm release and give a one-line install; for these wheels
+# that line yields a vLLM that cannot import, because the emu index
+# pins no torch. See the note above --notes-file in wheelpublish.sh.
+EMU_PUBLISH = .builders/wheelpublish.sh --arch "$(EMU_ARCH)" \
+	--rocm "$(ROCM_VERSION)" \
+	--title "vLLM emulator wheels (no GPU required)" \
+	--notes-file .builders/emu-release-notes.md
+
 emu-publish-dry: ## Show what publishing the emu wheels would do
-	@$(MAKE) wheels-publish-dry ARCH="$(EMU_ARCH)"
+	@$(EMU_PUBLISH) --dry-run $(WHEELS_PUBLISH_ARGS)
 
 emu-publish: ## * Publish the emu wheels to a release and the index to gh-pages
-	@$(MAKE) wheels-publish ARCH="$(EMU_ARCH)"
+	@$(EMU_PUBLISH) $(WHEELS_PUBLISH_ARGS)
 
 emu-test: ## Serve a model through the emulator and check it (no GPU needed)
 	@IMAGE="$(REGISTRY)/$(REGISTRY_NAME)/vllm-emu:latest" .builders/emu-test.sh
