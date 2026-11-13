@@ -1,6 +1,6 @@
 # Build Targets And Tags
 
-Sixteen targets. Every published repository is under
+Eighteen targets. Every published repository is under
 `snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/`, elided below.
 
 Each target emits **three** tags: a versioned one, `:latest`, and an
@@ -24,6 +24,14 @@ immutable `-g<sha>` tag whenever `VCS_REF` is non-empty.
 | `vllm-wheel` | `vllm-wheel` | `${VLLM_REF}-${ROCM_VERSION}-${ARCH}` |
 | `lmcache` | `lmcache` | `${LMCACHE_REF}-${ROCM_VERSION}-${ARCH}` |
 | `lmcache-wheel` | `lmcache-wheel` | `${LMCACHE_REF}-${ROCM_VERSION}-${ARCH}` |
+| `vllm-emu` | `vllm-emu` | `${VLLM_REF}-emu` (no arch, no ROCm) |
+| `vllm-emu-wheel` | `vllm-emu-wheel` | `${VLLM_REF}-emu` (no arch, no ROCm) |
+
+The last two carry no `${ARCH}` because they contain no device code:
+one wheel serves every card, from a profile pack rather than a GPU.
+See [Emulated Serving](../architecture/emulation.md). `pytorch-src` and
+`triton-wheel` drop the arch for their own reasons — a source tree and
+a compiler, respectively.
 
 With the current defaults that resolves to:
 
@@ -41,6 +49,8 @@ cupy-wheel:v14.2.0-10.1.0-full-gfx950
 nixl-wheel:v1.5.2-10.1.0-full-gfx950
 vllm:v0.33.0-10.1.0-full-gfx950
 vllm-wheel:v0.33.0-10.1.0-full-gfx950
+vllm-emu:v0.33.0-emu
+vllm-emu-wheel:v0.33.0-emu
 lmcache:v0.5.7-10.1.0-full-gfx950
 lmcache-wheel:v0.5.7-10.1.0-full-gfx950
 ```

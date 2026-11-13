@@ -1,0 +1,152 @@
+# Build the arch-free vLLM wheel and serve a model through it, on a
+# stock GitHub runner.
+#
+# WHY THIS LANE CAN BE CI AT ALL. Every other build here needs ROCm, a
+# gfx target and an hour or more of a fleet node; nothing in ci.yml
+# builds a wheel, because there is nowhere in CI to build one. This
+# target is different by construction: VLLM_TARGET_DEVICE=empty
+# compiles no device code, the base is manylinux rather than ROCm, and
+# the emulator replaces the forward pass with a latency draw from a
+# profile pack. So the whole thing — build the wheel, install it, serve
+# a model, answer a completion — fits on a free ubuntu runner in
+# minutes, with no GPU and no self-hosted anything.
+#
+# WHY IT IS WORTH DOING. The shim in docker/vllm-emu-shim/ patches
+# vLLM's classes rather than its source precisely so a VLLM_REF bump
+# does not need a regenerated diff. That bet is only safe if something
+# notices when it stops being true, and the selftest inside the image
+# re-measures each assumption the wiring makes. This is what runs it:
+# on every PR that touches the lane, and weekly, so a bump that
+# invalidates an assumption surfaces here rather than on whoever next
+# tries to serve through it.
+name: Emu — arch-free vLLM wheel & smoke test
+
+on:
+  pull_request:
+    paths:
+      - "docker/Dockerfile.vllm-emu"
+      - "docker/vllm-emu-shim/**"
+      - ".builders/emu-test.sh"
+      - "rocm-bake.hcl"
+      - ".github/workflows/emu.yml"
+  push:
+    branches: [main]
+    paths:
+      - "docker/Dockerfile.vllm-emu"
+      - "docker/vllm-emu-shim/**"
+      - ".builders/emu-test.sh"
+      - "rocm-bake.hcl"
+      - ".github/workflows/emu.yml"
+  schedule:
+    # Thursdays, 05:41 UTC. An odd minute for the reason wheels-probe
+    # gives; a weekly cadence because what it is watching for — vLLM
+    # or llm-emu moving under the shim — arrives with no commit of ours.
+    - cron: '41 5 * * 4'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  emu:
+    name: Build and smoke-test
+    runs-on: ubuntu-latest
+    # The build is minutes; the smoke test spends most of its time in
+    # vLLM's own startup and an HF metadata fetch. Generous, but it
+    # must not be unbounded: a hung server would otherwise hold a
+    # runner for six hours.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # bake, not a hand-written `docker build`: the point is to prove
+      # the target in rocm-bake.hcl builds, not that some other recipe
+      # does.
+      #
+      # The cache and the output are overridden because this runner
+      # cannot reach the fleet's registry — every target's cache-from
+      # and cache-to point at a tailnet address that does not resolve
+      # here. GHA cache takes their place, and the wheel is written
+      # straight to the workspace.
+      - name: Build the wheels
+        run: |
+          docker buildx bake -f rocm-bake.hcl \
+            --set '*.cache-from=type=gha' \
+            --set '*.cache-to=type=gha,mode=max' \
+            --set 'vllm-emu-wheel.output=type=local,dest=dist/emu' \
+            vllm-emu-wheel
+          ls -la dist/emu/wheels/
+
+      # The two properties the lane claims, asserted on the artifact
+      # itself rather than trusted from the build log. The build makes
+      # the same checks inside the image; this is the one a reviewer
+      # can see without reading 300 lines of buildkit output.
+      - name: Assert the wheel is arch-free and install-anywhere
+        run: |
+          set -eu
+          whl=$(ls dist/emu/wheels/vllm-*.whl)
+          echo "== $(basename "${whl}")"
+          # py3-none-any OR manylinux, and nothing else. Which one
+          # depends on whether upstream built the Rust frontend
+          # extension — see the tagging note in Dockerfile.vllm-emu.
+          # linux_x86_64 is the failure: it is what setuptools names a
+          # wheel it believes is impure, and it installs nowhere but
+          # here.
+          case "$(basename "${whl}")" in
+            *-py3-none-any.whl|*manylinux*) ;;
+            *) echo "neither py3-none-any nor manylinux — installs nowhere else" >&2
+               exit 1 ;;
+          esac
+          case "$(basename "${whl}")" in
+            *+empty*|*empty*) ;;
+            *) echo "version carries no +empty — this is a device build" >&2
+               exit 1 ;;
+          esac
+          # No device extension, by the same reasoning the build uses:
+          # one present at all means the arch-free claim is false.
+          #
+          # `if ! grep` rather than `grep && exit`: under set -e a
+          # failing grep at the end of an && list takes the step down
+          # with it, so the clean case would be the one that fails.
+          if python3 -m zipfile -l "${whl}" \
+              | grep -E '_C[^/]*\.so|_rocm_C|_cuda.*\.so'; then
+            echo "device extension in an arch-free wheel" >&2
+            exit 1
+          fi
+          echo "ok: arch-free, manylinux"
+
+      - name: Build the runnable image
+        run: |
+          docker buildx bake -f rocm-bake.hcl \
+            --set '*.cache-from=type=gha' \
+            --set '*.cache-to=type=gha,mode=max' \
+            --load \
+            vllm-emu
+
+      # The whole reason this lane exists: a serving check that needs
+      # no GPU. See the header of .builders/emu-test.sh for what each
+      # check proves — in particular the last two, which are what
+      # separate "it emulated" from "it answered".
+      - name: Serve a model through the emulator
+        env:
+          IMAGE: snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/vllm-emu:latest
+        # --keep so the container survives the script and the log step
+        # below has something to read. The runner is thrown away after
+        # the job, so nothing is left behind that matters.
+        run: .builders/emu-test.sh --keep
+
+      - name: Container log
+        if: always()
+        run: docker logs vllm-emu-test 2>&1 | tail -200 || true
+
+      # The wheel that was actually tested, not a rebuild of it.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vllm-emu-wheels
+          path: dist/emu/wheels/*.whl
+          if-no-files-found: error
+          retention-days: 14

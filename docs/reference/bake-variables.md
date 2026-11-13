@@ -24,6 +24,7 @@ is authoritative if this page has aged.
 | `NIXL_REF` | `v1.5.2` |
 | `UCX_REF` | `v1.22.0` |
 | `VLLM_REF` | `v0.33.0` |
+| `LLM_EMU_REF` | `b71c6025b189784cbd4b926d15afa8257738ea39` |
 | `CUPY_REF` | `v14.2.0` |
 | `LMCACHE_REF` | `v0.5.7` |
 | `RUST_VERSION` | `1.95` |

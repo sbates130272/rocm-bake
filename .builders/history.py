@@ -171,6 +171,10 @@ OUR_IMAGES = {
     # cupy-wheel was missing here too, so its builds were filtered out
     # of the layer-reuse panel the same way the serving stack once was.
     "torchvision-wheel", "cupy-wheel", "atom-wheel",
+    # The arch-free emulator lane. Its records stamp "noarch" where the
+    # others stamp a gfx name — the same thing triton-wheel does, and
+    # arch_of() already handles it.
+    "vllm-emu", "vllm-emu-wheel",
 }
 
 

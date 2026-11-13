@@ -180,6 +180,23 @@ COMPONENTS = [
          source=("gh", "vllm-project/vllm"), norm="verbatim",
          wheel_repo="vllm-wheel", label="vllm-project/vllm",
          url="https://github.com/vllm-project/vllm"),
+    # LLM-Emu, the emulator behind the arch-free lane.
+    #
+    # source=("none", None) because there is nothing to compare
+    # against: upstream publishes no tags and no releases, so
+    # LLM_EMU_REF is a full SHA of main and "behind upstream" is not a
+    # question gh_latest can answer. A ("gh", ...) probe here would
+    # report "unknown" on every run and teach the reader to ignore the
+    # column.
+    #
+    # wheel_repo=None: vllm-emu-wheel is deliberately outside
+    # WHEEL_REPOS — it is published under its own pseudo-arch index
+    # rather than the per-arch ones — and check-contracts.py asserts
+    # this list and that one agree.
+    dict(name="LLM-Emu", var="LLM_EMU_REF", readme=True,
+         source=("none", None), norm="verbatim", wheel_repo=None,
+         label="AKafakA/llm-emu",
+         url="https://github.com/AKafakA/llm-emu"),
     dict(name="CuPy", var="CUPY_REF", readme=True,
          source=("gh", "cupy/cupy"), norm="verbatim",
          wheel_repo="cupy-wheel", label="cupy/cupy",

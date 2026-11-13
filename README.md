@@ -47,6 +47,7 @@ default — `PERF_BIND=` narrows it, `make perf-serve-stop` ends it.
 | NIXL | [ai-dynamo/nixl](https://github.com/ai-dynamo/nixl) | `NIXL_REF` | `v1.5.2` |
 | UCX | [openucx/ucx](https://github.com/openucx/ucx) | `UCX_REF` | `v1.22.0` |
 | vLLM | [vllm-project/vllm](https://github.com/vllm-project/vllm) | `VLLM_REF` | `v0.33.0` |
+| LLM-Emu | [AKafakA/llm-emu](https://github.com/AKafakA/llm-emu) | `LLM_EMU_REF` | `b71c6025b189784cbd4b926d15afa8257738ea39` |
 | CuPy | [cupy/cupy](https://github.com/cupy/cupy) | `CUPY_REF` | `v14.2.0` |
 | LMCache | [LMCache/LMCache](https://github.com/LMCache/LMCache) | `LMCACHE_REF` | `v0.5.7` |
 

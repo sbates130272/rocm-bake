@@ -275,6 +275,9 @@ BAKE_PRINT = docker buildx bake -f rocm-bake.hcl
         build-lmcache push-lmcache push-lmcache-wheel build-lmcache-wheel \
         fetch-lmcache-wheel \
         build-serving push-serving \
+        build-vllm-emu push-vllm-emu build-vllm-emu-wheel push-vllm-emu-wheel \
+        push-emu emu-wheels fetch-vllm-emu-wheel emu-test emu-load \
+        emu-index emu-index-check emu-publish emu-publish-dry \
         cache-summary cache-check cache-logs builder-load \
         perf-plan perf-cold perf-warm perf-report perf-runs perf-serve \
         perf-serve-stop perf-serve-status perf-publish \
@@ -1607,6 +1610,110 @@ fetch-vllm-wheel: ## Fetch the vLLM wheel from Zot into ./dist
 		| docker buildx build --builder $(BUILDER) \
 			--output type=local,dest=dist -
 	@ls -la dist/wheels/
+
+# ─── The arch-free emulator lane ─────────────────────────────────
+# One wheel for every card, built from a manylinux base with no ROCm
+# in sight, and the only serving artifact here that can be exercised
+# end to end on this fleet — because it needs no GPU at all. See
+# docker/Dockerfile.vllm-emu and docs/architecture/emulation.md.
+#
+# No PYTORCH_ROCM_ARCH in any of these. The bake macro still passes it
+# (it sets *.args for every target), and Dockerfile.vllm-emu declares
+# no such ARG, so it reaches nothing — which is the correct outcome
+# and worth stating, because `ARCHES=... make push-emu` looks like it
+# should produce three different things and produces one.
+#
+# Not in push-all: push-all loops over ARCHES, and this builds the
+# same bytes whichever arch is named. Build it once, on its own.
+EMU_DIR ?= dist/emu
+
+build-vllm-emu: builder-ensure ## Build the arch-free emulator image (no push)
+	$(call bake,vllm-emu)
+
+push-vllm-emu: builder-ensure ## * Build and push the arch-free emulator image
+	$(call bake,vllm-emu,--push)
+
+build-vllm-emu-wheel: builder-ensure ## Build the arch-free vLLM wheel (no push)
+	$(call bake,vllm-emu-wheel)
+
+push-vllm-emu-wheel: builder-ensure ## * Build and push the arch-free vLLM wheel image
+	$(call bake,vllm-emu-wheel,--push)
+
+push-emu: builder-ensure ## * Build and push the whole emulator lane (bake group `emu`)
+	$(call bake,emu,--push)
+
+# Straight to local output rather than through Zot, unlike
+# fetch-vllm-wheel: there is no per-arch tag to disambiguate and no
+# reason to round-trip a 30 MB artifact through the registry to look
+# at it. `make push-vllm-emu-wheel` is what publishes it.
+#
+# The --set lives in a variable, not inline in the $(call): bake's
+# output value contains a comma, and $(call) splits its arguments on
+# commas before anything expands, so written inline it would arrive as
+# two broken arguments.
+EMU_LOCAL_OUT = --set vllm-emu-wheel.output=type=local,dest=$(EMU_DIR)
+
+emu-wheels: builder-ensure ## Build the three emu wheels into ./dist/emu
+	@rm -rf $(EMU_DIR) && mkdir -p $(EMU_DIR)
+	$(call bake,vllm-emu-wheel,$(EMU_LOCAL_OUT))
+	@ls -la $(EMU_DIR)/wheels/
+
+fetch-vllm-emu-wheel: ## Fetch the arch-free wheels from Zot into ./dist/emu
+	@mkdir -p $(EMU_DIR)
+	@printf 'FROM %s/%s/vllm-emu-wheel:latest\n' "$(REGISTRY)" "$(REGISTRY_NAME)" \
+		| docker buildx build --builder $(BUILDER) \
+			--output type=local,dest=$(EMU_DIR) -
+	@ls -la $(EMU_DIR)/wheels/
+
+# Starts a container, serves a model through the emulator and proves
+# it emulated — no GPU, no ROCm, no fleet. The checks that matter are
+# the last two; see the header of .builders/emu-test.sh.
+# ─── Publishing the emu wheels ───────────────────────────────────
+# The per-arch index machinery carries this lane unchanged, under the
+# pseudo-architecture `emu`. Nothing in wheelindex.py or
+# wheelpublish.sh inspects the arch string beyond using it: it becomes
+# the index directory, the `device-<arch>` extra on the metapackage,
+# and the `wheels-<rocm>-<arch>` release name. Every `gfx` in those two
+# files is a comment or a --help example.
+#
+# Why a pseudo-arch rather than joining the real ones: a per-arch index
+# holding both `vllm 0.33.0+rocm10.1.0` and `vllm 0.33.0+empty` lets
+# pip resolve the emulator build for someone installing
+# `rocm-torch[device-gfx950]` — a vLLM that cannot run a kernel,
+# delivered to someone who asked for a card. One name, one index, no
+# overlap.
+#
+# WHEEL_REPOS is overridden to the one repo that carries this lane.
+# All three wheels — vllm, llm_emu, vllm_emu_shim — come out of that
+# single `FROM scratch AS wheel` stage, so there is nothing else to
+# name; the default list is the per-arch ROCm set and every entry of it
+# would be fetched for an arch that has none.
+EMU_ARCH   ?= emu
+EMU_REPOS  ?= vllm-emu-wheel
+
+emu-index: ## Fetch the emu wheels from Zot and build their pip index
+	@$(MAKE) wheel-index ARCHES="$(EMU_ARCH)" WHEEL_REPOS="$(EMU_REPOS)"
+
+# ARCHES, not ARCH, and it has to be passed: wheel-index-check loops
+# over $(ARCHES), which defaults to the gfx set — left off, it checks
+# the indexes it did not just build and reports success.
+emu-index-check: ## Install the emu index into a throwaway venv
+	@$(MAKE) wheel-index-check ARCHES="$(EMU_ARCH)"
+
+emu-publish-dry: ## Show what publishing the emu wheels would do
+	@$(MAKE) wheels-publish-dry ARCH="$(EMU_ARCH)"
+
+emu-publish: ## * Publish the emu wheels to a release and the index to gh-pages
+	@$(MAKE) wheels-publish ARCH="$(EMU_ARCH)"
+
+emu-test: ## Serve a model through the emulator and check it (no GPU needed)
+	@IMAGE="$(REGISTRY)/$(REGISTRY_NAME)/vllm-emu:latest" .builders/emu-test.sh
+
+# emu-test runs `docker run` against the local daemon, so the image has
+# to be in it. A plain bake leaves the result in the builder's cache
+# and nowhere else; --load is what moves it across.
+emu-load: builder-ensure ## Build the emulator image into the local docker daemon
+	$(call bake,vllm-emu,--load)
 
 build-lmcache: builder-ensure ## Build the LMCache MP image (single builder)
 	$(call bake,lmcache)
