@@ -305,12 +305,24 @@ RUN ls -la /wheels/
 # identity is rewritten, the measurements are not. See the header of
 # docker/emu-profile-pack.py for why those are different operations.
 #
-# Memory and CU count deliberately default to the source pack's own
-# values rather than a plausible-looking gfx1250 figure: vLLM sizes its
-# KV cache from gpu_memory_bytes, so a guessed number would silently
-# change scheduling behaviour and be indistinguishable later from a
-# measured one. Set EMU_GPU_MEMORY_BYTES and EMU_GPU_CU_COUNT when the
-# real figures are known.
+# Memory and CU count are AMD's published MI455X figures: 432 GB of
+# HBM4 and 256 CDNA 5 compute units, from the product page and the
+# MI455X datasheet. They matter — vLLM sizes its KV cache from
+# gpu_memory_bytes — which is why they were left at the source pack's
+# A40 values (44 GB, 84 SMs) until there was a citable number rather
+# than a plausible one.
+#
+# 463856467968 is 432 GiB — binary, because GPU memory capacity is
+# quoted that way and reading it as decimal GB understates the part by
+# 31.9 GB, or 7.4%. The A40 this pack came from settles it: a nominal
+# 48 GiB card, reporting 47,709,159,424 bytes, which is 44.43 GiB —
+# 92.6% of 48 GiB after ECC, not 99% of 48 decimal GB.
+#
+# It is still the DATASHEET capacity rather than a measured total, and
+# that same A40 arithmetic says a real device will report meaningfully
+# less once ECC and firmware reservations come out. So this is an upper
+# bound and the KV cache sized from it is optimistic. Replace it with
+# what rocminfo says the moment anyone has the part in front of them.
 #
 # The timings are explicitly a placeholder. More accurate estimates are
 # expected later; when they arrive, replace the pack rather than this
@@ -334,9 +346,9 @@ RUN ls -la /wheels/
 #   buckets, worst case -0.75% median and +2.47% p95 on the heaviest
 #   prefill bucket. Well inside the emulator's own stated error.
 ARG EMU_GPU_MODEL=gfx1250
-ARG EMU_GPU_NAME="AMD Instinct gfx1250"
-ARG EMU_GPU_MEMORY_BYTES=
-ARG EMU_GPU_CU_COUNT=
+ARG EMU_GPU_NAME="AMD Instinct MI455X"
+ARG EMU_GPU_MEMORY_BYTES=463856467968
+ARG EMU_GPU_CU_COUNT=256
 ARG EMU_SOURCE_PACK=A40-Q8-Qwen3-8B.json
 
 # The pack ships as its OWN wheel, vllm-emu-pack-<model>, not inside

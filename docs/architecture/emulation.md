@@ -74,13 +74,20 @@ and all of it is observable without a card.
 
 Worth being blunt, because the output looks like a benchmark:
 
-- **It is not a measurement of this repo's stack.** The shipped pack is
-  named `gfx1250-Q8-Qwen3-8B.json` and the emulated device presents as
-  that part, but every latency in it was captured on an **NVIDIA A40**.
-  The pack is relabelled, not re-measured, and says so in its own
-  `rocm_bake_provenance` block. Nothing in it tells you anything about
-  gfx1250, MI355X, our PyTorch, our AITER or our Triton. More accurate
-  estimates are expected later; until then these are placeholders.
+- **It is not a measurement of this repo's stack.** The emulated device
+  presents as an **AMD Instinct MI455X** — 432 GiB of HBM4 and 256 CDNA 5
+  compute units, AMD's published figures — but every latency in the pack
+  was captured on an **NVIDIA A40**. The pack is relabelled, not
+  re-measured, and says so in its own `rocm_bake_provenance` block.
+  Nothing in it tells you anything about MI455X, gfx1250, our PyTorch,
+  our AITER or our Triton. More accurate estimates are expected later;
+  until then these are placeholders.
+- **The memory figure is a datasheet number, not a measured one.** A
+  real device reports less than its nominal capacity once ECC and
+  firmware reservations come out — the A40 this pack came from is a
+  48 GiB card reporting 47,709,159,424 bytes, which is 44.43 GiB, or
+  92.6%. So the KV cache sized from 432 GiB is optimistic, and
+  `rocminfo` should replace it as soon as anyone has the part.
 - **No kernel runs.** There is nothing here to profile, optimise or
   regress. A faster kernel changes nothing a run reports.
 - **No accuracy signal.** The emulator emits a fixed filler token. The
@@ -267,7 +274,7 @@ emulator environment itself:
 | Variable | Default in the image | |
 | --- | --- | --- |
 | `VLLM_EMULATOR_ENABLE_ORACLE` | `1` | the master switch; unset, everything is inert and vLLM behaves normally |
-| `VLLM_EMULATOR_PROFILE_PACK` | `/opt/llm-emu/profiles/gfx1250-Q8-Qwen3-8B.json` | the step latencies |
+| `VLLM_EMULATOR_PROFILE_PACK` | resolved from the installed pack wheel | the step latencies |
 | `VLLM_EMULATOR_MOCK_CUDA` | `1` | stub `torch.cuda`, skip weight loading |
 | `VLLM_EMULATOR_MODE` | `realtime` | `accelerated` resolves steps immediately for fast simulation |
 | `VLLM_EMULATOR_MEMORY` | from the pack | override the emulated device's memory |
