@@ -282,6 +282,37 @@ else
     skip "no-weights check (--endpoint: no log access)"
 fi
 
+# ─── every process is on the same device ─────────────────────────
+# cuda_mock prints one "Fake GPU:" line per process it installs into,
+# and takes the identity from the profile pack at that moment. vLLM is
+# at least two processes — the API server and the engine core — and
+# they can disagree: the first CI run with a pack wheel had the API
+# server on llm-emu's fallback,
+#
+#   Fake GPU: Emulator Device, 12GB, SM=108, CC=8.0
+#
+# and the engine core on the device the pack describes, because the
+# pack variable was resolved after the first process had already read
+# it. Every other check here passed. So this one asks the question
+# directly: one identity, and not the fallback.
+if [ "$STARTED" = 1 ]; then
+    IDENTITIES=$(logs | grep -o 'Fake GPU: .*' | sort -u)
+    N_IDENT=$(printf '%s\n' "$IDENTITIES" | grep -c 'Fake GPU:')
+    if [ "$N_IDENT" -eq 0 ]; then
+        bad "no 'Fake GPU:' line in the log — cuda_mock never installed"
+    elif printf '%s\n' "$IDENTITIES" | grep -q 'Emulator Device'; then
+        bad "a process came up as llm-emu's fallback device, not the pack's"
+        printf '%s\n' "$IDENTITIES" | sed 's/^/        /'
+    elif [ "$N_IDENT" -gt 1 ]; then
+        bad "processes disagree about the emulated device"
+        printf '%s\n' "$IDENTITIES" | sed 's/^/        /'
+    else
+        ok "every process emulates the same device — ${IDENTITIES#Fake GPU: }"
+    fi
+else
+    skip "device identity check (--endpoint: no log access)"
+fi
+
 # ─── the oracle actually drove the steps ─────────────────────────
 # ExecutorEmulatorHook._handle_async prints one of these per step for
 # the first ten steps and every hundredth after:

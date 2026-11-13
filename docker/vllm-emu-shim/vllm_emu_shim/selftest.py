@@ -109,11 +109,64 @@ def _check_patches() -> None:
            'RuntimeError("unexpected error")' in src)
 
 
+def _check_pack_resolves_at_startup() -> None:
+    """A fresh interpreter must have the pack before anything is imported.
+
+    llm-emu reads VLLM_EMULATOR_PROFILE_PACK when vLLM loads platform
+    plugins, which is before this package is imported, so resolving it
+    from here is too late for the first process — the API server came
+    up as llm-emu's fallback "Emulator Device, 12GB" while the engine
+    core came up as the device the pack describes. The .pth fixes that,
+    and a .pth is easy to lose: a build that stops copying it, or an
+    install path that drops it, changes nothing this process can see,
+    because by now the variable is set either way. So ask a child that
+    starts without it.
+
+    Only meaningful when a pack wheel is installed. With the variable
+    set by hand and no pack wheel there is nothing for the .pth to do.
+    """
+    import subprocess
+    from importlib.metadata import entry_points
+
+    # Exactly one. With none there is nothing to resolve, and with
+    # several the resolver deliberately leaves the choice to whoever
+    # installed them — a child started without the variable is then
+    # SUPPOSED to come back without it.
+    if len(list(entry_points(group="vllm_emu_shim.profile_packs"))) != 1:
+        return
+
+    env = {k: v for k, v in os.environ.items()
+           if k != "VLLM_EMULATOR_PROFILE_PACK"}
+    env["VLLM_EMULATOR_ENABLE_ORACLE"] = "1"
+    probe = ("import os, sys; "
+             "sys.stdout.write(os.environ.get('VLLM_EMULATOR_PROFILE_PACK', ''))")
+    try:
+        got = subprocess.run([sys.executable, "-c", probe], env=env,
+                             capture_output=True, text=True, timeout=60)
+        out, err = got.stdout.strip(), got.stderr.strip()
+    except Exception as exc:  # noqa: BLE001
+        out, err = "", repr(exc)
+    _check("pack resolved at interpreter startup, before any import",
+           bool(out) and os.path.exists(out),
+           out or f"unset in a fresh interpreter — is the .pth installed? {err}")
+    # A .pth that writes to stdout corrupts every tool that parses a
+    # subprocess's output, so silence is part of the contract.
+    try:
+        quiet = subprocess.run([sys.executable, "-c", "pass"], env=env,
+                               capture_output=True, text=True, timeout=60)
+        noise = (quiet.stdout + quiet.stderr).strip()
+    except Exception as exc:  # noqa: BLE001
+        noise = repr(exc)
+    _check("interpreter startup stays silent", not noise, noise[:120])
+
+
 def _check_platform() -> None:
     pack = os.environ.get("VLLM_EMULATOR_PROFILE_PACK", "")
     if not _check("profile pack readable", bool(pack) and os.path.exists(pack),
                   pack or "VLLM_EMULATOR_PROFILE_PACK unset"):
         return
+    _check_pack_resolves_at_startup()
+
     from vllm.platforms import current_platform
 
     name = type(current_platform).__name__

@@ -10,6 +10,8 @@ Entry point: `vllm.general_plugins` -> install.
 
 import os
 
+import _vllm_emu_pack_env as _pack_env
+
 from ._patch import apply, armed
 
 __all__ = ["apply", "armed", "install", "default_profile_pack"]
@@ -18,7 +20,7 @@ __version__ = "0.1.0"
 
 _installed = False
 
-PACK_ENTRY_POINT_GROUP = "vllm_emu_shim.profile_packs"
+PACK_ENTRY_POINT_GROUP = _pack_env.GROUP
 
 
 def default_profile_pack() -> str | None:
@@ -29,45 +31,20 @@ def default_profile_pack() -> str | None:
     registers a `vllm_emu_shim.profile_packs` entry point, so a pack is
     found by being installed rather than by this code knowing a path.
 
-    Called at import, before anything reads the variable. That timing
-    matters: llm-emu's EmulatorPlatform loads the pack to answer
-    get_device_name and get_device_total_memory, and vLLM sizes its KV
-    cache from the latter — so a default arriving late would silently
-    emulate a differently-sized device.
+    The resolution itself lives in _vllm_emu_pack_env and normally has
+    already happened by the time this runs: vllm_emu_shim_pack.pth
+    calls it at interpreter startup, because llm-emu reads the variable
+    when vLLM loads platform plugins, which is before this package is
+    imported. See that module for the run that showed it.
 
-    Exactly one installed pack is used. Several is ambiguous and the
-    choice belongs to whoever installed them, so it says what it found
-    and leaves the variable alone. An explicit setting always wins:
-    this is setdefault, never an override.
+    install() calls this again. It is a no-op once the variable is set,
+    and it covers the cases where startup found nothing: an editable
+    install, which does not get the .pth, or a pack whose directory
+    joined sys.path after the .pth line ran. A pack found only here is
+    too late for a process that has already imported llm-emu, which is
+    why install() says so rather than staying quiet.
     """
-    if os.environ.get("VLLM_EMULATOR_PROFILE_PACK"):
-        return os.environ["VLLM_EMULATOR_PROFILE_PACK"]
-
-    from importlib.metadata import entry_points
-
-    found = {}
-    for ep in entry_points(group=PACK_ENTRY_POINT_GROUP):
-        try:
-            found[ep.name] = ep.load()()
-        except Exception as exc:  # noqa: BLE001
-            print(f"[vllm-emu-shim] profile pack {ep.name!r} failed to "
-                  f"resolve: {exc}")
-
-    if not found:
-        return None
-    if len(found) > 1:
-        print(f"[vllm-emu-shim] {len(found)} profile packs installed "
-              f"({', '.join(sorted(found))}) — set "
-              f"VLLM_EMULATOR_PROFILE_PACK to choose one")
-        return None
-
-    name, path = next(iter(found.items()))
-    os.environ["VLLM_EMULATOR_PROFILE_PACK"] = path
-    print(f"[vllm-emu-shim] profile pack {name!r} -> {path}")
-    return path
-
-
-default_profile_pack()
+    return _pack_env.resolve()
 
 
 def install() -> None:
@@ -84,5 +61,21 @@ def install() -> None:
     if _installed:
         return
     _installed = True
+    had_pack = bool(os.environ.get("VLLM_EMULATOR_PROFILE_PACK"))
+    default_profile_pack()
     if apply():
         print("[vllm-emu-shim] emulator wiring armed")
+        # Reported here rather than where it is resolved: resolution
+        # runs from a .pth at interpreter startup and must stay silent.
+        pack = os.environ.get("VLLM_EMULATOR_PROFILE_PACK")
+        if pack and not had_pack:
+            print("[vllm-emu-shim] profile pack was not resolved at "
+                  "interpreter startup (no .pth — an editable install?); "
+                  "this process may already be on llm-emu's fallback device")
+        usable = sorted(k for k, v in _pack_env.found.items() if v)
+        if len(usable) > 1:
+            print(f"[vllm-emu-shim] {len(usable)} profile packs installed "
+                  f"({', '.join(usable)}) — set VLLM_EMULATOR_PROFILE_PACK "
+                  f"to choose one")
+        elif pack:
+            print(f"[vllm-emu-shim] profile pack: {pack}")

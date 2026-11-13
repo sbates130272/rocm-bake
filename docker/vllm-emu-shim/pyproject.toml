@@ -33,6 +33,9 @@ vllm-emu-selftest = "vllm_emu_shim.selftest:main"
 
 [tool.setuptools]
 packages = ["vllm_emu_shim"]
+# The startup resolver, deliberately outside the package: see its
+# docstring, and setup.py for the .pth that calls it.
+py-modules = ["_vllm_emu_pack_env"]
 
 # No profile pack here, deliberately. This package is device-agnostic
 # wiring — it patches UniProcExecutor, EngineCore, EmulatorPlatform and

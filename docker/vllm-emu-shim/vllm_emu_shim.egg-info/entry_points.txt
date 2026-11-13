@@ -1,5 +1,0 @@
-[console_scripts]
-vllm-emu-selftest = vllm_emu_shim.selftest:main
-
-[vllm.general_plugins]
-rocm_bake_emu = vllm_emu_shim:install

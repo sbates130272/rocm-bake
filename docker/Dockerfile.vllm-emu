@@ -295,7 +295,22 @@ RUN pip wheel --no-deps --no-cache-dir -w /wheels /opt/llm-emu
 # The shim: this repo's wiring between the two. Pure Python, no
 # dependencies, inert unless VLLM_EMULATOR_ENABLE_ORACLE is set.
 COPY docker/vllm-emu-shim/ /opt/vllm-emu-shim/
-RUN pip wheel --no-deps --no-cache-dir -w /wheels /opt/vllm-emu-shim
+# Clear anything a local `pip install` or `pip wheel` left in the source
+# directory before building from it. setuptools builds in-tree and
+# reuses build/lib, so a module deleted from the source would still
+# ship in the wheel if a stale copy were sitting there — and this
+# directory is exactly where someone testing the shim by hand leaves
+# one. It happened: an egg-info from such a test was committed.
+#
+# Then check the .pth made it into the wheel. It is copied in by a
+# custom build step in setup.py, and losing it is silent: everything
+# still installs and serves, and the API server simply comes up as a
+# different device from the engine core. See _vllm_emu_pack_env.py.
+RUN rm -rf /opt/vllm-emu-shim/build /opt/vllm-emu-shim/*.egg-info && \
+    find /opt/vllm-emu-shim -name __pycache__ -type d -prune -exec rm -rf {} + && \
+    pip wheel --no-deps --no-cache-dir -w /wheels /opt/vllm-emu-shim && \
+    { python -m zipfile -l /wheels/vllm_emu_shim-*.whl | grep -q 'vllm_emu_shim_pack.pth' || \
+        { echo "shim wheel has no .pth — the pack would resolve too late" >&2; exit 1; }; }
 
 RUN ls -la /wheels/
 
@@ -431,9 +446,12 @@ RUN --mount=type=bind,from=plugin,source=/wheels,target=/w \
 
 # No VLLM_EMULATOR_PROFILE_PACK and no profiles directory. The pack
 # arrived as a wheel in the install above and announces itself through
-# its entry point; the shim resolves it at import, before anything
-# reads the variable. Setting it here would work too, and would mean
-# the image tested a path no index user takes.
+# its entry point; the shim's .pth resolves it at interpreter startup,
+# before anything reads the variable. Startup and not the shim's own
+# import, because llm-emu reads it when vLLM loads platform plugins,
+# which comes first — see _vllm_emu_pack_env.py. Setting it here
+# would work too, and would mean the image tested a path no index user
+# takes.
 ENV VLLM_EMULATOR_ENABLE_ORACLE=1 \
     VLLM_EMULATOR_MOCK_CUDA=1 \
     CUDA_VISIBLE_DEVICES=""

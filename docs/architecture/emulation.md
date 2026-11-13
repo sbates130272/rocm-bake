@@ -223,9 +223,14 @@ shim because a pack describes one device and the shim describes none —
 the shim is byte-identical whatever is being emulated, so bundling
 would give two devices the same wheel filename with different
 contents. The pack registers a `vllm_emu_shim.profile_packs` entry
-point and the shim resolves it at import, so installing it is the
-whole configuration step; install two and the shim says so and asks
-you to set `VLLM_EMULATOR_PROFILE_PACK` yourself.)
+point and the shim resolves it at interpreter startup, through a
+`.pth` file, so installing it is the whole configuration step; install
+two and the shim says so and asks you to set
+`VLLM_EMULATOR_PROFILE_PACK` yourself. Startup rather than the shim's
+own import, because LLM-Emu reads the variable when vLLM loads platform
+plugins, which is earlier: resolved any later, the API server and the
+engine core disagree about which device they are emulating. The `.pth`
+does nothing unless the emulator is switched on.)
 
 That is deliberate rather than an omission. PyPI's torch for linux
 x86-64 is the CUDA build, and pinning it would pull the whole `nvidia-*`

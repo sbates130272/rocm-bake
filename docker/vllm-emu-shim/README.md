@@ -25,3 +25,8 @@ vllm-emu-selftest --require-platform  # also needs a readable profile pack
 
 Built and installed by `docker/Dockerfile.vllm-emu`; see
 `docs/architecture/emulation.md` for the lane as a whole.
+
+Install it as a wheel, not with `pip install -e`. The profile pack is
+resolved at interpreter startup by a `.pth` file that only a built
+wheel carries; an editable install still works, but resolves the pack
+late, and the shim says so when it loads.
