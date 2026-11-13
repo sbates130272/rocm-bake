@@ -1,0 +1,56 @@
+{
+ "arch": "emu",
+ "rocm": "10.1.0-full",
+ "wheels": [
+  {
+   "best": true,
+   "elf_members": 0,
+   "kind": "pure",
+   "needs_glibc": null,
+   "newest_policy": "manylinux_2_41_x86_64",
+   "project": "llm-emu",
+   "tag": "any",
+   "wheel": "llm_emu-0.1.0-py3-none-any.whl"
+  },
+  {
+   "best": true,
+   "elf_members": 0,
+   "kind": "pure",
+   "needs_glibc": null,
+   "newest_policy": "manylinux_2_41_x86_64",
+   "project": "rocm-torch",
+   "tag": "any",
+   "wheel": "rocm_torch-10.1.0+emu.b3a39f0d-py3-none-any.whl"
+  },
+  {
+   "best": true,
+   "elf_members": 0,
+   "kind": "pure",
+   "needs_glibc": null,
+   "newest_policy": "manylinux_2_41_x86_64",
+   "project": "vllm",
+   "tag": "any",
+   "wheel": "vllm-0.33.0+empty-py3-none-any.whl"
+  },
+  {
+   "best": true,
+   "elf_members": 0,
+   "kind": "pure",
+   "needs_glibc": null,
+   "newest_policy": "manylinux_2_41_x86_64",
+   "project": "vllm-emu-pack-gfx1250",
+   "tag": "any",
+   "wheel": "vllm_emu_pack_gfx1250-0.1.0+b71c602-py3-none-any.whl"
+  },
+  {
+   "best": true,
+   "elf_members": 0,
+   "kind": "pure",
+   "needs_glibc": null,
+   "newest_policy": "manylinux_2_41_x86_64",
+   "project": "vllm-emu-shim",
+   "tag": "any",
+   "wheel": "vllm_emu_shim-0.1.0-py3-none-any.whl"
+  }
+ ]
+}
