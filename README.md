@@ -4,6 +4,10 @@ Reproducible builds of PyTorch, Triton, AITER, CuPy, NIXL, vLLM and
 LMCache against ROCm, on a three-node BuildKit fleet, with every
 artifact published to a local OCI registry.
 
+Plus one that is not tied to ROCm at all: an arch-free vLLM that serves
+from a captured latency profile instead of a GPU, so the serving path
+can be exercised on any machine — including CI.
+
 **Full documentation: <https://sbates130272.github.io/rocm-bake/>**
 
 ## Live Reports
@@ -57,13 +61,16 @@ That table is generated from `rocm-bake.hcl` by `make version-scrub`, and
 CI fails if it drifts. Triton is pinned to a commit (`TRITON_REF`) as well
 as a version; `RUST_VERSION` and `SCCACHE_VERSION` are toolchain pins and
 live in [the bake variables reference][vars]. Built for `gfx950` (default),
-`gfx1201` and `gfx1250`.
+`gfx1201` and `gfx1250` — plus one arch-free vLLM that needs no GPU at
+all, which is how the serving stack gets tested; see [emulated
+serving][emu].
 
 `rocm-bake.hcl` is the single source for every value a build reads.
 `make list-vars` prints what is actually in effect, and `make version-check`
 compares it against what upstream has released and what we have published.
 
 [vars]: https://sbates130272.github.io/rocm-bake/reference/bake-variables/
+[emu]: https://sbates130272.github.io/rocm-bake/architecture/emulation/
 
 ## Quick start
 
