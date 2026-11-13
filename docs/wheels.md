@@ -29,6 +29,10 @@ the whole interface.
     `vllm` in one index would let pip hand the emulator to someone who
     asked for `device-gfx950`.
 
+    That index carries no torch and pins none, so installing from it is
+    two steps — see
+    [Emulated serving](architecture/emulation.md#installing-from-it-needs-a-torch).
+
 !!! warning "Both index URLs are required"
     `--extra-index-url` is not optional. Ordinary dependencies — numpy,
     pydantic, a hundred others — live on PyPI and the install cannot

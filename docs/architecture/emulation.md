@@ -189,10 +189,47 @@ The wheels go out under the pseudo-architecture **`emu`**:
 
 ```bash
 make emu-index          # fetch from Zot, build the PEP 503 index
-make emu-index-check    # resolve it in a throwaway venv
+make emu-index-check    # install it in a throwaway venv and import it
 make emu-publish-dry
 make emu-publish        # release + gh-pages index
 ```
+
+### Installing from it needs a torch
+
+The index does not contain one, and the metapackage does not pin one:
+
+```text
+rocm-torch 10.1.0+emu.<digest>  (extra: device-emu)
+  llm-emu==0.1.0
+  vllm==0.33.0+empty
+  vllm-emu-shim==0.1.0
+```
+
+vLLM built with `VLLM_TARGET_DEVICE=empty` resolves its dependencies
+from `requirements/common.txt`, which names no torch at all, so nothing
+drags one in behind the metapackage. Installing it alone gives you a
+vLLM that cannot `import vllm`.
+
+That is deliberate rather than an omission. PyPI's torch for linux
+x86-64 is the CUDA build, and pinning it would pull the whole `nvidia-*`
+dependency set into a lane whose entire point is that it needs no GPU.
+Which torch belongs here is yours to choose — the CPU build, or this
+repo's ROCm one from a per-card index if you want the emulator beside a
+real stack. So the install is two steps:
+
+```bash
+pip install --index-url https://download.pytorch.org/whl/cpu torch
+
+pip install \
+  --index-url https://sbates130272.github.io/rocm-bake/data/wheels/emu/ \
+  --extra-index-url https://pypi.org/simple \
+  "rocm-torch[device-emu]"
+```
+
+`make emu-index-check` runs exactly that against the freshly built
+index, then imports vLLM and runs `vllm-emu-selftest` — because an
+index that resolves and cannot run is the failure this check exists to
+catch, and `pip list` alone never notices it.
 
 Nothing in `wheelindex.py` or `wheelpublish.sh` inspects the
 architecture string beyond using it — it becomes the index directory,

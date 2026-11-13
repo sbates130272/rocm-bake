@@ -1694,11 +1694,52 @@ EMU_REPOS  ?= vllm-emu-wheel
 emu-index: ## Fetch the emu wheels from Zot and build their pip index
 	@$(MAKE) wheel-index ARCHES="$(EMU_ARCH)" WHEEL_REPOS="$(EMU_REPOS)"
 
-# ARCHES, not ARCH, and it has to be passed: wheel-index-check loops
-# over $(ARCHES), which defaults to the gfx set — left off, it checks
-# the indexes it did not just build and reports success.
-emu-index-check: ## Install the emu index into a throwaway venv
-	@$(MAKE) wheel-index-check ARCHES="$(EMU_ARCH)"
+# Its own recipe rather than wheel-index-check ARCHES=emu, for two
+# reasons that only apply to this index.
+#
+# It needs a torch, and the index does not contain one. vLLM built with
+# VLLM_TARGET_DEVICE=empty resolves install_requires from
+# requirements/common.txt, which names no torch at all, so the
+# generated rocm-torch metapackage pins llm-emu, vllm and
+# vllm-emu-shim — and nothing drags torch in behind them. Installing
+# the metapackage alone yields a vLLM that cannot `import vllm`.
+#
+# That torch is deliberately NOT pinned into the metapackage. PyPI's
+# torch for linux x86_64 is the CUDA build and would pull the whole
+# nvidia-* dependency set into a lane whose entire point is that it
+# needs no GPU. Which torch belongs here is the installer's choice —
+# CPU from download.pytorch.org, or this repo's ROCm one from a
+# per-card index — so the recipe below installs the CPU one the way
+# the documentation tells a reader to, and then proves the result
+# actually works.
+#
+# And it imports. The generic check stops at `pip list`, which passes
+# on a set that resolves and cannot run — exactly the failure above.
+# vllm-emu-selftest is the stronger statement: entry points registered,
+# wiring armed, vLLM's own assumptions still holding.
+EMU_TORCH_INDEX ?= https://download.pytorch.org/whl/cpu
+
+emu-index-check: ## Install the emu index into a throwaway venv and import it
+	@set -e; \
+	[ -d "$(INDEX_DIR)/$(EMU_ARCH)" ] || \
+		{ echo "no index for $(EMU_ARCH) — run make emu-index"; exit 1; }; \
+	port=8099; \
+	python3 -m http.server $$port --directory dist >/dev/null 2>&1 & \
+	srv=$$!; trap 'kill '"$$srv"' 2>/dev/null || true' EXIT; sleep 2; \
+	v=$$(mktemp -d); python3 -m venv "$$v" >/dev/null; \
+	echo "== $(EMU_ARCH)"; \
+	"$$v/bin/pip" install -q --no-cache-dir \
+		--index-url "$(EMU_TORCH_INDEX)" torch; \
+	no_proxy=127.0.0.1,localhost NO_PROXY=127.0.0.1,localhost \
+	"$$v/bin/pip" install -q --no-cache-dir \
+		--index-url "http://127.0.0.1:$$port/index/$(EMU_ARCH)/" \
+		--extra-index-url https://pypi.org/simple \
+		"rocm-torch[device-$(EMU_ARCH)]"; \
+	"$$v/bin/pip" list 2>/dev/null | sed 's/^/     /'; \
+	"$$v/bin/python" -c "import torch, vllm; \
+print('     torch', torch.__version__, '/ vLLM', vllm.__version__)"; \
+	VLLM_EMULATOR_ENABLE_ORACLE=1 "$$v/bin/vllm-emu-selftest"; \
+	rm -rf "$$v"
 
 emu-publish-dry: ## Show what publishing the emu wheels would do
 	@$(MAKE) wheels-publish-dry ARCH="$(EMU_ARCH)"
