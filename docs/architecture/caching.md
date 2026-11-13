@@ -162,6 +162,65 @@ afterwards — which is what the
 [benchmark harness](../performance/methodology.md) does for its frozen
 and cold runs.
 
+### Why Not Distributed Compilation
+
+sccache has a second, separate feature:
+[sccache-dist](https://github.com/mozilla/sccache/blob/main/docs/DistributedQuickstart.md),
+a scheduler plus build servers that ship individual preprocessed
+compile jobs to other machines. It is orthogonal to the shared store
+above — a fleet would run both, not one instead of the other. We do not
+run it, and the reasoning is recorded here so the question does not
+have to be re-opened from scratch.
+
+**It is not a fleet balancer, and could not replace one.** Its unit of
+work is a single object file. `balance.sh` schedules *bake targets*: a
+clone, apt, pip, cmake, the compile, wheel packaging, the layer export
+and a registry push. Most of what it schedules around is not
+compilation at all, and
+[`target-costs`](https://github.com/sbates130272/rocm-bake/blob/main/.builders/target-costs)
+says so in measured numbers — `pytorch-src` is 1260s of almost pure
+network, `rocm-runtime` is I/O with no compiler in it, and
+`torchvision-wheel` is 27s of build against 2.6 GB of export. The
+export term that `balance.sh` charges against each node's `link_mbps`
+is invisible to sccache-dist. Adopting it would add a scheduler beside
+the one we have rather than removing it.
+
+**On a warm build there is nothing to distribute.** Distribution only
+does work on a *miss*. The best recorded nightly ran 4494 requests for
+4129 hits and 116 misses — 97.3 %, measured in the
+[AWS analysis](../operations/aws.md). A scheduler, build servers and a
+sandbox, to parallelise 116 compiles.
+
+**The one case where it would pay is cold.**
+[Packing](build-graph.md#packing) runs one build per node, so once the
+short targets drain, the nodes that finished sit idle while
+`pytorch-wheel` runs alone — at 2336s against a ~5232s
+total, it *is* the makespan lower bound, and no amount of target-level
+packing can go below it. Splitting that one target's compiles across
+the idle nodes is the only thing that breaks that floor. But it only
+bites when the objects are genuinely missing: a version bump, a
+compiler-flag change, a `FORCE_RECACHE` run. At the current cadence
+those are the rare nights, and `--skip-cold` means most nightlies never
+see one.
+
+So the precondition for revisiting is a change in that ratio — cold or
+bump builds becoming routine rather than exceptional, or a measurement
+showing the cold critical path costs more than the operational price
+below.
+
+!!! warning "ROCm makes that price higher than the quickstart suggests"
+    HIP compiles reach sccache through `clang.rs`, which does emit a
+    distributable command — unlike `nvcc.rs`, which returns `None` and
+    cannot be distributed at all. But `--hip-path` and
+    `--hip-device-lib-path` are `PassThroughPath`: sccache packages the
+    compiler by scanning its shared libraries, and the device bitcode
+    is not a shared library. Every build server would need the
+    identical ROCm tree at identical paths, matching the version pinned
+    in the image — which is the one thing our containers exist to avoid
+    depending on. On top of that the build servers want bubblewrap and
+    run as root on bare metal, while our compiles happen inside
+    BuildKit containers.
+
 ## 4. Pull-Through
 
 `.builders/buildkitd.toml.in` points `docker.io`, `ghcr.io` and
