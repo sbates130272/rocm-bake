@@ -1,0 +1,2063 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Reproducible ROCm PyTorch builds on a small multi-node BuildKit fleet — architecture, caching, and build-performance tracking.">
+      
+      
+      
+        <link rel="canonical" href="https://sbates130272.github.io/rocm-bake/architecture/emulation/">
+      
+      
+        <link rel="prev" href="../atom-vllm-skew/">
+      
+      
+        <link rel="next" href="../../performance/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Emulated Serving (No GPU) - rocm-bake</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="deep-orange">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#emulated-serving-one-vllm-wheel-no-gpu" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="rocm-bake" class="md-header__button md-logo" aria-label="rocm-bake" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            rocm-bake
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Emulated Serving (No GPU)
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="deep-orange"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="teal" data-md-color-accent="deep-orange"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/sbates130272/rocm-bake" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    sbates130272/rocm-bake
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="rocm-bake" class="md-nav__button md-logo" aria-label="rocm-bake" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    rocm-bake
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/sbates130272/rocm-bake" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    sbates130272/rocm-bake
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../wheels/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Install The Wheels
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Live Reports
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Live Reports
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reports/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Live Reports
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="https://sbates130272.github.io/rocm-bake/data/wheels/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Wheel Indexes ↗
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="https://sbates130272.github.io/rocm-bake/data/perf/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Fleet Runs (SNOC) ↗
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="https://sbates130272.github.io/rocm-bake/data/nightly/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Nightly Builds (AWS) ↗
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" checked>
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_5" id="__nav_5_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../fleet/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The Fleet
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../build-graph/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Build Graph
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../caching/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Caching
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reproducibility/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reproducibility
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../multi-arch/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multiple GFX Targets
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../serving/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Serving Stack
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../atom-vllm-skew/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ATOM and vLLM Skew
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Emulated Serving (No GPU)
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Emulated Serving (No GPU)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#what-it-is" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What It Is
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#why-this-repo-wants-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why This Repo Wants It
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-it-does-not-tell-you" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What It Does Not Tell You
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="What It Does Not Tell You">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-shipped-pack-is-reduced" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The shipped pack is reduced
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#two-known-defects-in-the-emulators-output" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Two known defects in the emulator's output
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-the-wiring-works" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How The Wiring Works
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="How The Wiring Works">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#when-vllm-moves" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When vLLM moves
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#publishing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Publishing
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Publishing">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#installing-from-it-needs-a-torch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Installing from it needs a torch
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#running-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Running It
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../performance/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Performance
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_6" id="__nav_6_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Performance
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../performance/methodology/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Methodology
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../performance/perf-runs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Instrumented Fleet Runs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../performance/telemetry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Telemetry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/make-targets/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Make Targets
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/bake-variables/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bake Variables
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/build-targets/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Build Targets
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/image-sizes/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Image Sizes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../operations/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operations
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_8" id="__nav_8_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operations
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/runners/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CI Runners
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/aws/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Building On AWS
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/troubleshooting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#what-it-is" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What It Is
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#why-this-repo-wants-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why This Repo Wants It
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-it-does-not-tell-you" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What It Does Not Tell You
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="What It Does Not Tell You">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-shipped-pack-is-reduced" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The shipped pack is reduced
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#two-known-defects-in-the-emulators-output" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Two known defects in the emulator's output
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-the-wiring-works" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How The Wiring Works
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="How The Wiring Works">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#when-vllm-moves" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When vLLM moves
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#publishing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Publishing
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Publishing">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#installing-from-it-needs-a-torch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Installing from it needs a torch
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#running-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Running It
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/sbates130272/rocm-bake/edit/main/docs/architecture/emulation.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="emulated-serving-one-vllm-wheel-no-gpu">Emulated Serving: One vLLM Wheel, No GPU<a class="headerlink" href="#emulated-serving-one-vllm-wheel-no-gpu" title="Permanent link">&para;</a></h1>
+<p>Every other vLLM artifact here is welded to one card. The HIP
+extensions carry code objects for a single architecture, so <code>gfx950</code>
+and <code>gfx1201</code> need separate wheels, separate indexes and separate
+releases — and a machine with no supported AMD GPU can install none of
+them.</p>
+<p>This lane builds the other kind: <strong>one wheel for every architecture,
+with no device code at all</strong>, and an emulator that makes it still
+serve.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>make<span class="w"> </span>push-emu<span class="w"> </span><span class="nv">BUILDER</span><span class="o">=</span>snoc-pool<span class="w">    </span><span class="c1"># build and publish both targets</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>make<span class="w"> </span>emu-load<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>make<span class="w"> </span>emu-test<span class="w">     </span><span class="c1"># serve a model and prove it emulated</span>
+</code></pre></div>
+<h2 id="what-it-is">What It Is<a class="headerlink" href="#what-it-is" title="Permanent link">&para;</a></h2>
+<p>Two things, built together by
+<a href="https://github.com/sbates130272/rocm-bake/blob/main/docker/Dockerfile.vllm-emu"><code>docker/Dockerfile.vllm-emu</code></a>:</p>
+<p><strong>vLLM with no backend.</strong> <code>VLLM_TARGET_DEVICE=empty</code> takes <code>setup.py</code>
+down its <code>_no_device()</code> path — no CMake, no HIP, no CUDA, requirements
+collapsed to <code>requirements/common.txt</code>, and the version suffixed
+<code>+empty</code>. The result contains no compiled code at all, so it ships as
+<code>py3-none-any</code>: not merely independent of the card, independent of the
+machine.</p>
+<p>That is one better than intended. The aim was a manylinux wheel, on
+the theory that <code>setup.py</code>'s Rust frontend extension would be the one
+piece of native code left. It is not: that extension is built with
+<code>optional=not should_require_rust_frontend()</code> and
+<code>VLLM_REQUIRE_RUST_FRONTEND</code> is unset, so it is skipped — and it is
+opt-in at runtime too (<code>VLLM_USE_RUST_FRONTEND</code> defaults to <code>0</code>; only
+<code>--grpc-port</code> and <code>vllm bench serve</code> consult it). Forcing it to build
+would buy an unused feature at the cost of pinning the wheel to
+x86_64. The build decides the tag by looking inside the archive rather
+than asserting it, and keeps the auditwheel path for the day upstream
+makes the extension mandatory.</p>
+<p><strong><a href="https://github.com/AKafakA/llm-emu">LLM-Emu</a>.</strong> A profile-driven
+emulator, from the MLArchSys@ISCA poster of the same name. It replaces
+vLLM's GPU forward pass with a latency draw from a <em>profile pack</em>
+captured once on real hardware. The scheduler, HTTP stack, admission
+control, tokenizer and output pipeline are vLLM's own code, running
+unmodified. Weights are never materialised — <code>GPUModelRunner.load_model</code>
+is stubbed — so nothing is downloaded beyond a model's config and
+tokenizer, and nothing is allocated on a device that is not there.</p>
+<p>The result serves. It schedules, batches, admits, streams, and answers
+<code>/v1/completions</code>, on any x86 box.</p>
+<h2 id="why-this-repo-wants-it">Why This Repo Wants It<a class="headerlink" href="#why-this-repo-wants-it" title="Permanent link">&para;</a></h2>
+<p>Three things it buys that nothing else here can:</p>
+<p><strong>A serving lane that can actually be exercised.</strong> No node on the
+fleet currently has a usable GPU. <code>vllm</code>'s verification stops at "it
+imports"; <code>atom-vllm</code> ships with its plugin disabled and says so. This
+is the only serving artifact in the repo that is tested end to end
+before it is published — and the test runs in CI, on a free runner.
+See <a href="https://github.com/sbates130272/rocm-bake/blob/main/.github/workflows/emu.yml"><code>.github/workflows/emu.yml</code></a>.</p>
+<p><strong>An installable vLLM for machines without AMD hardware.</strong> Laptops,
+CI, a developer reading the scheduler. Published under its own index;
+see <a href="#publishing">below</a>.</p>
+<p><strong>A scheduler and serving-stack testbed.</strong> Admission policy, batching
+behaviour, queueing under load — all of that is vLLM's real code here,
+and all of it is observable without a card.</p>
+<h2 id="what-it-does-not-tell-you">What It Does Not Tell You<a class="headerlink" href="#what-it-does-not-tell-you" title="Permanent link">&para;</a></h2>
+<p>Worth being blunt, because the output looks like a benchmark:</p>
+<ul>
+<li><strong>It is not a measurement of this repo's stack.</strong> The emulated device
+  presents as an <strong>AMD Instinct MI455X</strong> — 432 GiB of HBM4 and 256 CDNA 5
+  compute units, AMD's published figures — but every latency in the pack
+  was captured on an <strong>NVIDIA A40</strong>. The pack is relabelled, not
+  re-measured, and says so in its own <code>rocm_bake_provenance</code> block.
+  Nothing in it tells you anything about MI455X, gfx1250, our PyTorch,
+  our AITER or our Triton. More accurate estimates are expected later;
+  until then these are placeholders.</li>
+<li><strong>The memory figure is a datasheet number, not a measured one.</strong> A
+  real device reports less than its nominal capacity once ECC and
+  firmware reservations come out — the A40 this pack came from is a
+  48 GiB card reporting 47,709,159,424 bytes, which is 44.43 GiB, or
+  92.6%. So the KV cache sized from 432 GiB is optimistic, and
+  <code>rocminfo</code> should replace it as soon as anyone has the part.</li>
+<li><strong>No kernel runs.</strong> There is nothing here to profile, optimise or
+  regress. A faster kernel changes nothing a run reports.</li>
+<li><strong>No accuracy signal.</strong> The emulator emits a fixed filler token. The
+  text coming back is not model output and is not meant to be read.</li>
+<li><strong>Fidelity is the pack's, not ours.</strong> Upstream reports TPOT and ITL
+  within ~1% of real runs and TTFT within ~10% at low request rates —
+  for the model and hardware a pack was captured on. Serving a model
+  the pack does not describe is extrapolation.</li>
+</ul>
+<p>Capturing our own pack needs <code>StepCycleTracer</code> and a real GPU, so that
+waits for a node with a card.</p>
+<h3 id="the-shipped-pack-is-reduced">The shipped pack is reduced<a class="headerlink" href="#the-shipped-pack-is-reduced" title="Permanent link">&para;</a></h3>
+<p>Upstream's file is 11 MB; the one in the image is 836 KB. Half of that
+saving is lossless: <code>step_cycle_2d_distribution</code> is a verbatim
+duplicate of the prefill and decode tables merged — 46,166 + 232,234 =
+278,400 samples — and the oracle never reads it while both of those
+exist. The build refuses to drop it when they do not.</p>
+<p>The rest is quantisation. Each bucket keeps 64 quantiles of itself
+rather than all 556,800 raw measurements, which samples the same
+distribution: the oracle draws with <code>random.choice()</code>, so a uniform
+draw over evenly spaced quantiles is inverse-transform sampling of the
+empirical CDF. Min and max are preserved exactly, so the tails survive.
+Measured over 20,000 draws per query against the original, medians
+agree within 0.01% on the common decode buckets; the worst case is
+−0.75% on the median and +2.47% at p95, on the heaviest prefill bucket.</p>
+<p>64 is not arbitrary. Adaptive-K pooling grows its neighbourhood until
+the cumulative sample count reaches
+<code>VLLM_EMULATOR_ORACLE_MIN_SAMPLES</code> — default 30 — and counts
+<code>len(samples)</code>, so anything at or above that floor leaves pooling
+decisions unchanged. Below it, the oracle would quietly start merging
+neighbouring batch shapes.</p>
+<h3 id="two-known-defects-in-the-emulators-output">Two known defects in the emulator's output<a class="headerlink" href="#two-known-defects-in-the-emulators-output" title="Permanent link">&para;</a></h3>
+<p>Found by audit rather than by hitting them, both in LLM-Emu's executor
+hook, both non-fatal and both invisible to a short smoke test. Neither
+is fixed yet; they are recorded here so results are not read as cleaner
+than they are.</p>
+<p><strong>Chunked prefill emits a phantom token.</strong> The hook decides which
+requests are mid-prefill by iterating <code>scheduled_new_reqs</code> only, so
+chunks 2..n of a long prompt — which arrive in <code>scheduled_cached_reqs</code>
+— are treated as decode steps and get a filler token appended. A prompt
+longer than the per-step token budget therefore accumulates extra
+output tokens mid-prefill, and can reach <code>max_tokens</code> or a stop check
+early. Short prompts never hit it.</p>
+<p><strong>Logprobs rows are indexed against the wrong batch.</strong> The hook builds
+its <code>LogprobsLists</code> arrays with one row per request that produced a
+token, while vLLM's scheduler indexes them by position in the full
+batch. With logprobs requested and any request mid-prefill in the same
+step, rows are attributed to the wrong requests.</p>
+<h2 id="how-the-wiring-works">How The Wiring Works<a class="headerlink" href="#how-the-wiring-works" title="Permanent link">&para;</a></h2>
+<p>LLM-Emu ships its vLLM integration as a unified diff against vLLM
+<strong>0.18.1</strong>; this repo pins <strong>v0.33.0</strong>. Measured against our tag, five
+of seven hunks in <code>vllm/v1/engine/core.py</code> and one of four in
+<code>vllm/v1/executor/uniproc_executor.py</code> fail to apply, and the
+<code>scheduler.py</code> hunk turns out to add an unused import and two blank
+lines. Upstream says as much: regenerating the patch is expected on
+every vLLM bump.</p>
+<p>Doing that each time is what this repo avoids. Instead
+<a href="https://github.com/sbates130272/rocm-bake/tree/main/docker/vllm-emu-shim"><code>docker/vllm-emu-shim/</code></a> applies the wiring to vLLM's <em>classes</em>
+at plugin-load time, through the same meta-path import hook LLM-Emu
+already uses for <code>GPUModelRunner</code> and <code>gpu_worker</code> in <code>cuda_mock.py</code>.
+Nothing patches vLLM's source, so a <code>VLLM_REF</code> bump cannot leave a
+stale diff behind.</p>
+<p>It also turns out to need far less than the diff carries. Of ~170
+patched lines, about 25 matter for emulation:</p>
+<table>
+<thead>
+<tr>
+<th>What</th>
+<th>Where</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>attach the executor hook</td>
+<td><code>UniProcExecutor.__init__</code></td>
+</tr>
+<tr>
+<td>hand the step to the oracle</td>
+<td><code>UniProcExecutor.execute_model</code></td>
+</tr>
+<tr>
+<td>return the oracle's pending Future</td>
+<td><code>UniProcExecutor.sample_tokens</code></td>
+</tr>
+<tr>
+<td>release it</td>
+<td><code>UniProcExecutor.shutdown</code></td>
+</tr>
+<tr>
+<td>survive an empty batch</td>
+<td><code>EngineCore.step_with_batch_queue</code></td>
+</tr>
+</tbody>
+</table>
+<p>The rest is <code>StepCycleTracer</code> instrumentation for <em>capturing</em> a pack on
+a real GPU, which we consume rather than produce.</p>
+<p>The third row is not cosmetic: the async engine needs a <strong>pending</strong>
+Future while the next batch is scheduled, so the hook's timer Future
+has to reach the engine rather than a resolved stand-in.</p>
+<h3 id="when-vllm-moves">When vLLM moves<a class="headerlink" href="#when-vllm-moves" title="Permanent link">&para;</a></h3>
+<p>The shim makes assumptions — that those methods still take <code>non_block</code>,
+that <code>EngineCore</code> still raises <code>RuntimeError("unexpected error")</code> on
+the empty-batch path. Assumptions in a comment are facts about one day,
+so <code>vllm-emu-selftest</code> re-measures each of them, the same way
+<code>docker/wheel-verdict.py</code> re-measures the manylinux verdicts. It runs
+inside the image build and again at the top of <code>make emu-test</code>, so a
+bump that invalidates one fails loudly rather than serving wrongly.</p>
+<h2 id="publishing">Publishing<a class="headerlink" href="#publishing" title="Permanent link">&para;</a></h2>
+<p>The wheels go out under the pseudo-architecture <strong><code>emu</code></strong>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>make<span class="w"> </span>emu-index<span class="w">          </span><span class="c1"># fetch from Zot, build the PEP 503 index</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>make<span class="w"> </span>emu-index-check<span class="w">    </span><span class="c1"># install it in a throwaway venv and import it</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>make<span class="w"> </span>emu-publish-dry
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>make<span class="w"> </span>emu-publish<span class="w">        </span><span class="c1"># release + gh-pages index</span>
+</code></pre></div>
+<h3 id="installing-from-it-needs-a-torch">Installing from it needs a torch<a class="headerlink" href="#installing-from-it-needs-a-torch" title="Permanent link">&para;</a></h3>
+<p>The index does not contain one, and the metapackage does not pin one:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>rocm-torch 10.1.0+emu.&lt;digest&gt;  (extra: device-emu)
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>  llm-emu==0.1.0
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>  vllm==0.33.0+empty
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>  vllm-emu-shim==0.1.0
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>  vllm-emu-pack-gfx1250==0.1.0+&lt;ref&gt;
+</code></pre></div>
+<p>vLLM built with <code>VLLM_TARGET_DEVICE=empty</code> resolves its dependencies
+from <code>requirements/common.txt</code>, which names no torch at all, so nothing
+drags one in behind the metapackage. Installing it alone gives you a
+vLLM that cannot <code>import vllm</code>.</p>
+<p>(The fourth wheel is the profile pack. It ships separately from the
+shim because a pack describes one device and the shim describes none —
+the shim is byte-identical whatever is being emulated, so bundling
+would give two devices the same wheel filename with different
+contents. The pack registers a <code>vllm_emu_shim.profile_packs</code> entry
+point and the shim resolves it at interpreter startup, through a
+<code>.pth</code> file, so installing it is the whole configuration step; install
+two and the shim says so and asks you to set
+<code>VLLM_EMULATOR_PROFILE_PACK</code> yourself. Startup rather than the shim's
+own import, because LLM-Emu reads the variable when vLLM loads platform
+plugins, which is earlier: resolved any later, the API server and the
+engine core disagree about which device they are emulating. The <code>.pth</code>
+does nothing unless the emulator is switched on.)</p>
+<p>That is deliberate rather than an omission. PyPI's torch for linux
+x86-64 is the CUDA build, and pinning it would pull the whole <code>nvidia-*</code>
+dependency set into a lane whose entire point is that it needs no GPU.
+Which torch belongs here is yours to choose — the CPU build, or this
+repo's ROCm one from a per-card index if you want the emulator beside a
+real stack. So the install is two steps:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>pip<span class="w"> </span>install<span class="w"> </span>--index-url<span class="w"> </span>https://download.pytorch.org/whl/cpu<span class="w"> </span>torch
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">  </span>--index-url<span class="w"> </span>https://sbates130272.github.io/rocm-bake/data/wheels/emu/<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">  </span>--extra-index-url<span class="w"> </span>https://pypi.org/simple<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">  </span><span class="s2">"rocm-torch[device-emu]"</span>
+</code></pre></div>
+<p><code>make emu-index-check</code> runs exactly that against the freshly built
+index, then imports vLLM and runs <code>vllm-emu-selftest</code> — because an
+index that resolves and cannot run is the failure this check exists to
+catch, and <code>pip list</code> alone never notices it.</p>
+<p>Nothing in <code>wheelindex.py</code> or <code>wheelpublish.sh</code> inspects the
+architecture string beyond using it — it becomes the index directory,
+the <code>device-&lt;arch&gt;</code> extra, and the release name — so the existing
+machinery carries this lane unchanged.</p>
+<p><strong>It is deliberately not in the per-arch indexes.</strong> An index holding
+both <code>vllm 0.33.0+rocm10.1.0</code> and <code>vllm 0.33.0+empty</code> would let pip
+resolve the emulator build for someone installing
+<code>rocm-torch[device-gfx950]</code>: a vLLM that cannot run a kernel, handed to
+someone who asked for a card. One name, one index, no overlap — which
+is also why <code>vllm-emu-wheel</code> is absent from <code>WHEEL_REPOS</code>.</p>
+<h2 id="running-it">Running It<a class="headerlink" href="#running-it" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>docker<span class="w"> </span>run<span class="w"> </span>--rm<span class="w"> </span>-p<span class="w"> </span><span class="m">8000</span>:8000<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span>snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/vllm-emu:latest<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span>serve<span class="w"> </span>Qwen/Qwen3-8B<span class="w"> </span>--host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span>--max-model-len<span class="w"> </span><span class="m">2048</span>
+</code></pre></div>
+<p>No <code>--device</code>, no <code>/dev/kfd</code>, no <code>/dev/dri</code>. The image sets the
+emulator environment itself:</p>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Default in the image</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>VLLM_EMULATOR_ENABLE_ORACLE</code></td>
+<td><code>1</code></td>
+<td>the master switch; unset, everything is inert and vLLM behaves normally</td>
+</tr>
+<tr>
+<td><code>VLLM_EMULATOR_PROFILE_PACK</code></td>
+<td>resolved from the installed pack wheel</td>
+<td>the step latencies</td>
+</tr>
+<tr>
+<td><code>VLLM_EMULATOR_MOCK_CUDA</code></td>
+<td><code>1</code></td>
+<td>stub <code>torch.cuda</code>, skip weight loading</td>
+</tr>
+<tr>
+<td><code>VLLM_EMULATOR_MODE</code></td>
+<td><code>realtime</code></td>
+<td><code>accelerated</code> resolves steps immediately for fast simulation</td>
+</tr>
+<tr>
+<td><code>VLLM_EMULATOR_MEMORY</code></td>
+<td>from the pack</td>
+<td>override the emulated device's memory</td>
+</tr>
+<tr>
+<td><code>CUDA_VISIBLE_DEVICES</code></td>
+<td><code>""</code></td>
+<td>belt and braces — no real device is reachable</td>
+</tr>
+</tbody>
+</table>
+<p><code>make emu-test</code> is the five-check version of the same thing. Its last
+two checks are the ones that matter: that no weights were loaded, and
+that wall-clock tracked the latencies the oracle predicted. Everything
+before them only proves the HTTP stack is alive, which it would be even
+if the emulator had never attached.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      MIT
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "navigation.indexes", "content.code.copy", "content.action.edit", "toc.follow"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+        <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+      
+        <script src="../../javascripts/bench.js"></script>
+      
+        <script src="../../javascripts/images.js"></script>
+      
+    
+  </body>
+</html>

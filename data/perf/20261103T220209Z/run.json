@@ -1,0 +1,11 @@
+{
+  "stamp": "20261103T220209Z",
+  "arch": "gfx1201",
+  "mode": "cold",
+  "interval_seconds": 5,
+  "sccache_key_prefix": "perf-20261103T220209Z",
+  "run_id": "20261103T220209Z-deb8737",
+  "targets": "pytorch-wheel triton-wheel aiter-wheel nixl-wheel cupy-wheel vllm-wheel lmcache-wheel pytorch",
+  "vcs_ref": "deb8737",
+  "vcs_dirty": false
+}

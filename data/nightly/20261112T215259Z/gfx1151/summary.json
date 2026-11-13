@@ -1,0 +1,51 @@
+{
+  "arch": "gfx1151",
+  "registry": "472426151104.dkr.ecr.us-west-2.amazonaws.com",
+  "phases": {
+    "warm": {
+      "seconds": 3,
+      "rc": 1,
+      "cache_errors": 0
+    }
+  },
+  "cost": {
+    "instance": "2xlarge",
+    "usd_per_min": 0.2,
+    "rate_verified": true,
+    "billed_seconds": 3,
+    "usd": 0.01
+  },
+  "metrics": {
+    "sccache": {
+      "requests": 0,
+      "executed": 0,
+      "hits": 0,
+      "misses": 0,
+      "hit_rate": null
+    },
+    "layer_cache": {
+      "done": 6,
+      "cached": 0,
+      "import_misses": 0
+    },
+    "targets": {
+      "pytorch-src": {
+        "seconds": 2.5,
+        "steps": 3
+      },
+      "rocm-runtime": {
+        "seconds": 0.0,
+        "steps": 1
+      }
+    },
+    "vertex_seconds": 2.5
+  },
+  "footprint": {
+    "docker_root": "/var/lib/docker",
+    "disk_used_bytes": 17619894272,
+    "disk_avail_bytes": 1313531879424,
+    "buildkit_store_bytes": 43130000,
+    "mem_anon_bytes": 256606208,
+    "mem_file_bytes": 1593606144
+  }
+}

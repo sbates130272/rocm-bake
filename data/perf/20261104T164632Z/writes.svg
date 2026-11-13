@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="300" viewBox="0 0 900 300" role="img" aria-label="Cache bytes written (cumulative)">
+<style>
+  .surface{fill:#fcfcfb} .ink{fill:#0b0b0b}
+  .ink2{fill:#52514e} .grid{stroke:#e4e3df;stroke-width:1}
+  text{font-family:ui-sans-serif,-apple-system,Segoe UI,Helvetica,Arial,sans-serif}
+  .t{font-size:13px;font-weight:600} .l{font-size:11px}
+  .v{font-size:11px;font-weight:600}
+  @media (prefers-color-scheme: dark){
+    .surface{fill:#1a1a19} .ink{fill:#f0efec}
+    .ink2{fill:#c3c2b7} .grid{stroke:#2e2e2c}
+    .s-0{stroke:#3987e5} .d-0{fill:#3987e5}
+    .s-1{stroke:#d95926} .d-1{fill:#d95926}
+    .s-2{stroke:#199e70} .d-2{fill:#199e70}
+  }
+  .s-0,.s-1,.s-2{fill:none;stroke-width:2}
+  .d-0,.d-1,.d-2{stroke:none}
+  .s-0{stroke:#2a78d6} .d-0{fill:#2a78d6}
+  .s-1{stroke:#eb6834} .d-1{fill:#eb6834}
+  .s-2{stroke:#1baf7a} .d-2{fill:#1baf7a}
+</style>
+<rect width="900" height="300" class="surface"/>
+<text x="16" y="24" class="t ink">Cache bytes written (cumulative)</text>
+<line x1="54" y1="266.0" x2="788" y2="266.0" class="grid"/>
+<text x="46" y="270.0" text-anchor="end" class="l ink2">0.0</text>
+<line x1="54" y1="209.5" x2="788" y2="209.5" class="grid"/>
+<text x="46" y="213.5" text-anchor="end" class="l ink2">3.2</text>
+<line x1="54" y1="153.0" x2="788" y2="153.0" class="grid"/>
+<text x="46" y="157.0" text-anchor="end" class="l ink2">6.4</text>
+<line x1="54" y1="96.5" x2="788" y2="96.5" class="grid"/>
+<text x="46" y="100.5" text-anchor="end" class="l ink2">9.5</text>
+<line x1="54" y1="40.0" x2="788" y2="40.0" class="grid"/>
+<text x="46" y="44.0" text-anchor="end" class="l ink2">12.7</text>
+<text x="16" y="292" class="l ink2">GB written · elapsed 27m13s</text>
+<path d="M58.5,266.0 L305.2,266.0 L425.2,266.0 L425.2,266.0 L425.2,266.0 L425.2,266.0 L425.2,266.0 L425.2,266.0 L425.2,266.0 L427.0,266.0 L427.4,266.0 L427.4,266.0 L427.4,266.0 L427.4,266.0 L427.4,266.0 L427.9,266.0 L485.4,266.0 L494.4,266.0 L506.5,266.0 L702.4,266.0 L730.3,266.0 L730.3,266.0 L731.6,266.0 L733.4,265.9" class="s-0" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="733.4" cy="265.9" r="4" class="d-0"/>
+<path d="M108.4,266.0 L108.4,266.0 L110.7,258.5 L244.3,251.0 L356.8,244.4 L375.8,244.4 L375.9,244.3 L376.0,244.2 L376.2,244.0 L376.2,244.0 L384.3,236.7 L393.5,213.6 L410.1,213.6 L410.1,213.6 L410.1,213.6 L416.9,206.4 L418.3,199.2 L418.4,192.0 L418.4,184.8 L418.4,184.7 L434.3,184.7 L434.4,184.7 L434.4,184.7 L434.5,184.7 L434.5,184.7 L434.6,184.6 L435.8,184.6 L435.9,184.6 L436.6,182.9 L436.7,180.7 L436.7,180.7 L438.9,180.7 L439.0,180.7 L439.3,180.6 L440.2,180.6 L440.5,180.6 L441.0,180.5 L441.4,180.3 L443.0,180.3 L443.5,180.2 L443.7,172.9 L444.8,172.5 L449.3,165.3 L451.3,141.8 L452.0,141.8 L528.8,141.8 L528.8,141.8 L528.8,141.8 L535.4,139.5 L554.2,139.5 L554.2,139.5 L554.2,139.5 L554.2,139.5 L554.3,139.3 L555.9,139.3 L555.9,139.3 L555.9,139.3 L556.1,139.1 L556.2,138.7 L565.6,136.7 L566.6,136.7 L594.1,132.3 L595.3,132.3 L596.4,132.3 L623.8,125.1 L638.1,122.8 L650.3,115.6 L748.3,115.6 L748.3,115.6 L748.3,115.6 L748.7,114.3 L771.8,114.3 L771.8,114.3 L771.8,114.3 L771.8,114.3 L772.2,113.9 L775.8,110.0 L775.8,110.0 L776.9,108.7 L777.0,108.7 L777.8,107.9 L777.9,107.9 L778.1,107.8 L778.2,107.8 L778.3,103.2 L780.0,101.6 L780.2,94.3 L780.5,94.1 L782.0,90.5 L784.9,83.3 L788.0,60.5 L788.0,60.5" class="s-1" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="788.0" cy="60.5" r="4" class="d-1"/>
+<text x="798" y="64.5" class="v d-1">layer cache (Zot)</text>
+<text x="798" y="269.9" class="v d-0">sccache</text>
+</svg>

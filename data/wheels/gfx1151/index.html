@@ -1,0 +1,16 @@
+<!DOCTYPE html><html><body>
+<h1>gfx1151</h1>
+<a href="amd-aiter/">amd-aiter</a><br/>
+<a href="atom/">atom</a><br/>
+<a href="cupy/">cupy</a><br/>
+<a href="lmcache/">lmcache</a><br/>
+<a href="nixl/">nixl</a><br/>
+<a href="nixl-rocm/">nixl-rocm</a><br/>
+<a href="rocm-torch/">rocm-torch</a><br/>
+<a href="torch/">torch</a><br/>
+<a href="torchvision/">torchvision</a><br/>
+<a href="triton/">triton</a><br/>
+<a href="triton-kernels/">triton-kernels</a><br/>
+<a href="vllm/">vllm</a><br/>
+<h2>Platform tags</h2><p>Measured from each wheel's own ELF symbols at publish time, not asserted. A <code>manylinux</code> tag is granted only where the compiled code's glibc requirement allows one; a wheel needing a glibc newer than every defined policy stays <code>linux_x86_64</code>, which is a statement about this build, not a defect.</p><table><tr><th>project</th><th>tag</th><th>needs glibc</th><th>why</th></tr><tr><td><code>amd-aiter</code></td><td><code>linux_x86_64</code></td><td><code>—</code></td><td>GPU code objects only — no x86-64 code for a platform tag to describe</td></tr><tr><td><code>atom</code></td><td><code>manylinux_2_38_x86_64</code></td><td><code>2.38</code></td><td>granted by auditwheel; symbols need glibc 2.38</td></tr><tr><td><code>cupy</code></td><td><code>manylinux_2_39_x86_64</code></td><td><code>2.38</code></td><td>granted by auditwheel; symbols need glibc 2.38</td></tr><tr><td><code>lmcache</code></td><td><code>manylinux_2_39_x86_64</code></td><td><code>2.34</code></td><td>granted by auditwheel; symbols need glibc 2.34</td></tr><tr><td><code>nixl</code></td><td><code>any</code></td><td><code>—</code></td><td>no compiled code at all</td></tr><tr><td><code>nixl-rocm</code></td><td><code>manylinux_2_39_x86_64</code></td><td><code>2.38</code></td><td>granted by auditwheel; symbols need glibc 2.38</td></tr><tr><td><code>rocm-torch</code></td><td><code>any</code></td><td><code>—</code></td><td>no compiled code at all</td></tr><tr><td><code>torch</code></td><td><code>linux_x86_64</code></td><td><code>2.43</code></td><td>symbols need glibc 2.43, newer than manylinux_2_41_x86_64, the newest policy auditwheel knows</td></tr><tr><td><code>torchvision</code></td><td><code>manylinux_2_39_x86_64</code></td><td><code>2.38</code></td><td>granted by auditwheel; symbols need glibc 2.38</td></tr><tr><td><code>triton</code></td><td><code>linux_x86_64</code></td><td><code>2.43</code></td><td>symbols need glibc 2.43, newer than manylinux_2_41_x86_64, the newest policy auditwheel knows</td></tr><tr><td><code>triton-kernels</code></td><td><code>any</code></td><td><code>—</code></td><td>no compiled code at all</td></tr><tr><td><code>vllm</code></td><td><code>linux_x86_64</code></td><td><code>2.43</code></td><td>symbols need glibc 2.43, newer than manylinux_2_41_x86_64, the newest policy auditwheel knows</td></tr></table>
+</body></html>
