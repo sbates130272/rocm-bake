@@ -1718,6 +1718,16 @@ emu-index: ## Fetch the emu wheels from Zot and build their pip index
 # on a set that resolves and cannot run — exactly the failure above.
 # vllm-emu-selftest is the stronger statement: entry points registered,
 # wiring armed, vLLM's own assumptions still holding.
+#
+# --require-platform, not a bare selftest, and that word is the whole
+# point of this flag existing here. Without it the check passes on an
+# index with NO profile pack in it: the wiring arms fine, nothing
+# complains, and the first request would then fall through to a worker
+# with no model. That is not hypothetical — an index built from an
+# image predating the pack wheel produced exactly that set, and this
+# check waved it through. --require-platform resolves the pack and
+# makes vLLM pick EmulatorPlatform, so a packless index fails here
+# rather than at someone's first completion.
 EMU_TORCH_INDEX ?= https://download.pytorch.org/whl/cpu
 
 emu-index-check: ## Install the emu index into a throwaway venv and import it
@@ -1739,7 +1749,7 @@ emu-index-check: ## Install the emu index into a throwaway venv and import it
 	"$$v/bin/pip" list 2>/dev/null | sed 's/^/     /'; \
 	"$$v/bin/python" -c "import torch, vllm; \
 print('     torch', torch.__version__, '/ vLLM', vllm.__version__)"; \
-	VLLM_EMULATOR_ENABLE_ORACLE=1 "$$v/bin/vllm-emu-selftest"; \
+	VLLM_EMULATOR_ENABLE_ORACLE=1 "$$v/bin/vllm-emu-selftest" --require-platform; \
 	rm -rf "$$v"
 
 emu-publish-dry: ## Show what publishing the emu wheels would do
