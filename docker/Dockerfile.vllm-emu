@@ -1,0 +1,479 @@
+# syntax=docker/dockerfile:1
+# vLLM on the LLM-Emu path: one wheel, every architecture, no GPU.
+#
+# WHAT THIS IS. Every other vLLM artifact in this repo is welded to one
+# gfx target — the HIP extensions carry code objects for a single
+# architecture, so each card needs its own wheel, its own index and its
+# own release. This builds vLLM with VLLM_TARGET_DEVICE=empty instead:
+# setup.py's _no_device() branch empties ext_modules, collapses the
+# requirements to requirements/common.txt, and suffixes the version
+# `+empty`. No CMake, no HIP, no ROCm anywhere in this file.
+#
+# WHAT MAKES THAT USEFUL RATHER THAN INERT. LLM-Emu
+# (github.com/AKafakA/llm-emu, MLArchSys@ISCA) replaces vLLM's GPU
+# forward pass with a latency draw from a profile pack captured once on
+# real hardware. The scheduler, HTTP stack, admission control, tokenizer
+# and output pipeline are vLLM's own code; only per-step latency is
+# faked, and weights are never materialised. So a vLLM with no device
+# backend still serves, still schedules, and still answers
+# /v1/completions — on any x86 box, including a stock CI runner. No node
+# on this fleet currently has a usable GPU, which is why `vllm`'s
+# verification stops at "it imports" and why atom-vllm ships disabled.
+# This is the one serving lane that can be exercised end to end.
+#
+# WHY manylinux AND NOT THE ROCm BASE. Dockerfile.vllm skips auditwheel
+# because vllm/vllm-rs references GLIBC_2.43 from the ROCm image's
+# Ubuntu 26.04, so linux_x86_64 is the only honest tag there (see the
+# wheel-verdict call). This lane needs the opposite property — a wheel
+# that installs anywhere — so it is built where an old glibc is the
+# floor rather than where the rest of the graph lives.
+#
+# As it turns out the glibc floor is moot, because the wheel contains
+# no compiled code at all and comes out py3-none-any. The base still
+# earns its place: it is what keeps that true by accident rather than
+# by luck, and it is the branch the build falls back to if upstream
+# ever makes the Rust extension mandatory. The long note above the
+# tagging step has the full argument.
+#
+# WHAT IT IS NOT. Not a performance measurement of this repo's stack:
+# the latency comes from someone else's A40, and nothing here runs a
+# kernel. See docs/architecture/emulation.md.
+#
+# Three stages produce artifacts: `wheel` (scratch, the four wheels),
+# `final` (runnable), and `builder`/`plugin` behind them.
+
+ARG MANYLINUX_IMAGE=quay.io/pypa/manylinux_2_28_x86_64:latest
+ARG PYTHON_VERSION=3.14
+
+# ─── vLLM, built for no device at all ────────────────────────────
+FROM ${MANYLINUX_IMAGE} AS builder
+
+ARG PYTHON_VERSION
+ARG VLLM_REF=v0.33.0
+ARG RUST_VERSION=1.95
+# The repo's own torch version, from the CPU index rather than ROCm's.
+# setup.py imports torch on line 17 whatever the target device, so the
+# build needs one; the CPU index keeps a CUDA runtime that nothing here
+# would load out of the image. Note this torch does NOT end up in the
+# wheel's dependencies: the _no_device() branch resolves
+# install_requires from requirements/common.txt, which names no torch
+# at all — see the install note in docs/architecture/emulation.md.
+ARG PYTORCH_VERSION
+ARG SOURCE_DATE_EPOCH
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_ROOT_USER_ACTION=ignore \
+    PYTHONUNBUFFERED=1
+
+# manylinux ships every interpreter under /opt/python/<tag>/bin; pick
+# ours and put it first, so `python`/`pip` below mean the one the wheel
+# will be tagged for. cp314 from 3.14 — the dot is not in the tag.
+RUN set -eu; \
+    tag="cp$(echo "${PYTHON_VERSION}" | tr -d '.')"; \
+    test -x "/opt/python/${tag}-${tag}/bin/python" \
+        || { echo "no ${tag} interpreter in this manylinux image" >&2; \
+             ls /opt/python >&2; exit 1; }; \
+    ln -s "/opt/python/${tag}-${tag}/bin" /usr/local/pybin
+ENV PATH=/usr/local/pybin:$PATH
+
+# Same channel Dockerfile.vllm pins, for the same reason: vLLM's
+# rust-toolchain.toml is what decides whether vllm/vllm-rs compiles.
+RUN curl -fsSL https://sh.rustup.rs -o /tmp/rustup-init.sh && \
+    sh /tmp/rustup-init.sh -y --no-modify-path --profile minimal \
+        --default-toolchain ${RUST_VERSION} && \
+    rm /tmp/rustup-init.sh
+ENV PATH=/root/.cargo/bin:$PATH
+RUN cargo --version && rustc --version
+
+RUN pip install --no-cache-dir \
+        "cmake>=3.26.1" ninja "packaging>=24.2" \
+        "setuptools>=78.1.1,<81.0.0" "setuptools-scm>=8" \
+        "setuptools-rust>=1.9.0" "wheel>=0.40" "jinja2>=3.1.6" auditwheel
+
+RUN pip install --no-cache-dir \
+        --index-url https://download.pytorch.org/whl/cpu \
+        "torch==${PYTORCH_VERSION}" && \
+    python -c "import torch; assert not torch.version.hip and not torch.version.cuda, \
+        'this lane must build against a CPU torch'; print('torch', torch.__version__)"
+
+# A tag, never a branch — a moving ref would be served from the layer
+# cache forever, the same trap Dockerfile.torchvision documents.
+RUN git clone --depth 1 --branch ${VLLM_REF} \
+    https://github.com/vllm-project/vllm.git /opt/vllm
+
+WORKDIR /opt/vllm
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# setup.py directly rather than `python -m build`, for the same reason
+# Dockerfile.vllm gives: a PEP 517 front end would honour the
+# `torch == 2.14.0` build requirement by resolving its own torch from
+# PyPI — the CUDA one — into an isolated environment.
+#
+# The clone is shallow and tag-pinned so setuptools_scm can see the tag
+# but not the history depth it wants; pretending the version keeps the
+# wheel from being named 0.1.dev1+unknown.
+#
+# No MAX_JOBS heuristic here, unlike Dockerfile.vllm: there is no C++
+# to compile. Cargo's own job control is the only parallelism, and the
+# whole build is minutes rather than hours.
+RUN --mount=type=cache,target=/root/.cargo/registry,sharing=locked \
+    --mount=type=cache,target=/opt/vllm/target,sharing=locked \
+    set -eu; \
+    export VLLM_TARGET_DEVICE=empty; \
+    export SETUPTOOLS_SCM_PRETEND_VERSION="${VLLM_REF#v}"; \
+    export VLLM_DOCKER_BUILD_CONTEXT=1; \
+    PYTHONDONTWRITEBYTECODE=1 python setup.py bdist_wheel --dist-dir=/raw-wheels \
+    2>&1 | tee /wheels-build.log
+
+SHELL ["/bin/sh", "-c"]
+
+# The inverse of Dockerfile.vllm's offload-bundle check, and the
+# assertion this whole lane rests on: that build proves the wheel HAS
+# code objects for its architecture, this proves it has none for any.
+#
+# Two things are checked, because they fail differently. A device
+# extension present at all (vllm/_C*.so, _rocm_C) means
+# VLLM_TARGET_DEVICE did not take effect — a typo in the env, or an
+# upstream change to _no_device(). Clang offload bundles inside some
+# other ELF would mean GPU code arrived by a path nobody declared.
+# Either way the wheel is not arch-free and must not be published as
+# though it were.
+#
+# The third thing it does is decide how the wheel should be TAGGED,
+# which cannot be known before looking inside it — see the long note
+# below the RUN.
+RUN --mount=type=tmpfs,target=/tmp/w \
+    set -eu; \
+    python -m zipfile -e /raw-wheels/*.whl /tmp/w; \
+    if find /tmp/w -name '_C*.so' -o -name '*_rocm_C*' -o -name '*_cuda*.so' \
+        | grep -q . ; then \
+        echo "device extension present — VLLM_TARGET_DEVICE=empty did not take" >&2; \
+        find /tmp/w \( -name '_C*.so' -o -name '*_rocm_C*' \) >&2; exit 1; fi; \
+    if grep -rlI --include='*.so' -e '__CLANG_OFFLOAD_BUNDLE' /tmp/w 2>/dev/null \
+        | grep -q . ; then \
+        echo "GPU offload bundles found in an arch-free wheel" >&2; exit 1; fi; \
+    echo "no device code in $(basename /raw-wheels/*.whl)"; \
+    printf 'emu\n' > /wheels-arch.txt; \
+    echo "--- what setup.py said about the rust extension ---" \
+        | tee /wheels-tag.txt; \
+    grep -i -e 'rust' -e 'cargo' /wheels-build.log | tail -20 \
+        | tee -a /wheels-tag.txt || true; \
+    if find /tmp/w -name '*.so' | grep -q . ; then \
+        echo "== native code present: repairing" | tee -a /wheels-tag.txt; \
+        auditwheel repair /raw-wheels/*.whl -w /wheels \
+            --exclude 'libtorch*.so*' --exclude 'libc10*.so*' \
+            2>&1 | tee -a /wheels-tag.txt; \
+        whl=$(ls /wheels/*.whl); \
+        case "$(basename "${whl}")" in \
+            *manylinux*) echo "repaired to $(basename "${whl}")" ;; \
+            *) echo "auditwheel left ${whl} unrepaired — not install-anywhere" >&2; \
+               exit 1 ;; \
+        esac; \
+    else \
+        echo "== no native code: retagging py3-none-any" | tee -a /wheels-tag.txt; \
+        mkdir -p /wheels; \
+        python -m wheel tags --remove \
+            --python-tag py3 --abi-tag none --platform-tag any \
+            /raw-wheels/*.whl 2>&1 | tee -a /wheels-tag.txt; \
+        mv /raw-wheels/*.whl /wheels/; \
+        whl=$(ls /wheels/*.whl); \
+        case "$(basename "${whl}")" in \
+            *-py3-none-any.whl) echo "retagged to $(basename "${whl}")" ;; \
+            *) echo "retag did not take: $(basename "${whl}")" >&2; exit 1 ;; \
+        esac; \
+    fi
+
+# wheels-arch.txt carries the single token `emu`, and nothing else.
+#
+# It is not prose and not a log line. wheelindex.py's check_arch()
+# reads this file back when building a pip index and exits if the arch
+# it was told to index is not one of the lines — the guard that stops
+# a gfx1201 directory being published as gfx950. Every other Dockerfile
+# writes the gfx names it found in the compiled objects; this one has
+# no compiled device objects by construction, so it writes the
+# pseudo-arch the emu index is published under (`make emu-index`,
+# ARCH=emu). Any other content here — including an honest sentence
+# about there being no device code — fails that check.
+
+# WHY THE TAG IS DECIDED BY LOOKING, NOT ASSERTED.
+#
+# The first version of this ran `auditwheel repair` unconditionally and
+# demanded a manylinux tag. auditwheel refused:
+#
+#     This does not look like a platform wheel, no ELF executable or
+#     shared library file (including compiled Python C extension)
+#     found in the wheel archive
+#
+# It was right. With VLLM_TARGET_DEVICE=empty the wheel contains no
+# compiled code at ALL. setup.py still declares the Rust frontend
+# extension, which is what makes setuptools mark the wheel impure and
+# name it ...-cp314-cp314-linux_x86_64.whl — but it builds that
+# extension with `optional=not should_require_rust_frontend()`, and
+# VLLM_REQUIRE_RUST_FRONTEND is unset, so a skipped or failed cargo
+# build is not an error and nothing lands in the wheel. The platform
+# tag was setuptools describing its intent, not the contents.
+#
+# Nothing in this lane wants that extension back. The Rust frontend is
+# opt-in at RUNTIME too (vllm/envs.py: VLLM_USE_RUST_FRONTEND defaults
+# to 0, and only --grpc-port and `vllm bench serve` consult it), so a
+# wheel without it serves exactly the same way. Forcing it to build
+# would buy an unused feature at the price of tying this wheel to
+# x86_64 — the opposite of the point.
+#
+# So the honest tag is py3-none-any, which is also STRICTLY stronger
+# than the manylinux tag originally aimed for: it installs on arm64,
+# on musl, on macOS, anywhere a Python 3 runs. The lane asked for a
+# wheel that is not tied to a GFX target and ended up with one that is
+# not tied to a machine.
+#
+# Both paths stay, because which one applies is upstream's choice and
+# not ours: if a future vLLM makes the extension non-optional, the ELF
+# scan sees it, auditwheel repairs it, and the manylinux assertion
+# applies again. What the build must never do is ship whichever came
+# out without noticing — /wheels-tag.txt records which path ran and
+# what setup.py said about cargo, and both paths fail the build if the
+# result does not match the tag they just argued for.
+#
+# `python -m wheel tags`, not a rename: the WHEEL metadata inside the
+# archive carries its own Tag: lines, and a wheel whose filename and
+# metadata disagree is rejected at install time by some tools and
+# silently mis-resolved by others. Verified on a reproduction of the
+# exact filename setup.py produces here — both the name and the Tag:
+# line move, and --remove takes the original away.
+#
+# One field it does NOT move, deliberately left alone: Root-Is-Purelib
+# stays false, because setup.py declared an ext module. That decides
+# purelib vs platlib and nothing else, both are on sys.path, and
+# rewriting it would mean rewriting the RECORD hash that covers it —
+# editing a zip by hand to correct a field no consumer acts on.
+#
+# auditwheel is still installed and still used on the other branch.
+# Plain, not docker/auditwheel-rocm.sh: that script derives its exclude
+# list by walking a ROCm tree, and there is no ROCm in this image. No
+# --plat is passed there either, for the reason the header of
+# auditwheel-rocm.sh gives — the policy comes from the symbols, not
+# from a tag we assert.
+
+# ─── LLM-Emu and the shim ────────────────────────────────────────
+# A separate stage so editing the shim does not invalidate the vLLM
+# build above: the COPY that brings this repo's source in happens here,
+# after everything expensive.
+FROM builder AS plugin
+
+ARG LLM_EMU_REPO=https://github.com/AKafakA/llm-emu.git
+ARG LLM_EMU_REF
+ARG SOURCE_DATE_EPOCH
+
+# --revision, so the pin must be a full SHA: upstream publishes no tags
+# at all, and a branch name would be cached forever.
+RUN git clone --filter=blob:none --revision ${LLM_EMU_REF} \
+        ${LLM_EMU_REPO} /opt/llm-emu || \
+    { git clone ${LLM_EMU_REPO} /opt/llm-emu && \
+      git -C /opt/llm-emu checkout ${LLM_EMU_REF}; }
+
+WORKDIR /opt/llm-emu
+
+# llm-emu's pyproject pins `vllm==0.18.1` — the release its in-tree
+# patches were cut against, and two of ours behind. Keeping it would
+# make the plugin wheel uninstallable beside the vLLM this image
+# builds, and would pull a CUDA vLLM from PyPI to satisfy it.
+#
+# Dropping the pin is safe precisely because vllm_patches/ is not used:
+# the plugin's own code (platform.py, cuda_mock.py, hooks/, oracle/)
+# touches vLLM through public classes, and everything that needed a
+# source edit is reimplemented against v0.33.0 in vllm_emu_shim. See
+# docker/vllm-emu-shim/vllm_emu_shim/_patch.py for the full argument.
+RUN set -eu; \
+    cp pyproject.toml /tmp/pyproject.orig; \
+    sed -i -E '/^[[:space:]]*"vllm[=<>]/d' pyproject.toml; \
+    diff /tmp/pyproject.orig pyproject.toml || true; \
+    ! grep -q '"vllm==' pyproject.toml
+
+RUN pip wheel --no-deps --no-cache-dir -w /wheels /opt/llm-emu
+
+# The shim: this repo's wiring between the two. Pure Python, no
+# dependencies, inert unless VLLM_EMULATOR_ENABLE_ORACLE is set.
+COPY docker/vllm-emu-shim/ /opt/vllm-emu-shim/
+# Clear anything a local `pip install` or `pip wheel` left in the source
+# directory before building from it. setuptools builds in-tree and
+# reuses build/lib, so a module deleted from the source would still
+# ship in the wheel if a stale copy were sitting there — and this
+# directory is exactly where someone testing the shim by hand leaves
+# one. It happened: an egg-info from such a test was committed.
+#
+# Then check the .pth made it into the wheel. It is copied in by a
+# custom build step in setup.py, and losing it is silent: everything
+# still installs and serves, and the API server simply comes up as a
+# different device from the engine core. See _vllm_emu_pack_env.py.
+RUN rm -rf /opt/vllm-emu-shim/build /opt/vllm-emu-shim/*.egg-info && \
+    find /opt/vllm-emu-shim -name __pycache__ -type d -prune -exec rm -rf {} + && \
+    pip wheel --no-deps --no-cache-dir -w /wheels /opt/vllm-emu-shim && \
+    { python -m zipfile -l /wheels/vllm_emu_shim-*.whl | grep -q 'vllm_emu_shim_pack.pth' || \
+        { echo "shim wheel has no .pth — the pack would resolve too late" >&2; exit 1; }; }
+
+RUN ls -la /wheels/
+
+# ─── The profile pack, relabelled for the device it emulates ─────
+# Upstream ships one sample pack, captured on an NVIDIA A40. This lane
+# emulates an AMD part, so the pack is reissued under that name — the
+# identity is rewritten, the measurements are not. See the header of
+# docker/emu-profile-pack.py for why those are different operations.
+#
+# Memory and CU count are AMD's published MI455X figures: 432 GB of
+# HBM4 and 256 CDNA 5 compute units, from the product page and the
+# MI455X datasheet. They matter — vLLM sizes its KV cache from
+# gpu_memory_bytes — which is why they were left at the source pack's
+# A40 values (44 GB, 84 SMs) until there was a citable number rather
+# than a plausible one.
+#
+# 463856467968 is 432 GiB — binary, because GPU memory capacity is
+# quoted that way and reading it as decimal GB understates the part by
+# 31.9 GB, or 7.4%. The A40 this pack came from settles it: a nominal
+# 48 GiB card, reporting 47,709,159,424 bytes, which is 44.43 GiB —
+# 92.6% of 48 GiB after ECC, not 99% of 48 decimal GB.
+#
+# It is still the DATASHEET capacity rather than a measured total, and
+# that same A40 arithmetic says a real device will report meaningfully
+# less once ECC and firmware reservations come out. So this is an upper
+# bound and the KV cache sized from it is optimistic. Replace it with
+# what rocminfo says the moment anyone has the part in front of them.
+#
+# The timings are explicitly a placeholder. More accurate estimates are
+# expected later; when they arrive, replace the pack rather than this
+# script — the relabelling is the part that stays.
+#
+# The same pass also shrinks it, 10,960,068 bytes to 835,778. Two
+# independent savings, and only the second one is lossy:
+#
+#   step_cycle_2d_distribution is dropped. Measured: its keys are the
+#   exact union of the prefill and decode tables and its buckets are
+#   their merge, 46,166 + 232,234 = 278,400 — half the file, a verbatim
+#   second copy. The oracle never reads it while both specific tables
+#   exist, and the script refuses to drop it when they do not.
+#
+#   Each remaining bucket keeps 64 quantiles of itself rather than
+#   every raw measurement, 556,800 samples down to 45,800. The oracle
+#   draws with random.choice(), so a uniform draw over evenly spaced
+#   quantiles samples the same distribution; min and max are preserved
+#   exactly, so the tails survive. Measured against the original over
+#   20,000 draws per query: medians within 0.01% on the common decode
+#   buckets, worst case -0.75% median and +2.47% p95 on the heaviest
+#   prefill bucket. Well inside the emulator's own stated error.
+ARG EMU_GPU_MODEL=gfx1250
+ARG EMU_GPU_NAME="AMD Instinct MI455X"
+ARG EMU_GPU_MEMORY_BYTES=463856467968
+ARG EMU_GPU_CU_COUNT=256
+ARG EMU_SOURCE_PACK=A40-Q8-Qwen3-8B.json
+
+# The pack ships as its OWN wheel, vllm-emu-pack-<model>, not inside
+# the shim and not as a file copied into the image.
+#
+# Because a pack is data about one device and the shim is not. The
+# shim is byte-identical whatever is being emulated, so bundling the
+# pack into it would give two devices the same wheel filename
+# (vllm_emu_shim-0.1.0-py3-none-any.whl) with different contents —
+# colliding as release assets and indistinguishable once installed,
+# the trap wheelpublish.sh already documents for torch across per-card
+# releases. Separate wheels also mean a pack can be recaptured and
+# republished without touching the wiring.
+#
+# It registers a `vllm_emu_shim.profile_packs` entry point, so the shim
+# finds it by its being installed rather than by knowing a path. That
+# is why the image sets no VLLM_EMULATOR_PROFILE_PACK and copies no
+# profiles directory: `pip install` is the whole mechanism, and the
+# image therefore exercises exactly the path an index user gets.
+COPY docker/emu-profile-pack.py /usr/local/bin/emu-profile-pack
+RUN set -eu; \
+    mkdir -p /opt/emu-pack/src; \
+    set -- /opt/llm-emu/example_profiling_data/"${EMU_SOURCE_PACK}" \
+           /opt/emu-pack/"${EMU_GPU_MODEL}-Q8-Qwen3-8B.json" \
+           --gpu-model "${EMU_GPU_MODEL}" \
+           --gpu-name "${EMU_GPU_NAME}" \
+           --source-ref "${LLM_EMU_REF}" \
+           --wheel-dir /opt/emu-pack/src; \
+    [ -n "${EMU_GPU_MEMORY_BYTES}" ] && set -- "$@" --memory-bytes "${EMU_GPU_MEMORY_BYTES}" || true; \
+    [ -n "${EMU_GPU_CU_COUNT}" ] && set -- "$@" --cu-count "${EMU_GPU_CU_COUNT}" || true; \
+    python -I /usr/local/bin/emu-profile-pack "$@"
+
+# Proves the relabelled pack still satisfies llm-emu's own validator —
+# the thing that will actually load it at serve time — rather than
+# trusting that a rewritten multi-megabyte JSON left it well-formed.
+RUN python -c "\
+import sys; sys.path.insert(0, '/opt/llm-emu');\
+from vllm_emulator.profile.loader import load_profile_pack;\
+p = load_profile_pack('/opt/emu-pack/${EMU_GPU_MODEL}-Q8-Qwen3-8B.json');\
+print('profile pack validates:', p['gpu_model'], p['model_config']['gpu']['gpu_name']);\
+print('latencies measured on:', p['rocm_bake_provenance']['latencies_are_measured_on'])"
+
+RUN pip wheel --no-deps --no-cache-dir -w /wheels /opt/emu-pack/src
+
+# ─── Runnable emulator image ─────────────────────────────────────
+# FROM python:slim, not from the builder: the builder carries a Rust
+# toolchain, a vLLM source tree and a cargo cache that together dwarf
+# everything it produced. Nothing ROCm is installed here, and that is
+# the claim the image makes — it runs where there is no AMD GPU.
+FROM python:${PYTHON_VERSION}-slim AS final
+
+ARG VLLM_REF
+ARG LLM_EMU_REF
+ARG PYTORCH_VERSION
+
+LABEL org.opencontainers.image.source="https://github.com/AKafakA/llm-emu"
+LABEL org.opencontainers.image.description="vLLM ${VLLM_REF} on the LLM-Emu path — arch-free, CPU-only"
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_ROOT_USER_ACTION=ignore \
+    PYTHONUNBUFFERED=1
+
+RUN pip install --no-cache-dir \
+        --index-url https://download.pytorch.org/whl/cpu \
+        "torch==${PYTORCH_VERSION}"
+
+# requirements/common.txt from the build, not the wheel's own metadata:
+# identical content here (the _no_device() branch resolves
+# install_requires from exactly this file), but copying it makes what
+# was installed readable out of the published image, the same way
+# Dockerfile.vllm keeps its patched requirements.
+COPY --from=builder /opt/vllm/requirements/common.txt /opt/vllm-requirements/common.txt
+COPY --from=builder /wheels-build.log /wheels-tag.txt /wheels-arch.txt \
+    /var/log/vllm-emu-build/
+
+RUN --mount=type=bind,from=plugin,source=/wheels,target=/w \
+    pip install --no-cache-dir -r /opt/vllm-requirements/common.txt && \
+    pip install --no-cache-dir --no-deps /w/*.whl && \
+    python -c "import vllm; print('vLLM', vllm.__version__)"
+
+# No VLLM_EMULATOR_PROFILE_PACK and no profiles directory. The pack
+# arrived as a wheel in the install above and announces itself through
+# its entry point; the shim's .pth resolves it at interpreter startup,
+# before anything reads the variable. Startup and not the shim's own
+# import, because llm-emu reads it when vLLM loads platform plugins,
+# which comes first — see _vllm_emu_pack_env.py. Setting it here
+# would work too, and would mean the image tested a path no index user
+# takes.
+ENV VLLM_EMULATOR_ENABLE_ORACLE=1 \
+    VLLM_EMULATOR_MOCK_CUDA=1 \
+    CUDA_VISIBLE_DEVICES=""
+
+# Fails the build if the wiring did not attach, if the wheel turns out
+# to be a device build, or if vLLM has moved out from under the shim's
+# assumptions. --require-platform because a pack is present here, so
+# the plugin must resolve to EmulatorPlatform — without it the server
+# would start on a real platform and emulate nothing.
+RUN vllm-emu-selftest --require-platform
+
+EXPOSE 8000
+ENTRYPOINT ["vllm"]
+CMD ["serve", "--help"]
+
+# ─── Wheel-only image ────────────────────────────────────────────
+FROM scratch AS wheel
+
+ARG VLLM_REF
+ARG LLM_EMU_REF
+LABEL org.opencontainers.image.source="https://github.com/vllm-project/vllm"
+LABEL org.opencontainers.image.description="vLLM ${VLLM_REF} arch-free (+empty) wheel, with LLM-Emu ${LLM_EMU_REF} and the rocm-bake shim"
+
+COPY --from=plugin /wheels/ /wheels/
+COPY --from=builder /wheels-build.log /wheels-tag.txt /wheels-arch.txt /

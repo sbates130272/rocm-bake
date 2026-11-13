@@ -19,6 +19,20 @@ pip install \
 Substitute `gfx1201`, `gfx1151` or `gfx1250` for another card. That is
 the whole interface.
 
+!!! note "No GPU? There is an `emu` index"
+    One index is not a card: `emu` carries a vLLM built with no device
+    backend at all, plus the emulator that makes it still serve. It
+    installs anywhere and runs nothing on a GPU — see
+    [Emulated serving](architecture/emulation.md).
+
+    It is kept out of the per-card indexes on purpose. Two builds of
+    `vllm` in one index would let pip hand the emulator to someone who
+    asked for `device-gfx950`.
+
+    That index carries no torch and pins none, so installing from it is
+    two steps — see
+    [Emulated serving](architecture/emulation.md#installing-from-it-needs-a-torch).
+
 !!! warning "Both index URLs are required"
     `--extra-index-url` is not optional. Ordinary dependencies — numpy,
     pydantic, a hundred others — live on PyPI and the install cannot

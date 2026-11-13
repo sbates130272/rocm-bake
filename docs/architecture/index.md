@@ -67,9 +67,9 @@ hostname once on the host, and build containers address it by IP.
 
 | Piece | What It Is | Owned Here? |
 | --- | --- | --- |
-| `rocm-bake.hcl` | The build graph: 16 targets, 3 groups, 52 variables | Yes |
+| `rocm-bake.hcl` | The build graph: 21 targets, 4 groups, 63 variables | Yes |
 | `Makefile` | A wrapper that reads every default out of `rocm-bake.hcl` | Yes |
-| `docker/Dockerfile.*` | Ten Dockerfiles; the build context is always the repo root | Yes |
+| `docker/Dockerfile.*` | Fifteen Dockerfiles; the build context is always the repo root | Yes |
 | `telemetry/build.sh` | Wraps a bake, emits Prometheus metrics, exits with bake's status | Yes |
 | `.builders/*` | Node setup, the balancer, the benchmark harness, registry readers | Yes |
 | Zot | OCI registry: images, layer cache, pull-through mirror | No — `zot.service` |
@@ -102,3 +102,5 @@ to `serving/docker-compose.yml`, which owns the runtime defaults.
 - [Multiple GFX targets](multi-arch.md) — `ARCHES` vs
   `PYTORCH_ROCM_ARCH`, and the per-arch pip index
 - [Serving stack](serving.md) — vLLM, LMCache and NIXL
+- [Emulated serving](emulation.md) — one vLLM wheel for every card,
+  serving without a GPU

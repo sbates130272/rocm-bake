@@ -182,6 +182,7 @@ variable "SDE_AITER"   { default = "" }
 variable "SDE_RUNTIME" { default = "" }
 variable "SDE_NIXL"    { default = "" }
 variable "SDE_VLLM"    { default = "" }
+variable "SDE_VLLM_EMU" { default = "" }
 variable "SDE_LMCACHE" { default = "" }
 variable "SDE_CUPY"    { default = "" }
 variable "SDE_TORCHVISION" { default = "" }
@@ -195,6 +196,7 @@ EPOCH_AITER   = SDE_AITER   != "" ? SDE_AITER   : SDE_EPOCH
 EPOCH_RUNTIME = SDE_RUNTIME != "" ? SDE_RUNTIME : SDE_EPOCH
 EPOCH_NIXL    = SDE_NIXL    != "" ? SDE_NIXL    : SDE_EPOCH
 EPOCH_VLLM    = SDE_VLLM    != "" ? SDE_VLLM    : SDE_EPOCH
+EPOCH_VLLM_EMU = SDE_VLLM_EMU != "" ? SDE_VLLM_EMU : SDE_EPOCH
 EPOCH_LMCACHE = SDE_LMCACHE != "" ? SDE_LMCACHE : SDE_EPOCH
 EPOCH_CUPY    = SDE_CUPY    != "" ? SDE_CUPY    : SDE_EPOCH
 EPOCH_TORCHVISION = SDE_TORCHVISION != "" ? SDE_TORCHVISION : SDE_EPOCH
@@ -447,6 +449,45 @@ variable "UCX_REF" {
 variable "VLLM_REF" {
   default = "v0.33.0"
 }
+
+# ─── LLM-Emu — the arch-free lane ────────────────────────────────
+# github.com/AKafakA/llm-emu, the emulator behind Dockerfile.vllm-emu.
+# It replaces vLLM's GPU forward pass with a latency draw from a
+# profile pack, which is what lets this repo build and *exercise* a
+# vLLM that is tied to no architecture at all.
+#
+# A full 40-character SHA, and it has to be: upstream publishes no tags
+# and no releases, so there is no stable ref to track. Dockerfile.vllm-emu
+# clones with `git clone --revision`, which does not resolve an
+# abbreviation against the remote — the same constraint TRITON_REF
+# carries, and for the same reason.
+#
+# b71c602 is HEAD of main as of 2026-08-21. Upstream's own vllm_patches/
+# target vLLM 0.18.1 and are NOT used here; see
+# docker/vllm-emu-shim/vllm_emu_shim/_patch.py for what replaces them.
+variable "LLM_EMU_REF" {
+  default = "b71c6025b189784cbd4b926d15afa8257738ea39"
+}
+
+# Which llm-emu to build. Upstream by default; point it at a fork to
+# build a branch without editing the Dockerfile, the same escape hatch
+# ATOM_REPO provides.
+variable "LLM_EMU_REPO" {
+  default = "https://github.com/AKafakA/llm-emu.git"
+}
+
+# Where the arch-free wheel is built. NOT the ROCm base every other
+# target uses: Dockerfile.vllm cannot run auditwheel because
+# vllm/vllm-rs references GLIBC_2.43 from Ubuntu 26.04, so its wheel is
+# linux_x86_64 by necessity. The emu wheel's whole claim is that it
+# installs anywhere, so it is built where a manylinux policy is
+# actually achievable. Pinned to the image's own tag rather than
+# :latest would be better still — quay publishes no digest-stable tag
+# per policy, so this is the one place the lane is not fully pinned.
+variable "MANYLINUX_IMAGE" {
+  default = "quay.io/pypa/manylinux_2_28_x86_64:latest"
+}
+
 
 # CuPy, built from source because no published wheel fits: PyPI's
 # cupy-rocm-7-0 targets ROCm 7.0 against our 10.1, and plain `cupy`
@@ -723,6 +764,23 @@ group "wheels" {
 # This group stays as a way to build the serving stack on its own.
 group "serving" {
   targets = ["torchvision-wheel", "cupy-wheel", "nixl-wheel", "vllm", "vllm-wheel", "lmcache", "lmcache-wheel"]
+}
+
+# The arch-free emulator lane. See docker/Dockerfile.vllm-emu.
+#
+# Deliberately in no other group. `default`, `wheels` and `serving` are
+# all driven once per architecture — push-all runs them for each entry
+# in ARCHES — and these two targets produce ONE artifact for every
+# architecture at once. Joining those groups would rebuild and re-push
+# identical bytes under identical tags, once per card, and the last
+# writer would win a race nobody can observe.
+#
+# It is also the only group here that needs no GPU, no ROCm and no
+# fleet: it builds from a manylinux base in minutes on any x86 node,
+# which is what lets .github/workflows/emu.yml run the whole thing —
+# build and smoke test — on a stock GitHub runner.
+group "emu" {
+  targets = ["vllm-emu", "vllm-emu-wheel"]
 }
 
 # There was an `attrs = { cache-from/cache-to }` block here pointing at
@@ -1662,6 +1720,100 @@ target "vllm-wheel" {
     "org.opencontainers.image.title"       = "vllm wheel"
     "org.opencontainers.image.description" = "vLLM ${VLLM_REF} wheel for ${PYTORCH_ROCM_ARCH}, ROCm ${ROCM_VERSION}"
     "org.opencontainers.image.version"     = "${VLLM_REF}-${ROCM_VERSION}-${ARCH_TAG}"
+  })
+}
+
+# ─── vLLM on the LLM-Emu path (arch-free) ────────────────────────
+# One wheel for every architecture: vLLM built with
+# VLLM_TARGET_DEVICE=empty, plus LLM-Emu and this repo's shim, so the
+# result still serves — from a profile pack rather than a GPU. See
+# docker/Dockerfile.vllm-emu for what that buys and what it does not.
+#
+# NO ARCH_TAG and NO CACHE_ARCH anywhere below, unlike every other
+# target that compiles anything. That is not an oversight to be
+# tidied: the wheel contains no device code at all (the build asserts
+# it), so an arch-qualified tag would assert a property this artifact
+# does not have, and an arch-scoped cache would split one build across
+# three identical copies. triton-wheel's PUB_TRITON is the existing
+# precedent for an unqualified tag — Triton is a compiler and ships one
+# noarch wheel, and wheelhouse.py already parses tags without a gfx
+# component.
+#
+# No `contexts` either: nothing in this lane builds FROM anything else
+# this repo makes. It is the only target here that can run on a cold
+# registry.
+target "vllm-emu" {
+  dockerfile = "docker/Dockerfile.vllm-emu"
+  platforms  = ["linux/amd64"]
+  target     = "final"
+
+  tags = compact([
+    "${REGISTRY}/${REGISTRY_NAME}/vllm-emu:${VLLM_REF}-emu",
+    "${REGISTRY}/${REGISTRY_NAME}/vllm-emu:latest",
+    VCS_REF != "" ? "${REGISTRY}/${REGISTRY_NAME}/vllm-emu:${VLLM_REF}-emu-g${VCS_REF}" : "",
+  ])
+
+  labels = merge(OCI_LABELS, {
+    "org.opencontainers.image.title"       = "vllm-emu"
+    "org.opencontainers.image.description" = "vLLM ${VLLM_REF} (+empty) on the LLM-Emu ${LLM_EMU_REF} path — no GPU, any architecture"
+    "org.opencontainers.image.version"     = "${VLLM_REF}-emu"
+  })
+
+  cache-from = distinct(concat(cache_own("vllm-emu-cache", ""), [
+    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/vllm-emu-cache:latest,mode=max,registry.insecure=${REGISTRY_INSECURE}",
+  ]))
+  cache-to   = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/vllm-emu-cache:latest${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=${REGISTRY_INSECURE},ignore-error=true"]
+
+  args = {
+    BUILDKIT_BUILD_NAME = "rocm-pytorch-build/vllm-emu/noarch/${RUN_ID}"
+    SOURCE_DATE_EPOCH   = EPOCH_VLLM_EMU
+    MANYLINUX_IMAGE     = MANYLINUX_IMAGE
+    PYTHON_VERSION      = PYTHON_VERSION
+    VLLM_REF            = VLLM_REF
+    LLM_EMU_REF         = LLM_EMU_REF
+    LLM_EMU_REPO        = LLM_EMU_REPO
+    RUST_VERSION        = RUST_VERSION
+    # The same torch version every other lane builds against, taken
+    # from the CPU index instead of ROCm's. There was a separate
+    # TORCH_CPU_VERSION here, pinned to 2.14.0 to mirror vLLM's own
+    # [build-system] requirement; a second torch version in a repo
+    # whose entire point is building one is a drift liability, and
+    # `make emu-index-check` resolved 2.15.0+cpu against this wheel
+    # and imported it cleanly, so the mirror bought nothing.
+    PYTORCH_VERSION     = PYTORCH_VERSION
+  }
+
+  output = ["type=image,compression=zstd"]
+}
+
+# ─── vLLM emu wheel artifact ─────────────────────────────────────
+# Three wheels, not one: vllm (+empty, manylinux), llm_emu and
+# vllm_emu_shim (both py3-none-any). They are published together
+# because installing vllm without the other two gives a serving stack
+# with no forward pass — an import that works and a server that cannot
+# step.
+target "vllm-emu-wheel" {
+  # Its own build record name, for the reason spelled out on
+  # vllm-wheel: an inherited one makes `docker buildx history` hold a
+  # single record for both targets.
+  args = {
+    BUILDKIT_BUILD_NAME = "rocm-pytorch-build/vllm-emu-wheel/noarch/${RUN_ID}"
+  }
+
+  inherits   = ["vllm-emu"]
+  target     = "wheel"
+  dockerfile = "docker/Dockerfile.vllm-emu"
+
+  tags = compact([
+    "${REGISTRY}/${REGISTRY_NAME}/vllm-emu-wheel:${VLLM_REF}-emu",
+    "${REGISTRY}/${REGISTRY_NAME}/vllm-emu-wheel:latest",
+    VCS_REF != "" ? "${REGISTRY}/${REGISTRY_NAME}/vllm-emu-wheel:${VLLM_REF}-emu-g${VCS_REF}" : "",
+  ])
+
+  labels = merge(OCI_LABELS, {
+    "org.opencontainers.image.title"       = "vllm emu wheel"
+    "org.opencontainers.image.description" = "vLLM ${VLLM_REF} arch-free wheel, LLM-Emu ${LLM_EMU_REF}, rocm-bake shim"
+    "org.opencontainers.image.version"     = "${VLLM_REF}-emu"
   })
 }
 

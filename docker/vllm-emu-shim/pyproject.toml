@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vllm-emu-shim"
+version = "0.1.0"
+description = "Wires LLM-Emu's executor hook into vLLM without patching vLLM"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+
+# Deliberately no dependencies.
+#
+# llm-emu is imported, not depended on: its own pyproject pins
+# `vllm==0.18.1`, the release its unused in-tree patches were cut
+# against, and a dependency edge here would drag that pin into any
+# resolve. Dockerfile.vllm-emu strips the pin and installs all three
+# wheels together. Every import of vllm_emulator in this package is
+# guarded, so an install without it degrades to a no-op rather than an
+# ImportError at plugin load.
+dependencies = []
+
+# vLLM loads this group in process0, the engine core process and every
+# worker process (vllm/plugins/__init__.py: DEFAULT_PLUGINS_GROUP), and
+# `install()` is idempotent, which is the contract load_general_plugins
+# documents.
+[project.entry-points."vllm.general_plugins"]
+rocm_bake_emu = "vllm_emu_shim:install"
+
+[project.scripts]
+vllm-emu-selftest = "vllm_emu_shim.selftest:main"
+
+[tool.setuptools]
+packages = ["vllm_emu_shim"]
+# The startup resolver, deliberately outside the package: see its
+# docstring, and setup.py for the .pth that calls it.
+py-modules = ["_vllm_emu_pack_env"]
+
+# No profile pack here, deliberately. This package is device-agnostic
+# wiring — it patches UniProcExecutor, EngineCore, EmulatorPlatform and
+# torch.accelerator, none of which knows what is being emulated — and
+# it is byte-identical whichever device a pack describes. The pack
+# ships as its own wheel, named for that device, and registers itself
+# through the entry point group below; see _default_profile_pack().
+#
+# Bundling it here was tried and reverted: wheel filenames carry no
+# architecture, so two devices' packs would both produce
+# vllm_emu_shim-0.1.0-py3-none-any.whl with different contents —
+# colliding as release assets and indistinguishable once installed.
+# That is the same trap wheelpublish.sh documents for torch across
+# per-card releases.

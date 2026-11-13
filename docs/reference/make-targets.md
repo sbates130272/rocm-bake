@@ -153,6 +153,26 @@ layer cache nor compiler-cache hits.
 
 See [Serving stack](../architecture/serving.md).
 
+## Emulated Serving (No GPU)
+
+One vLLM wheel for every architecture, serving from a captured profile
+pack instead of a card. The only lane here that needs no GPU, no ROCm
+and no fleet.
+
+| Target | |
+| --- | --- |
+| `push-emu` | Build and push both emulator targets |
+| `push-vllm-emu` / `push-vllm-emu-wheel` | Either one on its own |
+| `emu-wheels` | Build the three wheels straight into `./dist/emu` |
+| `fetch-vllm-emu-wheel` | Pull them back out of Zot instead |
+| `emu-load` | Build the image into the local docker daemon |
+| `emu-test` | Serve a model through the emulator and prove it emulated |
+| `emu-index` | Fetch from Zot and build the `emu` pip index |
+| `emu-index-check` | Resolve that index in a throwaway venv |
+| `emu-publish` | Release the wheels and publish the index (`-dry` first) |
+
+See [Emulated serving](../architecture/emulation.md).
+
 ## Benchmarks
 
 | Target | |

@@ -131,7 +131,14 @@ def render(root: Path, repo: str) -> str:
         )
 
     head = "".join(f"<th><code>{p}</code></th>" for p in HIGHLIGHT)
-    first = archs[0].name if archs else "gfx950"
+    # The arch the landing page's headline `pip install` names. First
+    # gfx directory, not first directory: the emulator lane publishes
+    # under the pseudo-arch `emu` (see docs/architecture/emulation.md),
+    # which sorts ahead of every gfx name — so a plain archs[0] would
+    # quietly make the front page advertise an emulator build, with no
+    # GPU support at all, as the way to install this project.
+    first = next((d.name for d in archs if d.name.startswith("gfx")),
+                 archs[0].name if archs else "gfx950")
 
     # The note this replaces said the same thing from memory, and said
     # it about whichever wheels were published the day it was written.

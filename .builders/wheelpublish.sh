@@ -4,6 +4,7 @@
 #
 # Usage:  wheelpublish.sh --arch gfx950 [--wheels DIR] [--index DIR]
 #                         [--rocm 10.1.0-full] [--repo owner/name]
+#                         [--title TEXT] [--notes-file FILE]
 #                         [--dry-run] [--no-push]
 #
 # WHY TWO PLACES. The wheels are 300-500MB each -- amd_aiter for gfx950
@@ -43,6 +44,8 @@ INDEX=""
 ROCM="${ROCM_VERSION:-10.1.0-full}"
 PYVER="${PYTHON_VERSION:-3.14}"
 REPO=""
+TITLE=""
+NOTES_FILE=""
 DRY=0
 PUSH=1
 
@@ -61,6 +64,8 @@ while [ $# -gt 0 ]; do
         --index)   INDEX="${2:-}"; shift 2 ;;
         --rocm)    ROCM="${2:-}"; shift 2 ;;
         --repo)    REPO="${2:-}"; shift 2 ;;
+        --title)   TITLE="${2:-}"; shift 2 ;;
+        --notes-file) NOTES_FILE="${2:-}"; shift 2 ;;
         --dry-run) DRY=1; shift ;;
         --no-push) PUSH=0; shift ;;
         -h|--help) usage 0 ;;
@@ -139,15 +144,30 @@ PyPI. Our wheels win over same-named PyPI projects because the
 metapackage pins exact versions carrying a local segment (\`+rocm…\`)
 that upstream cannot match."
 
+# The generated notes describe a per-card ROCm release: "Built for
+# ROCm X, Python Y, <arch>", device code hidden behind identical
+# filenames, a one-line install. None of that is true of the emulator
+# lane, which publishes through this same script under the pseudo-arch
+# `emu` — its wheels are py3-none-any, contain no ROCm at all, and need
+# a torch installed first because the index deliberately pins none. A
+# release page carrying the generic install line would hand its reader
+# a vLLM that cannot import. So a lane whose release is not a per-card
+# ROCm build supplies its own title and notes.
+if [ -n "${NOTES_FILE}" ]; then
+    [ -r "${NOTES_FILE}" ] || { say "wheelpublish: cannot read ${NOTES_FILE}"; exit 1; }
+    NOTES="$(cat "${NOTES_FILE}")"
+fi
+TITLE="${TITLE:-ROCm ${ROCM%%-*} wheels for ${ARCH}}"
+
 if gh release view "${TAG}" --repo "${REPO}" >/dev/null 2>&1; then
     say "   release  ${TAG} exists — replacing assets, refreshing notes"
     run gh release edit "${TAG}" --repo "${REPO}" \
-        --title "ROCm ${ROCM%%-*} wheels for ${ARCH}" \
+        --title "${TITLE}" \
         --notes "${NOTES}"
 else
     say "   release  creating ${TAG}"
     run gh release create "${TAG}" --repo "${REPO}" \
-        --title "ROCm ${ROCM%%-*} wheels for ${ARCH}" \
+        --title "${TITLE}" \
         --notes "${NOTES}"
 fi
 
