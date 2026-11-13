@@ -488,15 +488,17 @@ except ValueError:
 
 # CodeBuild on-demand Linux, USD per build-minute.
 #
-# 2xlarge is the one checked against an invoice: $17.80 billed across
-# 88.2 minutes on 2026-11-04 gives $0.2018/min, matching AWS's
-# published rate. xlarge comes from the live Price List API on
-# 2026-11-11 (usagetype USW2-Build-Min:Linux:g1.xlarge) and is
-# corrected from the 0.080 that used to sit here.
+# Both rates in use are now confirmed against an invoice, not a price
+# list. 2xlarge: $17.80 across 88.2 minutes on 2026-11-04 = $0.2018/min.
+# xlarge: Cost Explorer for November to 2026-11-13 reports
+# USW2-Build-Min:Linux:g1.xlarge at $5.59 for 70.0 minutes, which is
+# $0.0798/min to four places -- exactly the Price List figure this was
+# set to on 2026-11-11, so the estimate held.
 #
-# The lane now runs on xlarge, so the report carries "(rate unverified)"
-# until a bill confirms $0.0798 — which is the honest state, not an
-# oversight. Move it into VERIFIED once Cost Explorer agrees.
+# small/medium/large remain AWS's published figures and stay out of
+# VERIFIED: nothing has run on them yet. wheels-publish is configured
+# for small and will be the first, so check its bill before trusting
+# the $0.005.
 #
 # The ladder has five rungs and nothing between xlarge (36 vCPU /
 # 72 GiB) and 2xlarge (72 / 144) -- the 48- and 64-core shapes exist
@@ -504,7 +506,7 @@ except ValueError:
 # worse at this cadence.
 RATES = {"small": 0.005, "medium": 0.010, "large": 0.020,
          "xlarge": 0.0798, "2xlarge": 0.200}
-VERIFIED = {"2xlarge"}
+VERIFIED = {"2xlarge", "xlarge"}
 
 rate = RATES.get(instance)
 billed = sum(p["seconds"] for p in phases.values())
