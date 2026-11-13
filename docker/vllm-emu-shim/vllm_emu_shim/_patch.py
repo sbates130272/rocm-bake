@@ -189,6 +189,30 @@ def _patch_uniproc_executor(module) -> None:
         self._emulator_executor_hook = hook
         if hook is not None:
             print("[vllm-emu-shim] executor hook attached to UniProcExecutor")
+            return
+
+        # Armed, but no hook. get_executor_hook() returns None without
+        # raising when VLLM_EMULATOR_PROFILE_PACK is unset or the pack
+        # fails to load — there is no exception to report, and until
+        # now nothing said anything.
+        #
+        # Refusing to start is the right response rather than an
+        # abundance of caution. With no hook every step delegates to a
+        # real worker, and no weights were loaded, so the first request
+        # dies somewhere inside the model runner with a traceback that
+        # names an attribute rather than the missing file. That is a
+        # long way from the cause, and it is reachable the moment
+        # someone installs these wheels from the index: the pack ships
+        # in the image, not in any wheel.
+        raise RuntimeError(
+            "vllm-emu-shim: the emulator is enabled "
+            "(VLLM_EMULATOR_ENABLE_ORACLE) but no executor hook could be "
+            "built. Set VLLM_EMULATOR_PROFILE_PACK to a readable profile "
+            "pack — currently "
+            f"{os.environ.get('VLLM_EMULATOR_PROFILE_PACK') or '<unset>'!r}. "
+            "Without one there is nothing to draw step latencies from, "
+            "and serving would fall through to a worker that has no model."
+        )
 
     @functools.wraps(orig_execute_model)
     def execute_model(self, scheduler_output, *args, **kwargs):

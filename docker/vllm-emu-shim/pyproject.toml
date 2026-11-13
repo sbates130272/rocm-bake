@@ -33,3 +33,17 @@ vllm-emu-selftest = "vllm_emu_shim.selftest:main"
 
 [tool.setuptools]
 packages = ["vllm_emu_shim"]
+
+# No profile pack here, deliberately. This package is device-agnostic
+# wiring — it patches UniProcExecutor, EngineCore, EmulatorPlatform and
+# torch.accelerator, none of which knows what is being emulated — and
+# it is byte-identical whichever device a pack describes. The pack
+# ships as its own wheel, named for that device, and registers itself
+# through the entry point group below; see _default_profile_pack().
+#
+# Bundling it here was tried and reverted: wheel filenames carry no
+# architecture, so two devices' packs would both produce
+# vllm_emu_shim-0.1.0-py3-none-any.whl with different contents —
+# colliding as release assets and indistinguishable once installed.
+# That is the same trap wheelpublish.sh documents for torch across
+# per-card releases.

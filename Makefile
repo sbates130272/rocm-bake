@@ -1653,7 +1653,7 @@ push-emu: builder-ensure ## * Build and push the whole emulator lane (bake group
 # two broken arguments.
 EMU_LOCAL_OUT = --set vllm-emu-wheel.output=type=local,dest=$(EMU_DIR)
 
-emu-wheels: builder-ensure ## Build the three emu wheels into ./dist/emu
+emu-wheels: builder-ensure ## Build the four emu wheels into ./dist/emu
 	@rm -rf $(EMU_DIR) && mkdir -p $(EMU_DIR)
 	$(call bake,vllm-emu-wheel,$(EMU_LOCAL_OUT))
 	@ls -la $(EMU_DIR)/wheels/
@@ -1684,7 +1684,8 @@ fetch-vllm-emu-wheel: ## Fetch the arch-free wheels from Zot into ./dist/emu
 # overlap.
 #
 # WHEEL_REPOS is overridden to the one repo that carries this lane.
-# All three wheels — vllm, llm_emu, vllm_emu_shim — come out of that
+# All four wheels — vllm, llm_emu, vllm_emu_shim and the profile
+# pack — come out of that
 # single `FROM scratch AS wheel` stage, so there is nothing else to
 # name; the default list is the per-arch ROCm set and every entry of it
 # would be fetched for an arch that has none.
@@ -1729,7 +1730,7 @@ emu-index-check: ## Install the emu index into a throwaway venv and import it
 	v=$$(mktemp -d); python3 -m venv "$$v" >/dev/null; \
 	echo "== $(EMU_ARCH)"; \
 	"$$v/bin/pip" install -q --no-cache-dir \
-		--index-url "$(EMU_TORCH_INDEX)" torch; \
+		--index-url "$(EMU_TORCH_INDEX)" "torch==$(PYTORCH_VERSION)"; \
 	no_proxy=127.0.0.1,localhost NO_PROXY=127.0.0.1,localhost \
 	"$$v/bin/pip" install -q --no-cache-dir \
 		--index-url "http://127.0.0.1:$$port/index/$(EMU_ARCH)/" \

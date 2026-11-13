@@ -488,13 +488,6 @@ variable "MANYLINUX_IMAGE" {
   default = "quay.io/pypa/manylinux_2_28_x86_64:latest"
 }
 
-# The CPU torch the emu lane builds and runs against. Mirrors vLLM's
-# own [build-system] pin (torch == 2.14.0), not this repo's
-# PYTORCH_VERSION: nothing in this lane links against our ROCm torch,
-# and the +empty wheel declares no torch dependency at all.
-variable "TORCH_CPU_VERSION" {
-  default = "2.14.0"
-}
 
 # CuPy, built from source because no published wheel fits: PyPI's
 # cupy-rocm-7-0 targets ROCm 7.0 against our 10.1, and plain `cupy`
@@ -1780,7 +1773,14 @@ target "vllm-emu" {
     LLM_EMU_REF         = LLM_EMU_REF
     LLM_EMU_REPO        = LLM_EMU_REPO
     RUST_VERSION        = RUST_VERSION
-    TORCH_CPU_VERSION   = TORCH_CPU_VERSION
+    # The same torch version every other lane builds against, taken
+    # from the CPU index instead of ROCm's. There was a separate
+    # TORCH_CPU_VERSION here, pinned to 2.14.0 to mirror vLLM's own
+    # [build-system] requirement; a second torch version in a repo
+    # whose entire point is building one is a drift liability, and
+    # `make emu-index-check` resolved 2.15.0+cpu against this wheel
+    # and imported it cleanly, so the mirror bought nothing.
+    PYTORCH_VERSION     = PYTORCH_VERSION
   }
 
   output = ["type=image,compression=zstd"]

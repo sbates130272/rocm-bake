@@ -203,12 +203,22 @@ rocm-torch 10.1.0+emu.<digest>  (extra: device-emu)
   llm-emu==0.1.0
   vllm==0.33.0+empty
   vllm-emu-shim==0.1.0
+  vllm-emu-pack-gfx1250==0.1.0+<ref>
 ```
 
 vLLM built with `VLLM_TARGET_DEVICE=empty` resolves its dependencies
 from `requirements/common.txt`, which names no torch at all, so nothing
 drags one in behind the metapackage. Installing it alone gives you a
 vLLM that cannot `import vllm`.
+
+(The fourth wheel is the profile pack. It ships separately from the
+shim because a pack describes one device and the shim describes none —
+the shim is byte-identical whatever is being emulated, so bundling
+would give two devices the same wheel filename with different
+contents. The pack registers a `vllm_emu_shim.profile_packs` entry
+point and the shim resolves it at import, so installing it is the
+whole configuration step; install two and the shim says so and asks
+you to set `VLLM_EMULATOR_PROFILE_PACK` yourself.)
 
 That is deliberate rather than an omission. PyPI's torch for linux
 x86-64 is the CUDA build, and pinning it would pull the whole `nvidia-*`

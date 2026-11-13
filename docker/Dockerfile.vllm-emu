@@ -39,7 +39,7 @@
 # the latency comes from someone else's A40, and nothing here runs a
 # kernel. See docs/architecture/emulation.md.
 #
-# Three stages produce artifacts: `wheel` (scratch, the three wheels),
+# Three stages produce artifacts: `wheel` (scratch, the four wheels),
 # `final` (runnable), and `builder`/`plugin` behind them.
 
 ARG MANYLINUX_IMAGE=quay.io/pypa/manylinux_2_28_x86_64:latest
@@ -51,14 +51,14 @@ FROM ${MANYLINUX_IMAGE} AS builder
 ARG PYTHON_VERSION
 ARG VLLM_REF=v0.33.0
 ARG RUST_VERSION=1.95
-# Mirrors vLLM's own [build-system] pin (torch == 2.14.0 in
-# pyproject.toml). setup.py imports torch on line 17 whatever the
-# target device, so the build needs one; the CPU index is used so this
-# does not drag in a CUDA runtime that nothing here would load. Note
-# this torch does NOT end up in the wheel's dependencies: the
-# _no_device() branch resolves install_requires from
-# requirements/common.txt, which names no torch at all.
-ARG TORCH_CPU_VERSION=2.14.0
+# The repo's own torch version, from the CPU index rather than ROCm's.
+# setup.py imports torch on line 17 whatever the target device, so the
+# build needs one; the CPU index keeps a CUDA runtime that nothing here
+# would load out of the image. Note this torch does NOT end up in the
+# wheel's dependencies: the _no_device() branch resolves
+# install_requires from requirements/common.txt, which names no torch
+# at all — see the install note in docs/architecture/emulation.md.
+ARG PYTORCH_VERSION
 ARG SOURCE_DATE_EPOCH
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -92,7 +92,7 @@ RUN pip install --no-cache-dir \
 
 RUN pip install --no-cache-dir \
         --index-url https://download.pytorch.org/whl/cpu \
-        "torch==${TORCH_CPU_VERSION}" && \
+        "torch==${PYTORCH_VERSION}" && \
     python -c "import torch; assert not torch.version.hip and not torch.version.cuda, \
         'this lane must build against a CPU torch'; print('torch', torch.__version__)"
 
@@ -339,14 +339,32 @@ ARG EMU_GPU_MEMORY_BYTES=
 ARG EMU_GPU_CU_COUNT=
 ARG EMU_SOURCE_PACK=A40-Q8-Qwen3-8B.json
 
+# The pack ships as its OWN wheel, vllm-emu-pack-<model>, not inside
+# the shim and not as a file copied into the image.
+#
+# Because a pack is data about one device and the shim is not. The
+# shim is byte-identical whatever is being emulated, so bundling the
+# pack into it would give two devices the same wheel filename
+# (vllm_emu_shim-0.1.0-py3-none-any.whl) with different contents —
+# colliding as release assets and indistinguishable once installed,
+# the trap wheelpublish.sh already documents for torch across per-card
+# releases. Separate wheels also mean a pack can be recaptured and
+# republished without touching the wiring.
+#
+# It registers a `vllm_emu_shim.profile_packs` entry point, so the shim
+# finds it by its being installed rather than by knowing a path. That
+# is why the image sets no VLLM_EMULATOR_PROFILE_PACK and copies no
+# profiles directory: `pip install` is the whole mechanism, and the
+# image therefore exercises exactly the path an index user gets.
 COPY docker/emu-profile-pack.py /usr/local/bin/emu-profile-pack
 RUN set -eu; \
-    mkdir -p /opt/llm-emu/profiles; \
+    mkdir -p /opt/emu-pack/src; \
     set -- /opt/llm-emu/example_profiling_data/"${EMU_SOURCE_PACK}" \
-           /opt/llm-emu/profiles/"${EMU_GPU_MODEL}-Q8-Qwen3-8B.json" \
+           /opt/emu-pack/"${EMU_GPU_MODEL}-Q8-Qwen3-8B.json" \
            --gpu-model "${EMU_GPU_MODEL}" \
            --gpu-name "${EMU_GPU_NAME}" \
-           --source-ref "${LLM_EMU_REF}"; \
+           --source-ref "${LLM_EMU_REF}" \
+           --wheel-dir /opt/emu-pack/src; \
     [ -n "${EMU_GPU_MEMORY_BYTES}" ] && set -- "$@" --memory-bytes "${EMU_GPU_MEMORY_BYTES}" || true; \
     [ -n "${EMU_GPU_CU_COUNT}" ] && set -- "$@" --cu-count "${EMU_GPU_CU_COUNT}" || true; \
     python -I /usr/local/bin/emu-profile-pack "$@"
@@ -357,9 +375,11 @@ RUN set -eu; \
 RUN python -c "\
 import sys; sys.path.insert(0, '/opt/llm-emu');\
 from vllm_emulator.profile.loader import load_profile_pack;\
-p = load_profile_pack('/opt/llm-emu/profiles/${EMU_GPU_MODEL}-Q8-Qwen3-8B.json');\
+p = load_profile_pack('/opt/emu-pack/${EMU_GPU_MODEL}-Q8-Qwen3-8B.json');\
 print('profile pack validates:', p['gpu_model'], p['model_config']['gpu']['gpu_name']);\
 print('latencies measured on:', p['rocm_bake_provenance']['latencies_are_measured_on'])"
+
+RUN pip wheel --no-deps --no-cache-dir -w /wheels /opt/emu-pack/src
 
 # ─── Runnable emulator image ─────────────────────────────────────
 # FROM python:slim, not from the builder: the builder carries a Rust
@@ -370,7 +390,7 @@ FROM python:${PYTHON_VERSION}-slim AS final
 
 ARG VLLM_REF
 ARG LLM_EMU_REF
-ARG TORCH_CPU_VERSION=2.14.0
+ARG PYTORCH_VERSION
 
 LABEL org.opencontainers.image.source="https://github.com/AKafakA/llm-emu"
 LABEL org.opencontainers.image.description="vLLM ${VLLM_REF} on the LLM-Emu path — arch-free, CPU-only"
@@ -381,7 +401,7 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
 
 RUN pip install --no-cache-dir \
         --index-url https://download.pytorch.org/whl/cpu \
-        "torch==${TORCH_CPU_VERSION}"
+        "torch==${PYTORCH_VERSION}"
 
 # requirements/common.txt from the build, not the wheel's own metadata:
 # identical content here (the _no_device() branch resolves
@@ -397,17 +417,12 @@ RUN --mount=type=bind,from=plugin,source=/wheels,target=/w \
     pip install --no-cache-dir --no-deps /w/*.whl && \
     python -c "import vllm; print('vLLM', vllm.__version__)"
 
-# The profile pack — the thing that makes this an emulator rather than
-# a stub. Relabelled for ${EMU_GPU_MODEL} in the plugin stage; the
-# latencies inside it are upstream's A40 capture, which the pack's own
-# rocm_bake_provenance block says in as many words. Shipped so the
-# image is usable without capturing one, which needs a real GPU this
-# fleet does not have.
-ARG EMU_GPU_MODEL=gfx1250
-COPY --from=plugin /opt/llm-emu/profiles/ /opt/llm-emu/profiles/
-
+# No VLLM_EMULATOR_PROFILE_PACK and no profiles directory. The pack
+# arrived as a wheel in the install above and announces itself through
+# its entry point; the shim resolves it at import, before anything
+# reads the variable. Setting it here would work too, and would mean
+# the image tested a path no index user takes.
 ENV VLLM_EMULATOR_ENABLE_ORACLE=1 \
-    VLLM_EMULATOR_PROFILE_PACK=/opt/llm-emu/profiles/${EMU_GPU_MODEL}-Q8-Qwen3-8B.json \
     VLLM_EMULATOR_MOCK_CUDA=1 \
     CUDA_VISIBLE_DEVICES=""
 
