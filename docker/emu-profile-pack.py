@@ -197,6 +197,13 @@ def main(argv=None):
                     help="compute units; default keeps the source's")
     ap.add_argument("--source-ref", default="",
                     help="llm-emu ref the source pack came from")
+    ap.add_argument("--measured", action="store_true",
+                    help="the source pack was captured on the device named "
+                         "by --gpu-model, so its latencies are a real "
+                         "measurement rather than a relabelled stand-in")
+    ap.add_argument("--captured-with", default="",
+                    help="with --measured: how the trace was taken, e.g. "
+                         "the image tag and the serving flags")
     ap.add_argument("--quantile-points", type=int, default=64,
                     help="per-bucket quantile points; 0 keeps every raw "
                          "sample (default: 64)")
@@ -231,8 +238,15 @@ def main(argv=None):
     # accident: gpu_compute_capability is a CUDA concept with no AMD
     # meaning. vLLM still queries it through the platform, so it keeps
     # the source's value rather than acquiring a made-up one.
+    # Two very different artifacts come out of this script, and the
+    # block has to say which. A relabelled pack carries somebody else's
+    # timings under a name that is not theirs, and every later reader
+    # needs warning. A measured pack is the real thing, and carrying
+    # that warning anyway would teach readers to ignore it on the packs
+    # where it is true.
     pack["rocm_bake_provenance"] = {
-        "relabelled_by": "docker/emu-profile-pack.py",
+        "processed_by": "docker/emu-profile-pack.py",
+        "measured": bool(args.measured),
         "source_file": args.src.rsplit("/", 1)[-1],
         "source_gpu_model": src_model,
         "source_gpu_name": src_name,
@@ -253,13 +267,27 @@ def main(argv=None):
             "that it previously did not."
         ),
         "warning": (
+            f"Captured on {src_name}. These timings describe that device "
+            f"running this model under the conditions in captured_with, "
+            f"and nothing else: another model, another vLLM build or "
+            f"other serving flags is extrapolation."
+            if args.measured else
             "Only the device IDENTITY was relabelled. Every latency in "
-            "this pack was measured on "
-            f"{src_name} and is a placeholder until a capture on "
-            f"{args.gpu_model} replaces it. Do not read these timings as "
-            f"{args.gpu_model} performance."
+            f"this pack was measured on {src_name} and is a placeholder "
+            f"until a capture on {args.gpu_model} replaces it. Do not "
+            f"read these timings as {args.gpu_model} performance."
         ),
     }
+    if args.measured:
+        prov = pack["rocm_bake_provenance"]
+        prov["captured_with"] = args.captured_with
+        # Nothing was relabelled, so these would read as though
+        # something had been. --source-ref means a different thing on
+        # this path too: not the llm-emu commit a borrowed pack came
+        # from, but the commit of THIS repo that captured it.
+        prov["captured_by_rocm_bake"] = prov.pop("source_llm_emu_ref", "")
+        for key in ("source_gpu_model", "source_gpu_name"):
+            prov.pop(key, None)
 
     with open(args.dst, "w", encoding="utf-8") as fh:
         json.dump(pack, fh)
@@ -289,7 +317,8 @@ def main(argv=None):
           f" ({args.quantile_points} quantile points per bucket)"
           if args.quantile_points > 0 else
           f"  samples    {before} (raw, not quantised)")
-    print(f"  latencies  still measured on {src_name}")
+    print(f"  latencies  {'MEASURED on' if args.measured else 'still measured on'}"
+          f" {src_name}")
     return 0
 
 

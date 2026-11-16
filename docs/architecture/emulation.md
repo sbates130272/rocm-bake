@@ -283,6 +283,58 @@ make emu-capture-down GPU_HOST=<node>     # flushes the trace
 ```
 
 The trace lands in `/tmp/emu-trace/steps.jsonl` on the GPU host.
+`.builders/emu-capture-sweep.sh` drives the load: a warmup, then rate
+cells either side of saturation across two prompt shapes. Its rungs
+are scaled to the device, which matters — on gfx1151 saturation is
+~0.75 req/s for Qwen3-8B, so upstream's 1..32 req/s ladder would
+saturate at every rung and fill one concurrency bucket.
+
+Then drop the warmup, build the pack with LLM-Emu's own builder, and
+reduce it into a pack wheel:
+
+```bash
+{ head -1 steps.jsonl; tail -n +<warmup_end> steps.jsonl; } > trimmed.jsonl
+python3 -I .../build_serving_profile_filtered.py trimmed.jsonl raw.json \
+    --gpu-model gfx1151 --model-name Qwen/Qwen3-8B
+python3 -I docker/emu-profile-pack.py raw.json packs/gfx1151-Q8-Qwen3-8B.json \
+    --gpu-model gfx1151 --gpu-name "AMD Radeon 8060S Graphics" \
+    --measured --captured-with "..." --wheel-dir /tmp/pack-src
+```
+
+`--measured` is not cosmetic: without it the pack carries the warning
+written for a relabelled one, telling every later reader its timings
+are a placeholder from another device.
+
+### The gfx1151 pack, and how well it replays
+
+`docker/packs/gfx1151-Q8-Qwen3-8B.json` is the first pack here measured
+rather than borrowed: Qwen3-8B on an AMD Radeon 8060S (gfx1151, 20 CU),
+6,706 steps over eight load cells plus a prefill pass.
+
+Replaying the same `vllm bench serve` cells through the emulator
+against the real run that produced the pack:
+
+| cell | real req/s | emulated | real tok/s | emulated | real TPOT | emulated |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 256/128 rate=0.5 | 0.45 | 0.45 | 57.28 | 57.30 | 74.3 ms | 77.2 ms |
+| 256/128 rate=1.0 | 0.86 | 0.86 | 109.87 | 109.83 | 79.4 ms | 79.9 ms |
+| 256/128 rate=inf | 3.60 | 3.60 | 460.41 | 460.83 | 99.5 ms | 99.4 ms |
+| 1024/64 rate=0.5 | 0.47 | 0.47 | 30.13 | 30.13 | 78.4 ms | 87.0 ms |
+
+Throughput matches to the reported precision. TPOT is within ~1% on
+the decode-heavy shapes and ~11% on the prefill-heavy one, which is
+where the pack is thinnest: 457 prefill samples against 6,248 decode.
+A capture aimed at prefill fidelity should spend proportionally more
+of its budget on short generations.
+
+One caveat the numbers above hide. The emulator sized its KV cache at
+524,752 tokens where the real run had 81,728, because it computes the
+pool from the pack's `gpu_memory_bytes` and its own utilisation rather
+than from what the device reported. It does not affect these cells,
+which never approach either limit, but it would change admission
+behaviour under enough concurrency. Replay with the same
+`--gpu-memory-utilization` the capture used, and treat the KV figure
+as unmodelled.
 
 **What a sample is.** Not what upstream's tracer records. Upstream
 times the whole engine step and describes it with the most recently
