@@ -1730,8 +1730,12 @@ fetch-vllm-emu-wheel: ## Fetch the arch-free wheels from Zot into ./dist/emu
 # wheel index for that card; dropping `vllm 0.33.0+empty` beside
 # `vllm 0.33.0+rocm10.1.0` is the collision this lane exists to avoid,
 # one directory further down.
+#
+# Which device the runnable image emulates is EMU_ARCH, and it is
+# declared in rocm-bake.hcl, not here: the image build is the only
+# thing that reads it. These indexes are a list, an image is one
+# device.
 EMU_ARCHES ?= emu-gfx1151 emu-gfx1250
-EMU_ARCH   ?= $(firstword $(EMU_ARCHES))
 EMU_REPOS  ?= vllm-emu-wheel
 
 # The wheel image carries every pack, so each index is built by

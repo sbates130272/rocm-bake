@@ -409,15 +409,22 @@ ARG EMU_ARCH=gfx1151
 RUN --mount=type=bind,from=plugin,source=/wheels,target=/w \
     set -e; \
     gfx=$(printf '%s' "${EMU_ARCH#emu-}" | tr '-' '_'); \
-    pack=$(ls /w/vllm_emu_pack_"${gfx}"-*.whl 2>/dev/null || true); \
-    n=$(printf '%s\n' ${pack} | grep -c . || true); \
+    pack=''; n=0; \
+    for w in /w/vllm_emu_pack_"${gfx}"-*.whl; do \
+        [ -f "${w}" ] || continue; pack="${w}"; n=$((n + 1)); \
+    done; \
     if [ "${n}" != "1" ]; then \
-        echo "EMU_ARCH=${EMU_ARCH} matched ${n} pack wheels, need exactly 1:" >&2; \
-        ls /w/vllm_emu_pack_*.whl >&2; exit 1; \
+        echo "EMU_ARCH=${EMU_ARCH} matched ${n} pack wheels, need exactly 1 of:" >&2; \
+        for w in /w/vllm_emu_pack_*.whl; do echo "  ${w}" >&2; done; \
+        exit 1; \
     fi; \
+    base=''; \
+    for w in /w/*.whl; do \
+        case "${w}" in */vllm_emu_pack_*) continue ;; esac; \
+        base="${base} ${w}"; \
+    done; \
     pip install --no-cache-dir -r /opt/vllm-requirements/common.txt; \
-    pip install --no-cache-dir --no-deps \
-        $(ls /w/*.whl | grep -v '/vllm_emu_pack_') "${pack}"; \
+    pip install --no-cache-dir --no-deps ${base} "${pack}"; \
     python -c "import vllm; print('vLLM', vllm.__version__)"
 
 # No VLLM_EMULATOR_PROFILE_PACK and no profiles directory. The pack
