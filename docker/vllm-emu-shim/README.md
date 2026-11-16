@@ -21,7 +21,22 @@ Everything is inert unless `VLLM_EMULATOR_ENABLE_ORACLE` is set.
 ```bash
 vllm-emu-selftest                     # wiring is live, premises hold
 vllm-emu-selftest --require-platform  # also needs a readable profile pack
+vllm-emu-selftest --capture           # the capture wiring, on a GPU build
 ```
+
+The other half of the package, [`_capture.py`](vllm_emu_shim/_capture.py),
+records step latencies from a *real* vLLM run so a profile pack can be
+measured rather than borrowed. Its one claim that cannot be read off
+the code — that each step is charged to the batch the engine actually
+waited for — has a test that needs no vLLM, no torch and no GPU:
+
+```bash
+python3 -I tests/test_capture_attribution.py
+```
+
+It runs in CI on every pull request, and it fails if the timing is
+reverted to the submit-to-completion form upstream uses, which counts
+the previous batch's remaining time twice.
 
 Built and installed by `docker/Dockerfile.vllm-emu`; see
 `docs/architecture/emulation.md` for the lane as a whole.

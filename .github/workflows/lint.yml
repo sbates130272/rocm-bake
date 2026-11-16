@@ -133,6 +133,16 @@ jobs:
           mapfile -t pyfiles < <(git ls-files '*.py')
           python -m py_compile "${pyfiles[@]}"
 
+      # The one claim the capture wiring makes that cannot be read off
+      # the code: that a step's latency is charged to the batch the
+      # engine actually waited for. It is also the claim upstream's own
+      # tracer gets wrong on vLLM 0.33, so it is worth a test rather
+      # than a comment. Stand-ins only -- no vLLM, no torch, no GPU --
+      # so it belongs in this cheap job rather than in emu.yml, and
+      # runs on every PR instead of only when a capture image is built.
+      - name: capture attribution
+        run: python3 -I docker/vllm-emu-shim/tests/test_capture_attribution.py
+
   versions:
     name: Version tables
     runs-on: ubuntu-latest

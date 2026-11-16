@@ -380,10 +380,12 @@ IMAGE_REPOS ?= rocm-runtime base pytorch runtime vllm lmcache
 # Every repo buildkit exports a layer cache to. Keep in step with the
 # cache-to refs in rocm-bake.hcl: pytorch-wheel and lmcache-wheel share
 # their sibling's cache repo and so are deliberately absent.
-CACHE_REPOS ?= rocm-runtime-cache base-cache pytorch-cache runtime-cache \
+CACHE_REPOS ?= rocm-runtime-cache base-cache pytorch-cache \
+               pytorch-src-cache runtime-cache \
                vllm-cache lmcache-cache triton-wheel-cache \
                aiter-wheel-cache cupy-wheel-cache nixl-wheel-cache \
-               torchvision-wheel-cache atom-wheel-cache atom-vllm-cache
+               torchvision-wheel-cache atom-wheel-cache atom-vllm-cache \
+               vllm-emu-cache vllm-emu-capture-cache
 
 # IMAGE_ARCH, not PYTORCH_ROCM_ARCH directly, so one table can be asked
 # for while a build for another architecture is in flight. Scoping to

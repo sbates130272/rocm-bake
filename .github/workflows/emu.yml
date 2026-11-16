@@ -130,6 +130,27 @@ jobs:
       # no GPU. See the header of .builders/emu-test.sh for what each
       # check proves — in particular the last two, which are what
       # separate "it emulated" from "it answered".
+      # The capture wiring's premises, checked here rather than only
+      # where the capture image is built.
+      #
+      # That image layers the shim onto the per-arch `vllm` image,
+      # which lives in the fleet's registry and is far out of reach of
+      # this runner — so until now the only thing re-measuring those
+      # premises ran when somebody happened to build it on a node. The
+      # premises are about vLLM's STRUCTURE, not its device: whether
+      # both step paths still wait inside
+      # capture_iteration_details(scheduler_output), and whether
+      # SchedulerOutput still carries the fields a batch is described
+      # by. The arch-free vLLM in this image answers all of that.
+      #
+      # So a vLLM bump that would make captured latencies land under
+      # the wrong batch now fails here, on every PR and weekly, rather
+      # than at the start of someone's capture run.
+      - name: Check the capture wiring against this vLLM
+        env:
+          IMAGE: snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/vllm-emu:latest
+        run: docker run --rm --entrypoint vllm-emu-selftest "$IMAGE" --capture
+
       - name: Serve a model through the emulator
         env:
           IMAGE: snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/vllm-emu:latest
