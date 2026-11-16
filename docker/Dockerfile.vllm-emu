@@ -154,7 +154,6 @@ RUN --mount=type=tmpfs,target=/tmp/w \
         | grep -q . ; then \
         echo "GPU offload bundles found in an arch-free wheel" >&2; exit 1; fi; \
     echo "no device code in $(basename /raw-wheels/*.whl)"; \
-    printf 'emu\n' > /wheels-arch.txt; \
     echo "--- what setup.py said about the rust extension ---" \
         | tee /wheels-tag.txt; \
     grep -i -e 'rust' -e 'cargo' /wheels-build.log | tail -20 \
@@ -184,17 +183,9 @@ RUN --mount=type=tmpfs,target=/tmp/w \
         esac; \
     fi
 
-# wheels-arch.txt carries the single token `emu`, and nothing else.
-#
-# It is not prose and not a log line. wheelindex.py's check_arch()
-# reads this file back when building a pip index and exits if the arch
-# it was told to index is not one of the lines — the guard that stops
-# a gfx1201 directory being published as gfx950. Every other Dockerfile
-# writes the gfx names it found in the compiled objects; this one has
-# no compiled device objects by construction, so it writes the
-# pseudo-arch the emu index is published under (`make emu-index`,
-# ARCH=emu). Any other content here — including an honest sentence
-# about there being no device code — fails that check.
+# wheels-arch.txt is written in the plugin stage, not here, because it
+# names the indexes this wheel set can produce and only that stage
+# knows which packs went in. See the note there.
 
 # WHY THE TAG IS DECIDED BY LOOKING, NOT ASSERTED.
 #
@@ -314,99 +305,65 @@ RUN rm -rf /opt/vllm-emu-shim/build /opt/vllm-emu-shim/*.egg-info && \
 
 RUN ls -la /wheels/
 
-# ─── The profile pack, relabelled for the device it emulates ─────
-# Upstream ships one sample pack, captured on an NVIDIA A40. This lane
-# emulates an AMD part, so the pack is reissued under that name — the
-# identity is rewritten, the measurements are not. See the header of
-# docker/emu-profile-pack.py for why those are different operations.
+# ─── The profile packs ───────────────────────────────────────────
+# One wheel per device, from the packs committed in docker/packs/.
 #
-# Memory and CU count are AMD's published MI455X figures: 432 GB of
-# HBM4 and 256 CDNA 5 compute units, from the product page and the
-# MI455X datasheet. They matter — vLLM sizes its KV cache from
-# gpu_memory_bytes — which is why they were left at the source pack's
-# A40 values (44 GB, 84 SMs) until there was a citable number rather
-# than a plausible one.
+# Nothing is relabelled or reduced here. A pack is produced once, by
+# docker/emu-profile-pack.py, and committed; the build only wraps it.
+# That keeps the expensive, judgement-laden part — which device a pack
+# claims to describe, and whether its timings were measured there —
+# out of a Dockerfile and in a file someone reviewed. --as-is refuses
+# to rename a finished pack, so a wheel cannot quietly disagree with
+# the pack inside it.
 #
-# 463856467968 is 432 GiB — binary, because GPU memory capacity is
-# quoted that way and reading it as decimal GB understates the part by
-# 31.9 GB, or 7.4%. The A40 this pack came from settles it: a nominal
-# 48 GiB card, reporting 47,709,159,424 bytes, which is 44.43 GiB —
-# 92.6% of 48 GiB after ECC, not 99% of 48 decimal GB.
-#
-# It is still the DATASHEET capacity rather than a measured total, and
-# that same A40 arithmetic says a real device will report meaningfully
-# less once ECC and firmware reservations come out. So this is an upper
-# bound and the KV cache sized from it is optimistic. Replace it with
-# what rocminfo says the moment anyone has the part in front of them.
-#
-# The timings are explicitly a placeholder. More accurate estimates are
-# expected later; when they arrive, replace the pack rather than this
-# script — the relabelling is the part that stays.
-#
-# The same pass also shrinks it, 10,960,068 bytes to 835,778. Two
-# independent savings, and only the second one is lossy:
-#
-#   step_cycle_2d_distribution is dropped. Measured: its keys are the
-#   exact union of the prefill and decode tables and its buckets are
-#   their merge, 46,166 + 232,234 = 278,400 — half the file, a verbatim
-#   second copy. The oracle never reads it while both specific tables
-#   exist, and the script refuses to drop it when they do not.
-#
-#   Each remaining bucket keeps 64 quantiles of itself rather than
-#   every raw measurement, 556,800 samples down to 45,800. The oracle
-#   draws with random.choice(), so a uniform draw over evenly spaced
-#   quantiles samples the same distribution; min and max are preserved
-#   exactly, so the tails survive. Measured against the original over
-#   20,000 draws per query: medians within 0.01% on the common decode
-#   buckets, worst case -0.75% median and +2.47% p95 on the heaviest
-#   prefill bucket. Well inside the emulator's own stated error.
-ARG EMU_GPU_MODEL=gfx1250
-ARG EMU_GPU_NAME="AMD Instinct MI455X"
-ARG EMU_GPU_MEMORY_BYTES=463856467968
-ARG EMU_GPU_CU_COUNT=256
-ARG EMU_SOURCE_PACK=A40-Q8-Qwen3-8B.json
-
-# The pack ships as its OWN wheel, vllm-emu-pack-<model>, not inside
-# the shim and not as a file copied into the image.
-#
-# Because a pack is data about one device and the shim is not. The
-# shim is byte-identical whatever is being emulated, so bundling the
-# pack into it would give two devices the same wheel filename
-# (vllm_emu_shim-0.1.0-py3-none-any.whl) with different contents —
-# colliding as release assets and indistinguishable once installed,
-# the trap wheelpublish.sh already documents for torch across per-card
-# releases. Separate wheels also mean a pack can be recaptured and
-# republished without touching the wiring.
-#
-# It registers a `vllm_emu_shim.profile_packs` entry point, so the shim
-# finds it by its being installed rather than by knowing a path. That
-# is why the image sets no VLLM_EMULATOR_PROFILE_PACK and copies no
-# profiles directory: `pip install` is the whole mechanism, and the
-# image therefore exercises exactly the path an index user gets.
+# Each pack becomes its own distribution, vllm-emu-pack-<model>,
+# registering a `vllm_emu_shim.profile_packs` entry point. They are
+# built together but published apart: the shim uses a pack only when
+# exactly one is installed, so an index carrying two leaves the server
+# on llm-emu's fallback device. See `make emu-index`.
 COPY docker/emu-profile-pack.py /usr/local/bin/emu-profile-pack
-RUN set -eu; \
-    mkdir -p /opt/emu-pack/src; \
-    set -- /opt/llm-emu/example_profiling_data/"${EMU_SOURCE_PACK}" \
-           /opt/emu-pack/"${EMU_GPU_MODEL}-Q8-Qwen3-8B.json" \
-           --gpu-model "${EMU_GPU_MODEL}" \
-           --gpu-name "${EMU_GPU_NAME}" \
-           --source-ref "${LLM_EMU_REF}" \
-           --wheel-dir /opt/emu-pack/src; \
-    [ -n "${EMU_GPU_MEMORY_BYTES}" ] && set -- "$@" --memory-bytes "${EMU_GPU_MEMORY_BYTES}" || true; \
-    [ -n "${EMU_GPU_CU_COUNT}" ] && set -- "$@" --cu-count "${EMU_GPU_CU_COUNT}" || true; \
-    python -I /usr/local/bin/emu-profile-pack "$@"
+COPY docker/packs/ /opt/emu-packs/
 
-# Proves the relabelled pack still satisfies llm-emu's own validator —
-# the thing that will actually load it at serve time — rather than
-# trusting that a rewritten multi-megabyte JSON left it well-formed.
-RUN python -c "\
+ARG VCS_REF
+
+RUN set -eu; \
+    mkdir -p /opt/emu-pack/out; \
+    for pack in /opt/emu-packs/*.json; do \
+        model=$(python -I -c "import json,sys; print(json.load(open(sys.argv[1]))['gpu_model'])" "${pack}"); \
+        echo "== ${model}"; \
+        python -I /usr/local/bin/emu-profile-pack "${pack}" \
+            "/opt/emu-pack/out/$(basename "${pack}")" \
+            --gpu-model "${model}" --as-is \
+            --source-ref "${VCS_REF:-}" \
+            --wheel-dir "/opt/emu-pack/src-${model}"; \
+        pip wheel --no-deps --no-cache-dir -w /wheels "/opt/emu-pack/src-${model}"; \
+        echo "emu-${model}" >> /wheels-arch.txt; \
+    done; \
+    cat /wheels-arch.txt
+
+# One line per index this wheel set can produce: emu-gfx1151,
+# emu-gfx1250, one per committed pack.
+#
+# Not prose and not a log line. wheelindex.py's check_arch() reads it
+# back when building a pip index and exits if the arch it was told to
+# index is not among the lines — the guard that stops one directory
+# being published under another's name. `make emu-index` narrows it
+# further, to the single index it is building, once it has dropped the
+# pack wheels that index must not carry.
+
+# Every pack that will ship, through the loader that will read it at
+# serve time. A pack that fails here would otherwise fail inside
+# somebody's server.
+RUN set -eu; \
+    for pack in /opt/emu-pack/out/*.json; do \
+        python -c "\
 import sys; sys.path.insert(0, '/opt/llm-emu');\
 from vllm_emulator.profile.loader import load_profile_pack;\
-p = load_profile_pack('/opt/emu-pack/${EMU_GPU_MODEL}-Q8-Qwen3-8B.json');\
-print('profile pack validates:', p['gpu_model'], p['model_config']['gpu']['gpu_name']);\
-print('latencies measured on:', p['rocm_bake_provenance']['latencies_are_measured_on'])"
-
-RUN pip wheel --no-deps --no-cache-dir -w /wheels /opt/emu-pack/src
+p = load_profile_pack('${pack}');\
+g = p['model_config']['gpu'];\
+v = p['rocm_bake_provenance'];\
+print('  ', p['gpu_model'], '|', g['gpu_name'], '| measured:', v['measured'])"; \
+    done
 
 # ─── Runnable emulator image ─────────────────────────────────────
 # FROM python:slim, not from the builder: the builder carries a Rust
@@ -436,12 +393,38 @@ RUN pip install --no-cache-dir \
 # was installed readable out of the published image, the same way
 # Dockerfile.vllm keeps its patched requirements.
 COPY --from=builder /opt/vllm/requirements/common.txt /opt/vllm-requirements/common.txt
-COPY --from=builder /wheels-build.log /wheels-tag.txt /wheels-arch.txt \
+COPY --from=plugin /wheels-arch.txt /var/log/vllm-emu-build/
+COPY --from=builder /wheels-build.log /wheels-tag.txt \
     /var/log/vllm-emu-build/
 
+# One pack, not every pack. The plugin stage builds a wheel per
+# committed pack, and the shim resolves a pack only when exactly one is
+# installed -- install both and VLLM_EMULATOR_PROFILE_PACK stays unset
+# and the server comes up on llm-emu's fallback device. That is the
+# whole reason the indexes are split per device; the image is one
+# image, so it picks. gfx1151 by default because its timings were
+# measured rather than borrowed.
+ARG EMU_ARCH=gfx1151
+
 RUN --mount=type=bind,from=plugin,source=/wheels,target=/w \
-    pip install --no-cache-dir -r /opt/vllm-requirements/common.txt && \
-    pip install --no-cache-dir --no-deps /w/*.whl && \
+    set -e; \
+    gfx=$(printf '%s' "${EMU_ARCH#emu-}" | tr '-' '_'); \
+    pack=''; n=0; \
+    for w in /w/vllm_emu_pack_"${gfx}"-*.whl; do \
+        [ -f "${w}" ] || continue; pack="${w}"; n=$((n + 1)); \
+    done; \
+    if [ "${n}" != "1" ]; then \
+        echo "EMU_ARCH=${EMU_ARCH} matched ${n} pack wheels, need exactly 1 of:" >&2; \
+        for w in /w/vllm_emu_pack_*.whl; do echo "  ${w}" >&2; done; \
+        exit 1; \
+    fi; \
+    base=''; \
+    for w in /w/*.whl; do \
+        case "${w}" in */vllm_emu_pack_*) continue ;; esac; \
+        base="${base} ${w}"; \
+    done; \
+    pip install --no-cache-dir -r /opt/vllm-requirements/common.txt; \
+    pip install --no-cache-dir --no-deps ${base} "${pack}"; \
     python -c "import vllm; print('vLLM', vllm.__version__)"
 
 # No VLLM_EMULATOR_PROFILE_PACK and no profiles directory. The pack
@@ -476,4 +459,5 @@ LABEL org.opencontainers.image.source="https://github.com/vllm-project/vllm"
 LABEL org.opencontainers.image.description="vLLM ${VLLM_REF} arch-free (+empty) wheel, with LLM-Emu ${LLM_EMU_REF} and the rocm-bake shim"
 
 COPY --from=plugin /wheels/ /wheels/
-COPY --from=builder /wheels-build.log /wheels-tag.txt /wheels-arch.txt /
+COPY --from=builder /wheels-build.log /wheels-tag.txt /
+COPY --from=plugin /wheels-arch.txt /

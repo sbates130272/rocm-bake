@@ -49,6 +49,7 @@ import importlib.util
 import io
 import json
 import re
+import shutil
 import sys
 import zipfile
 from pathlib import Path
@@ -404,7 +405,18 @@ def main():
     pin_digest = hashlib.sha256(
         "\n".join(f"{n}=={v}" for n, v in sorted(pins)).encode()
     ).hexdigest()[:8]
-    meta_version = f"{args.version.split('-')[0]}+{args.arch}.{pin_digest}"
+    # The arch goes in the local version segment, and a wheel filename
+    # is split on "-" into name-version-python-abi-platform. An arch
+    # carrying a hyphen therefore produces a filename with one field
+    # too many, which pip cannot parse -- it drops the file without
+    # comment and reports "from versions: none" for an index that
+    # looks perfectly correct in a browser. No gfx name has a hyphen,
+    # so this only bites the emulator indexes (emu-gfx1151); PEP 440
+    # normalises "-", "_" and "." in a local segment to "." anyway, so
+    # writing the "." directly changes no version that already exists.
+    arch_in_version = args.arch.replace("-", ".").replace("_", ".")
+    meta_version = (f"{args.version.split('-')[0]}"
+                    f"+{arch_in_version}.{pin_digest}")
 
     meta_whl = metapackage_wheel(args.arch, meta_version, pins,
                                 out / METAPACKAGE, args.python)
@@ -434,6 +446,17 @@ def main():
     meta_v = wheel_verdict.measure(meta_whl)
     meta_v["project"] = METAPACKAGE
     verdicts.append(meta_v)
+
+    # Drop project directories left by an earlier run. Regenerating an
+    # index over a smaller wheel set rewrote index.html but left the
+    # vanished projects' pages on disk, still serving their wheels to
+    # anyone who requested them by name -- which is exactly how an
+    # emulator index would go on offering a second profile pack after
+    # `make emu-index` dropped it.
+    for stale in sorted(p for p in Path(out).iterdir()
+                        if p.is_dir() and p.name not in projects):
+        print(f"  removing stale project {stale.name}/")
+        shutil.rmtree(stale)
 
     for project, entries in projects.items():
         write_project(out, project, entries)

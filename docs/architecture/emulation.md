@@ -194,25 +194,44 @@ bump that invalidates one fails loudly rather than serving wrongly.
 
 ## Publishing
 
-The wheels go out under the pseudo-architecture **`emu`**:
+One index per device, named **`emu-<gfx>`**, each with its own release:
 
 ```bash
-make emu-index          # fetch from Zot, build the PEP 503 index
-make emu-index-check    # install it in a throwaway venv and import it
+make emu-index          # fetch from Zot, build a PEP 503 index per device
+make emu-index-check    # install each in a throwaway venv and import it
 make emu-publish-dry
-make emu-publish        # release + gh-pages index
+make emu-publish        # a release and a gh-pages index per device
 ```
+
+| index | pack | timings |
+| --- | --- | --- |
+| `emu-gfx1151` | `vllm-emu-pack-gfx1151` | measured on an AMD Radeon 8060S |
+| `emu-gfx1250` | `vllm-emu-pack-gfx1250` | an NVIDIA A40's, relabelled |
+
+**One pack per index, and that is a constraint rather than a
+convention.** The shim uses a pack only when exactly one is installed,
+and the generated `rocm-torch` metapackage pins every wheel in its
+index — so an index carrying two packs resolves to a server that comes
+up on LLM-Emu's fallback device. The wheel image builds every pack;
+`make emu-index` drops the ones each index must not carry, and narrows
+`wheels-arch.txt` to match so `wheelindex.py` still checks the
+directory against something true.
+
+**Not the plain `gfx` names.** `data/wheels/gfx1151/` is the ROCm wheel
+index for that card. Putting `vllm 0.33.0+empty` beside
+`vllm 0.33.0+rocm10.1.0` is the collision this lane exists to avoid,
+one directory further down.
 
 ### Installing from it needs a torch
 
 The index does not contain one, and the metapackage does not pin one:
 
 ```text
-rocm-torch 10.1.0+emu.<digest>  (extra: device-emu)
+rocm-torch 10.1.0+emu-gfx1151.<digest>  (extra: device-emu-gfx1151)
   llm-emu==0.1.0
   vllm==0.33.0+empty
   vllm-emu-shim==0.1.0
-  vllm-emu-pack-gfx1250==0.1.0+<ref>
+  vllm-emu-pack-gfx1151==0.1.0+<ref>
 ```
 
 vLLM built with `VLLM_TARGET_DEVICE=empty` resolves its dependencies
@@ -245,9 +264,9 @@ real stack. So the install is two steps:
 pip install --index-url https://download.pytorch.org/whl/cpu torch
 
 pip install \
-  --index-url https://sbates130272.github.io/rocm-bake/data/wheels/emu/ \
+  --index-url https://sbates130272.github.io/rocm-bake/data/wheels/emu-gfx1151/ \
   --extra-index-url https://pypi.org/simple \
-  "rocm-torch[device-emu]"
+  "rocm-torch[device-emu-gfx1151]"
 ```
 
 `make emu-index-check` runs exactly that against the freshly built
@@ -283,6 +302,58 @@ make emu-capture-down GPU_HOST=<node>     # flushes the trace
 ```
 
 The trace lands in `/tmp/emu-trace/steps.jsonl` on the GPU host.
+`.builders/emu-capture-sweep.sh` drives the load: a warmup, then rate
+cells either side of saturation across two prompt shapes. Its rungs
+are scaled to the device, which matters — on gfx1151 saturation is
+~0.75 req/s for Qwen3-8B, so upstream's 1..32 req/s ladder would
+saturate at every rung and fill one concurrency bucket.
+
+Then drop the warmup, build the pack with LLM-Emu's own builder, and
+reduce it into a pack wheel:
+
+```bash
+{ head -1 steps.jsonl; tail -n +<warmup_end> steps.jsonl; } > trimmed.jsonl
+python3 -I .../build_serving_profile_filtered.py trimmed.jsonl raw.json \
+    --gpu-model gfx1151 --model-name Qwen/Qwen3-8B
+python3 -I docker/emu-profile-pack.py raw.json packs/gfx1151-Q8-Qwen3-8B.json \
+    --gpu-model gfx1151 --gpu-name "AMD Radeon 8060S Graphics" \
+    --measured --captured-with "..." --wheel-dir /tmp/pack-src
+```
+
+`--measured` is not cosmetic: without it the pack carries the warning
+written for a relabelled one, telling every later reader its timings
+are a placeholder from another device.
+
+### The gfx1151 pack, and how well it replays
+
+`docker/packs/gfx1151-Q8-Qwen3-8B.json` is the first pack here measured
+rather than borrowed: Qwen3-8B on an AMD Radeon 8060S (gfx1151, 20 CU),
+6,706 steps over eight load cells plus a prefill pass.
+
+Replaying the same `vllm bench serve` cells through the emulator
+against the real run that produced the pack:
+
+| cell | real req/s | emulated | real tok/s | emulated | real TPOT | emulated |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 256/128 rate=0.5 | 0.45 | 0.45 | 57.28 | 57.30 | 74.3 ms | 77.2 ms |
+| 256/128 rate=1.0 | 0.86 | 0.86 | 109.87 | 109.83 | 79.4 ms | 79.9 ms |
+| 256/128 rate=inf | 3.60 | 3.60 | 460.41 | 460.83 | 99.5 ms | 99.4 ms |
+| 1024/64 rate=0.5 | 0.47 | 0.47 | 30.13 | 30.13 | 78.4 ms | 87.0 ms |
+
+Throughput matches to the reported precision. TPOT is within ~1% on
+the decode-heavy shapes and ~11% on the prefill-heavy one, which is
+where the pack is thinnest: 457 prefill samples against 6,248 decode.
+A capture aimed at prefill fidelity should spend proportionally more
+of its budget on short generations.
+
+One caveat the numbers above hide. The emulator sized its KV cache at
+524,752 tokens where the real run had 81,728, because it computes the
+pool from the pack's `gpu_memory_bytes` and its own utilisation rather
+than from what the device reported. It does not affect these cells,
+which never approach either limit, but it would change admission
+behaviour under enough concurrency. Replay with the same
+`--gpu-memory-utilization` the capture used, and treat the KV figure
+as unmodelled.
 
 **What a sample is.** Not what upstream's tracer records. Upstream
 times the whole engine step and describes it with the most recently

@@ -293,6 +293,7 @@ BAKE_PRINT = docker buildx bake -f rocm-bake.hcl
         build-vllm-emu push-vllm-emu build-vllm-emu-wheel push-vllm-emu-wheel \
         push-emu emu-wheels fetch-vllm-emu-wheel emu-test emu-load \
         emu-index emu-index-check emu-publish emu-publish-dry \
+        wheel-index-only \
         build-vllm-emu-capture push-vllm-emu-capture \
         emu-capture-serve emu-capture-status emu-capture-down \
         cache-summary cache-check cache-logs builder-load \
@@ -1718,11 +1719,54 @@ fetch-vllm-emu-wheel: ## Fetch the arch-free wheels from Zot into ./dist/emu
 # single `FROM scratch AS wheel` stage, so there is nothing else to
 # name; the default list is the per-arch ROCm set and every entry of it
 # would be fetched for an arch that has none.
-EMU_ARCH   ?= emu
+#
+# ONE INDEX PER DEVICE, named emu-<gfx>. Not one `emu` index holding
+# every pack: the shim uses a profile pack only when exactly one is
+# installed, and the generated rocm-torch metapackage pins every wheel
+# in its index — so a two-pack index resolves to a server that comes
+# up on llm-emu's fallback device, and `emu-index-check` fails on it.
+#
+# And not the plain gfx names either. data/wheels/gfx1151/ is the ROCm
+# wheel index for that card; dropping `vllm 0.33.0+empty` beside
+# `vllm 0.33.0+rocm10.1.0` is the collision this lane exists to avoid,
+# one directory further down.
+#
+# Which device the runnable image emulates is EMU_ARCH, and it is
+# declared in rocm-bake.hcl, not here: the image build is the only
+# thing that reads it. These indexes are a list, an image is one
+# device.
+EMU_ARCHES ?= emu-gfx1151 emu-gfx1250
 EMU_REPOS  ?= vllm-emu-wheel
 
-emu-index: ## Fetch the emu wheels from Zot and build their pip index
-	@$(MAKE) wheel-index ARCHES="$(EMU_ARCH)" WHEEL_REPOS="$(EMU_REPOS)"
+# The wheel image carries every pack, so each index is built by
+# fetching the lot and then dropping the packs that are not this
+# device's. wheels-arch.txt is narrowed to match, because it is the
+# file wheelindex.py checks the directory against — left listing every
+# index, it would wave through exactly the mismatch it exists to
+# catch.
+emu-index: ## Fetch the emu wheels from Zot and build a pip index per device
+	@set -e; \
+	for a in $(EMU_ARCHES); do \
+		echo "== $$a"; \
+		$(MAKE) --no-print-directory wheel-index \
+			ARCHES="$$a" WHEEL_REPOS="$(EMU_REPOS)" >/dev/null; \
+		keep="vllm_emu_pack_$${a#emu-}-"; \
+		for whl in $(WHEELS_DIR)/$$a/vllm_emu_pack_*.whl; do \
+			case "$$(basename "$$whl")" in \
+				"$$keep"*) ;; \
+				*) echo "   dropping $$(basename "$$whl")"; rm -f "$$whl" ;; \
+			esac; \
+		done; \
+		echo "$$a" > $(WHEELS_DIR)/$$a/wheels-arch.txt; \
+		$(MAKE) --no-print-directory wheel-index-only ARCH="$$a"; \
+	done
+
+# The index half of wheel-index, for callers that have already placed
+# the wheels themselves.
+wheel-index-only:
+	@python3 .builders/wheelindex.py "$(WHEELS_DIR)/$(ARCH)" --arch "$(ARCH)" \
+		--out "$(INDEX_DIR)/$(ARCH)" --version "$(ROCM_VERSION)" \
+		--python "$(PYTHON_VERSION)"
 
 # Its own recipe rather than wheel-index-check ARCHES=emu, for two
 # reasons that only apply to this index.
@@ -1759,43 +1803,61 @@ emu-index: ## Fetch the emu wheels from Zot and build their pip index
 # rather than at someone's first completion.
 EMU_TORCH_INDEX ?= https://download.pytorch.org/whl/cpu
 
-emu-index-check: ## Install the emu index into a throwaway venv and import it
+emu-index-check: ## Install each emu index into a throwaway venv and import it
 	@set -e; \
-	[ -d "$(INDEX_DIR)/$(EMU_ARCH)" ] || \
-		{ echo "no index for $(EMU_ARCH) — run make emu-index"; exit 1; }; \
 	port=8099; \
 	python3 -m http.server $$port --directory dist >/dev/null 2>&1 & \
 	srv=$$!; trap 'kill '"$$srv"' 2>/dev/null || true' EXIT; sleep 2; \
+	for a in $(EMU_ARCHES); do \
+	[ -d "$(INDEX_DIR)/$$a" ] || \
+		{ echo "no index for $$a — run make emu-index"; exit 1; }; \
 	v=$$(mktemp -d); python3 -m venv "$$v" >/dev/null; \
-	echo "== $(EMU_ARCH)"; \
+	echo "== $$a"; \
 	"$$v/bin/pip" install -q --no-cache-dir \
 		--index-url "$(EMU_TORCH_INDEX)" "torch==$(PYTORCH_VERSION)"; \
 	no_proxy=127.0.0.1,localhost NO_PROXY=127.0.0.1,localhost \
 	"$$v/bin/pip" install -q --no-cache-dir \
-		--index-url "http://127.0.0.1:$$port/index/$(EMU_ARCH)/" \
+		--index-url "http://127.0.0.1:$$port/index/$$a/" \
 		--extra-index-url https://pypi.org/simple \
-		"rocm-torch[device-$(EMU_ARCH)]"; \
-	"$$v/bin/pip" list 2>/dev/null | sed 's/^/     /'; \
+		"rocm-torch[device-$$a]"; \
+	"$$v/bin/pip" list 2>/dev/null | grep -iE '^(vllm|llm-emu|rocm-torch|torch|vllm-emu) ' | sed 's/^/     /'; \
 	"$$v/bin/python" -c "import torch, vllm; \
 print('     torch', torch.__version__, '/ vLLM', vllm.__version__)"; \
-	VLLM_EMULATOR_ENABLE_ORACLE=1 "$$v/bin/vllm-emu-selftest" --require-platform; \
-	rm -rf "$$v"
+	VLLM_EMULATOR_ENABLE_ORACLE=1 "$$v/bin/vllm-emu-selftest" --require-platform \
+		| grep -E 'profile pack readable|EmulatorPlatform|all checks passed' | sed 's/^/     /'; \
+	rm -rf "$$v"; \
+	done
 
 # The script directly rather than through wheels-publish, so the title
 # and notes can be this lane's own. The generated ones describe a
 # per-card ROCm release and give a one-line install; for these wheels
 # that line yields a vLLM that cannot import, because the emu index
 # pins no torch. See the note above --notes-file in wheelpublish.sh.
-EMU_PUBLISH = .builders/wheelpublish.sh --arch "$(EMU_ARCH)" \
-	--rocm "$(ROCM_VERSION)" \
-	--title "vLLM emulator wheels (no GPU required)" \
-	--notes-file .builders/emu-release-notes.md
+#
+# One release per index, like the per-card ones and for the same
+# reason: wheel filenames carry no architecture, so two indexes'
+# assets would collide in a shared release namespace. The common three
+# wheels are therefore duplicated across the emu releases, which is
+# what makes each index independently installable.
+#
+# The notes are generated per index, not shared. A shared file told
+# every release that its timings were an A40's placeholders — true of
+# the relabelled gfx1250 pack, false of the measured gfx1151 one. The
+# generator reads the claim out of the pack each release ships; see
+# .builders/emu-release-notes.sh.
+emu_publish = notes=$$(mktemp); .builders/emu-release-notes.sh "$(1)" > "$$notes"; \
+	.builders/wheelpublish.sh --arch "$(1)" \
+		--rocm "$(ROCM_VERSION)" \
+		--title "vLLM emulator wheels for $(1) (no GPU required)" \
+		--notes-file "$$notes"
 
-emu-publish-dry: ## Show what publishing the emu wheels would do
-	@$(EMU_PUBLISH) --dry-run $(WHEELS_PUBLISH_ARGS)
+emu-publish-dry: ## Show what publishing each emu index would do
+	@set -e; for a in $(EMU_ARCHES); do \
+		$(call emu_publish,$$a) --dry-run $(WHEELS_PUBLISH_ARGS); done
 
-emu-publish: ## * Publish the emu wheels to a release and the index to gh-pages
-	@$(EMU_PUBLISH) $(WHEELS_PUBLISH_ARGS)
+emu-publish: ## * Publish each emu index to its own release and gh-pages
+	@set -e; for a in $(EMU_ARCHES); do \
+		$(call emu_publish,$$a) $(WHEELS_PUBLISH_ARGS); done
 
 emu-test: ## Serve a model through the emulator and check it (no GPU needed)
 	@IMAGE="$(REGISTRY)/$(REGISTRY_NAME)/vllm-emu:latest" .builders/emu-test.sh
