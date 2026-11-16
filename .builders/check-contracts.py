@@ -419,6 +419,54 @@ def check_manifests():
                  f"run without make would use the first")
 
 
+# ── 10. the buildkit pin agrees across both builder creators ─────
+BUILDKIT_PIN_RE = re.compile(
+    r'BUILDKIT_IMAGE="\$\{BUILDKIT_IMAGE:-([^}"]+)\}"')
+
+BUILDKIT_PIN_FILES = (".builders/nightly.sh", ".builders/builder-create.sh")
+
+
+def check_buildkit_pin():
+    """The fleet and the AWS lane run different buildkit versions.
+
+    Two scripts create builders -- nightly.sh for the ephemeral
+    CodeBuild one, builder-create.sh for the fleet -- and each pins the
+    buildkit image itself, because neither can reach the other's
+    machines. Nothing makes them agree.
+
+    The failure is quiet and expensive. buildx's default,
+    moby/buildkit:buildx-stable-1, was v0.34.2 on 2026-11-16, which
+    carries moby/buildkit#6418: with several cache-from manifests
+    describing one stage, only the importer that answers first stays
+    queryable and the rest of the stage rebuilds. Bumping one file and
+    not the other leaves half the builds on the broken version, and the
+    only symptom is a cache hit rate nobody is watching closely enough.
+
+    A digest, not a tag: both must name the same immutable image, so a
+    tag quietly re-pointed upstream cannot put the two out of step
+    while still reading the same.
+    """
+    pins = {}
+    for path in BUILDKIT_PIN_FILES:
+        m = BUILDKIT_PIN_RE.search(read(path))
+        if not m:
+            return fail("buildkit-pin",
+                        f"{path} has no BUILDKIT_IMAGE default; the "
+                        f"builder it creates would take buildx's, which "
+                        f"is the version moby/buildkit#6418 affects")
+        pins[path] = m.group(1)
+    if len(set(pins.values())) > 1:
+        return fail("buildkit-pin",
+                    "the two builder creators pin different buildkit "
+                    "images:\n    " + "\n    ".join(
+                        f"{p}: {v}" for p, v in pins.items()))
+    if "@sha256:" not in next(iter(pins.values())):
+        fail("buildkit-pin",
+             f"the buildkit pin is a bare tag: {next(iter(pins.values()))}\n"
+             f"    Tags are mutable; pin the digest so a moved tag "
+             f"cannot reintroduce #6418 silently.")
+
+
 def main():
     report = load("perfreport", ".builders/perfreport.py")
     sample = load("perfsample", ".builders/perfsample.py")
@@ -430,6 +478,7 @@ def main():
     check_costs()
     check_version_wheel_repos()
     check_manifests()
+    check_buildkit_pin()
 
     if FAIL:
         print("contract violations:", file=sys.stderr)
@@ -438,8 +487,8 @@ def main():
         return 1
     print("contracts ok: nginx log_format, balance placement, sample "
           "shape, perf stages, build-* rules, build-record names, "
-          "target-costs, the fleet manifests and "
-          "versioncheck's wheel repos all agree")
+          "target-costs, the fleet manifests, "
+          "versioncheck's wheel repos and the buildkit pin all agree")
     return 0
 
 

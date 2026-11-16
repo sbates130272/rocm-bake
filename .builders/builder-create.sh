@@ -38,8 +38,26 @@ render() {
     echo "${GEN}/buildkitd-${node}.toml"
 }
 
+# `buildx inspect`, not `buildx ls --format '{{.Name}}'`. That listing
+# prints NODE names as well as builder names, and the pool builder
+# names each of its nodes after the node it holds -- so `snoc-strix`
+# appears in it as a node of `snoc-pool` whether or not a builder by
+# that name exists.
+#
+# The false positive only shows up when recreating a builder whose
+# name is also a pool node, which is exactly what bumping the pinned
+# buildkit image requires:
+#
+#     $ docker buildx rm snoc-strix && make builder-snoc-strix
+#     snoc-strix removed
+#     snoc-strix builder already exists          <- it does not
+#     ERROR: failed to find instance "snoc-strix"
+#
+# create_one returned early on the stale match, then use_if_default
+# tried to `buildx use` a builder that had just been deleted. The node
+# was left with no builder at all. Measured 2026-11-16.
 exists() {
-    docker buildx ls --format '{{.Name}}' 2>/dev/null | grep -qx "$1"
+    docker buildx inspect "$1" >/dev/null 2>&1
 }
 
 make_var() { fleet --make | sed -n "s/^$1=//p"; }
@@ -54,6 +72,40 @@ use_if_default() {
     echo "$1 is now the default builder"
 }
 
+# The buildkit image every fleet builder runs, pinned by DIGEST and not
+# just by tag. buildx's own default is moby/buildkit:buildx-stable-1,
+# which resolved to v0.34.2 on 2026-11-16.
+#
+# WHY. v0.34.2 and earlier carry moby/buildkit#6418: when more than one
+# cache-from manifest describes the same stage,
+# combinedCacheManager.Query deduplicates the cache keys and keeps only
+# the manager that answered first, so every other imported cache stops
+# being queryable for the rest of the build. Which one wins is a race.
+# pytorch-wheel imports seven refs on this fleet and all of them exist
+# in Zot, so there are six live importers to lose.
+#
+# Measured on the AWS lane, which has the same bake file and the same
+# problem: two runs of `--targets triton-wheel` on an identical tree
+# both reported 14 of 41 build steps CACHED, the same eleven steps
+# missing in the same order. The third run, identical but for this pin,
+# reported 38 of 41 and finished in 7 seconds instead of 13 minutes --
+# the only three misses being FROM pulls, which can never report
+# CACHED. $1.05 to $0.01.
+#
+# Fixed upstream in moby/buildkit#7312, released in v0.35.0 on
+# 2026-11-11. The v0.35.0 notes carry it as "Fix cache matching with
+# missing blobs or alternative input keys. #7364 #7312".
+#
+# By digest because a tag is mutable and this is a correctness floor,
+# not a preference: a silently-moved tag would reintroduce the bug with
+# nothing in the log to say so. `make version-check` watches
+# moby/buildkit for a newer release; bump both this and the copy in
+# nightly.sh together, which check-contracts.py enforces.
+#
+# The image is baked in at create time, so an existing builder does NOT
+# pick it up. Recreate: docker buildx rm <node> && make builder-<node>.
+BUILDKIT_IMAGE="${BUILDKIT_IMAGE:-moby/buildkit:v0.35.0@sha256:aa632b921ef07411d2cb77292cd34213d4f7b384001d6fceef1e1f25bf9752bb}"
+
 # network=host, the raised step-log limits and linux/amd64 are the same
 # on every node and every driver; see buildkitd.toml.in for why the
 # first is not optional.
@@ -62,6 +114,7 @@ common_opts() {
     printf '%s\n' \
         --driver docker-container \
         --driver-opt network=host \
+        --driver-opt "image=${BUILDKIT_IMAGE}" \
         --config "${cfg}" \
         --platform linux/amd64
 }

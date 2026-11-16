@@ -95,6 +95,21 @@ PYTORCH_ROCM_ARCH := $(or $(PYTORCH_ROCM_ARCH),$(call bake_default,PYTORCH_ROCM_
 # snoc-think but the machine is snoc-thinkstation, and there is no
 # snoc-think on the tailnet.
 BUILDER ?= $(call fleet_var,FLEET_DEFAULT_BUILDER)
+
+# The buildkit image every builder-* target creates its builder with,
+# read out of builder-create.sh rather than duplicated here so there is
+# one pin and not two. Exported, so `make builder-<node>` and
+# `make builder-pool` pass it down; the script's own default is the
+# same value, so running it directly behaves identically.
+#
+# It is pinned by digest because v0.34.2 and earlier carry
+# moby/buildkit#6418, which cost a measured 14 of 41 build steps CACHED
+# against 38 of 41 after pinning v0.35.0. See the note in
+# builder-create.sh; check-contracts.py keeps this in step with
+# nightly.sh, and `make version-check` watches it for a newer release.
+BUILDKIT_IMAGE ?= $(shell sed -n 's/^BUILDKIT_IMAGE="\$${BUILDKIT_IMAGE:-\(.*\)}"/\1/p' .builders/builder-create.sh)
+export BUILDKIT_IMAGE
+
 REPO ?= $(REGISTRY_NAME)/base
 
 # The tailnet must never go through the corporate proxy. HTTP_PROXY and
@@ -2295,6 +2310,7 @@ list-vars: ## Show the variables these targets read, and their values
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' FLEET "$(FLEET)  ($(call fleet_var,FLEET_MANIFEST_PATH))"
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' FLEET_NODES "$(FLEET_NODES)"
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' POOL_BUILDER "$(POOL_BUILDER)  (sentinel: routes through balance.sh)"
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' BUILDKIT_IMAGE "$(BUILDKIT_IMAGE)"
 	@printf '\n$(C_BOLD)Location$(C_OFF)\n'
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' BUILDER "$(BUILDER)"
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' REGISTRY "$(REGISTRY)"

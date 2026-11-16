@@ -171,10 +171,20 @@ BUILDER_NAME="${BUILDER_NAME:-rocm-nightly}"
 # unions matching candidates across equivalent keys instead of
 # requiring every alternative to match.
 #
-# Remove this pin once buildx-stable-1 moves past v0.35.0; it is a
-# version floor, not a preference. Check with:
-#   docker buildx inspect <builder> | grep -i buildkit
-BUILDKIT_IMAGE="${BUILDKIT_IMAGE:-moby/buildkit:v0.35.0}"
+# Confirmed on this lane, not assumed: the third `--targets
+# triton-wheel` run -- identical to the two above but for this pin --
+# reported 38 of 41 build steps CACHED and finished in 7 seconds for
+# $0.01, the only three misses being FROM pulls, which can never report
+# CACHED.
+#
+# Pinned by DIGEST, not just tag: a tag is mutable, and this is a
+# correctness floor rather than a preference. A silently-moved tag
+# would reintroduce the bug with nothing in the log to say so.
+#
+# The same pin is in builder-create.sh for the fleet, whose builders
+# ran v0.33.1 and v0.34.2. check-contracts.py asserts the two agree;
+# `make version-check` watches moby/buildkit for a newer release.
+BUILDKIT_IMAGE="${BUILDKIT_IMAGE:-moby/buildkit:v0.35.0@sha256:aa632b921ef07411d2cb77292cd34213d4f7b384001d6fceef1e1f25bf9752bb}"
 
 ensure_builder() {
     if docker buildx inspect "${BUILDER_NAME}" >/dev/null 2>&1; then
