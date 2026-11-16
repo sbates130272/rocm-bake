@@ -397,9 +397,27 @@ COPY --from=plugin /wheels-arch.txt /var/log/vllm-emu-build/
 COPY --from=builder /wheels-build.log /wheels-tag.txt \
     /var/log/vllm-emu-build/
 
+# One pack, not every pack. The plugin stage builds a wheel per
+# committed pack, and the shim resolves a pack only when exactly one is
+# installed -- install both and VLLM_EMULATOR_PROFILE_PACK stays unset
+# and the server comes up on llm-emu's fallback device. That is the
+# whole reason the indexes are split per device; the image is one
+# image, so it picks. gfx1151 by default because its timings were
+# measured rather than borrowed.
+ARG EMU_ARCH=gfx1151
+
 RUN --mount=type=bind,from=plugin,source=/wheels,target=/w \
-    pip install --no-cache-dir -r /opt/vllm-requirements/common.txt && \
-    pip install --no-cache-dir --no-deps /w/*.whl && \
+    set -e; \
+    gfx=$(printf '%s' "${EMU_ARCH#emu-}" | tr '-' '_'); \
+    pack=$(ls /w/vllm_emu_pack_"${gfx}"-*.whl 2>/dev/null || true); \
+    n=$(printf '%s\n' ${pack} | grep -c . || true); \
+    if [ "${n}" != "1" ]; then \
+        echo "EMU_ARCH=${EMU_ARCH} matched ${n} pack wheels, need exactly 1:" >&2; \
+        ls /w/vllm_emu_pack_*.whl >&2; exit 1; \
+    fi; \
+    pip install --no-cache-dir -r /opt/vllm-requirements/common.txt; \
+    pip install --no-cache-dir --no-deps \
+        $(ls /w/*.whl | grep -v '/vllm_emu_pack_') "${pack}"; \
     python -c "import vllm; print('vLLM', vllm.__version__)"
 
 # No VLLM_EMULATOR_PROFILE_PACK and no profiles directory. The pack

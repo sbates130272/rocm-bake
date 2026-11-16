@@ -469,6 +469,15 @@ variable "LLM_EMU_REF" {
   default = "b71c6025b189784cbd4b926d15afa8257738ea39"
 }
 
+# Which committed pack the runnable emulator image installs. The
+# wheels image carries every pack and the indexes split them one per
+# device; the image is a single image, so it serves as one device.
+# gfx1151 because that pack's timings were measured on the card, where
+# gfx1250's are still an A40's relabelled.
+variable "EMU_ARCH" {
+  default = "gfx1151"
+}
+
 # Which llm-emu to build. Upstream by default; point it at a fork to
 # build a branch without editing the Dockerfile, the same escape hatch
 # ATOM_REPO provides.
@@ -1804,8 +1813,9 @@ target "vllm-emu" {
 
   labels = merge(OCI_LABELS, {
     "org.opencontainers.image.title"       = "vllm-emu"
-    "org.opencontainers.image.description" = "vLLM ${VLLM_REF} (+empty) on the LLM-Emu ${LLM_EMU_REF} path — no GPU, any architecture"
+    "org.opencontainers.image.description" = "vLLM ${VLLM_REF} (+empty) on the LLM-Emu ${LLM_EMU_REF} path — no GPU, emulating ${EMU_ARCH}"
     "org.opencontainers.image.version"     = "${VLLM_REF}-emu"
+    "dev.rocm-bake.emu-arch"               = EMU_ARCH
   })
 
   cache-from = distinct(concat(cache_own("vllm-emu-cache", ""), [
@@ -1822,6 +1832,7 @@ target "vllm-emu" {
     LLM_EMU_REF         = LLM_EMU_REF
     LLM_EMU_REPO        = LLM_EMU_REPO
     RUST_VERSION        = RUST_VERSION
+    EMU_ARCH            = EMU_ARCH
     # The same torch version every other lane builds against, taken
     # from the CPU index instead of ROCm's. There was a separate
     # TORCH_CPU_VERSION here, pinned to 2.14.0 to mirror vLLM's own
