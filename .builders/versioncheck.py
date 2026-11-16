@@ -242,6 +242,13 @@ PINNED = {
     "TRITON_REF": "a sha pytorch pins",
     "PYTHON_VERSION": "the base image decides",
     "UCX_REF": "bumped with NIXL_REF",
+    # Upstream publishes no tags and no releases at all, so there is
+    # nothing for gh_latest to compare against and the row would sit at
+    # "?" for ever — in the one list this report prints to catch a
+    # lookup that has silently stopped working. Declared here instead,
+    # so the list keeps meaning what it says. Bumping it means reading
+    # AKafakA/llm-emu's commit log and choosing a SHA.
+    "LLM_EMU_REF": "upstream publishes no tags",
 }
 
 # Rows whose Default cell in the docs says more than the bare value.
