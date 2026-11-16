@@ -213,6 +213,16 @@ COMPONENTS = [
          source=("gh", "mozilla/sccache"), norm="strip_v",
          wheel_repo=None, label="mozilla/sccache",
          url="https://github.com/mozilla/sccache"),
+    # Not a build input: the buildkit daemon that runs the build, set
+    # on the builder at create time. Its pin lives in builder-create.sh
+    # and nightly.sh rather than rocm-bake.hcl, so it is resolved by
+    # shell_pins() instead of bake_defaults(). readme=False and out of
+    # BAKE_TABLE_VARS for the same reason -- it is not a bake variable
+    # and must not appear in that generated table.
+    dict(name="BuildKit", var="BUILDKIT_VERSION", readme=False,
+         source=("gh", "moby/buildkit"), norm="verbatim",
+         wheel_repo=None, label="moby/buildkit",
+         url="https://github.com/moby/buildkit"),
 ]
 
 # Repos whose releases need the strict filter above rather than
@@ -251,6 +261,46 @@ PINNED = {
     "LLM_EMU_REF": "upstream publishes no tags",
 }
 
+# Pins that do not live in rocm-bake.hcl.
+#
+# bake_defaults() reads that file and nothing else, which is right for
+# every component that is a build input. The buildkit image is not one:
+# it is the daemon that runs the build, set on the builder at create
+# time, so it lives in the two scripts that create builders rather than
+# in the bake file.
+#
+# It is still a pin against an upstream release, and the reason to
+# watch it is the reason it exists. v0.34.2 and earlier carry
+# moby/buildkit#6418 -- with several cache-from manifests describing
+# one stage only the importer that answers first stays queryable --
+# which cost a measured 14 of 41 build steps CACHED against 38 of 41
+# after pinning v0.35.0. A pin nothing watches is a pin that rots back
+# to a broken default, so it gets a row.
+#
+# One file is read, not both: check-contracts.py already asserts that
+# nightly.sh and builder-create.sh name the same image, so reading
+# either answers for both.
+SHELL_PINS = {
+    "BUILDKIT_VERSION": (
+        ".builders/builder-create.sh",
+        re.compile(r'BUILDKIT_IMAGE="\$\{BUILDKIT_IMAGE:-[^:]+:([^@"}]+)'),
+    ),
+}
+
+
+def shell_pins():
+    """{var: version} for the pins that live in shell, not the bake file."""
+    out = {}
+    for var, (path, pattern) in SHELL_PINS.items():
+        try:
+            m = pattern.search((ROOT / path).read_text())
+        except OSError:
+            continue
+        if m:
+            out[var] = m.group(1)
+    return out
+
+
 # Rows whose Default cell in the docs says more than the bare value.
 # The alternative is a generator that strips the explanation off a
 # variable whose empty default is the entire point.
@@ -261,8 +311,9 @@ BAKE_NOTES = {"GIT_REF": '`""` - a specific PyTorch ref to build'}
 # SCCACHE_VERSION lives in that page's Compiler cache table instead -
 # a marker block around one cell of an unrelated table would be worse
 # than the staleness it removes.
+NOT_BAKE_VARS = {"SCCACHE_VERSION", "BUILDKIT_VERSION"}
 BAKE_TABLE_VARS = [c["var"] for c in COMPONENTS
-                   if c["var"] != "SCCACHE_VERSION"] + ["GIT_REF"]
+                   if c["var"] not in NOT_BAKE_VARS] + ["GIT_REF"]
 
 # Where the generated blocks live. Keyed by marker name rather than by
 # filename so the same generator can be pointed at a moved file.
@@ -950,6 +1001,11 @@ def main():
     args = ap.parse_args()
 
     defaults = bake_defaults()
+    # Pins that live in shell rather than the bake file; see
+    # SHELL_PINS. Merged here so every consumer below -- the
+    # report, the status column, upstream_of -- treats them
+    # exactly like a bake default.
+    defaults.update(shell_pins())
 
     if args.scrub or args.scrub_check:
         if args.markdown or args.no_zot or args.registry or args.namespace:
