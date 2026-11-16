@@ -174,7 +174,7 @@ OUR_IMAGES = {
     # The arch-free emulator lane. Its records stamp "noarch" where the
     # others stamp a gfx name — the same thing triton-wheel does, and
     # arch_of() already handles it.
-    "vllm-emu", "vllm-emu-wheel",
+    "vllm-emu", "vllm-emu-wheel", "vllm-emu-capture",
 }
 
 

@@ -61,6 +61,21 @@ def install() -> None:
     if _installed:
         return
     _installed = True
+    # Capture and emulation are opposites: one records what a real
+    # device did, the other replaces the device. Tracing an emulated
+    # run would write the oracle's own draws back out as measurements,
+    # so when both are switched on tracing stands down and says so.
+    from . import _capture
+
+    if _capture.trace_armed():
+        if armed():
+            print("[vllm-emu-shim] VLLM_EMULATOR_TRACE_STEP_CYCLE ignored: "
+                  "the emulator is enabled, and an emulated run has "
+                  "nothing real to record")
+        else:
+            _capture.apply()
+            return
+
     had_pack = bool(os.environ.get("VLLM_EMULATOR_PROFILE_PACK"))
     default_profile_pack()
     if apply():

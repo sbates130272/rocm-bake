@@ -97,8 +97,10 @@ Worth being blunt, because the output looks like a benchmark:
   for the model and hardware a pack was captured on. Serving a model
   the pack does not describe is extrapolation.
 
-Capturing our own pack needs `StepCycleTracer` and a real GPU, so that
-waits for a node with a card.
+A pack measured on one of this repo's own targets has to be captured
+there, from a real vLLM on a real GPU. The tooling for that exists; no
+such pack has been captured yet. See
+[Capturing a pack](#capturing-a-pack).
 
 ### The shipped pack is reduced
 
@@ -264,6 +266,45 @@ resolve the emulator build for someone installing
 `rocm-torch[device-gfx950]`: a vLLM that cannot run a kernel, handed to
 someone who asked for a card. One name, one index, no overlap — which
 is also why `vllm-emu-wheel` is absent from `WHEEL_REPOS`.
+
+## Capturing A Pack
+
+The capture side is the per-arch `vllm` image with the shim installed
+(`vllm-emu-capture`) and step tracing switched on. It records one line
+per engine step — the batch's shape and how long the device spent on
+it — in the trace format LLM-Emu's pack builder reads.
+
+```bash
+make push-vllm-emu-capture PYTORCH_ROCM_ARCH=gfx1151 BUILDER=<node>
+make emu-capture-serve GPU_HOST=<node> SERVE_MODEL=Qwen/Qwen3-8B
+# ... drive load at the endpoint ...
+make emu-capture-status GPU_HOST=<node>
+make emu-capture-down GPU_HOST=<node>     # flushes the trace
+```
+
+The trace lands in `/tmp/emu-trace/steps.jsonl` on the GPU host.
+
+**What a sample is.** Not what upstream's tracer records. Upstream
+times the whole engine step and describes it with the most recently
+*scheduled* batch; vLLM 0.33 keeps a batch queue two deep, submitting
+batch n+1 before it waits on batch n, so that would file every sample
+under the wrong batch. This records the time the device spent on the
+batch whose result was actually waited for:
+
+```text
+latency(n) = completion(n) - max(submit(n), completion(n-1))
+```
+
+which is the exact inverse of how the emulator replays a step. The
+definition is written into the trace header, because a pack captured
+this way is not measured the same way as upstream's.
+
+**What contaminates one.** Anything else on the GPU during the run is
+recorded as this card's latency, so stop other GPU clients first. When
+the engine thread rather than the device sets the pace, that CPU time
+is recorded as device time too. And a pack describes one model, one
+image and one set of serving flags; replaying it under others is
+extrapolation.
 
 ## Running It
 
