@@ -424,11 +424,24 @@ if sc.get("hit_rate") is not None:
         f"({sc['hits']} hit / {sc['hits'] + sc['misses']} cacheable)"
     )
 if lc:
-    out.append(
-        f"layer cache {lc['cached']}/{lc['done']} steps CACHED"
-        + (f" · {lc['import_misses']} import miss(es)"
-           if lc.get("import_misses") else "")
-    )
+    # The build-step pair when nightlymetrics gives it, because
+    # cached/done counts loading the dockerfile, metadata, credentials
+    # and the export in the denominator -- none of which can ever
+    # report CACHED. On 2026-11-13 that is 59/410 (14.4%) against
+    # 59/617 (9.6%): same cache, nearly half the apparent miss rate.
+    if lc.get("build_steps"):
+        out.append(
+            f"layer cache {lc['build_steps_cached']}/{lc['build_steps']}"
+            f" build steps CACHED"
+            + (f" · {lc['import_misses']} import miss(es)"
+               if lc.get("import_misses") else "")
+        )
+    else:
+        out.append(
+            f"layer cache {lc['cached']}/{lc['done']} steps CACHED"
+            + (f" · {lc['import_misses']} import miss(es)"
+               if lc.get("import_misses") else "")
+        )
 # Footprint, so the "would a smaller machine fit?" question is answered
 # in the nightly issue rather than by an investigation. xlarge is
 # 36 vCPU / 72 GiB / 256 GB against 2xlarge's 72 / 144 / 824.
