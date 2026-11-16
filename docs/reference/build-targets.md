@@ -1,6 +1,6 @@
 # Build Targets And Tags
 
-Eighteen targets. Every published repository is under
+Nineteen targets. Every published repository is under
 `snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/`, elided below.
 
 Each target emits **three** tags: a versioned one, `:latest`, and an
@@ -26,8 +26,9 @@ immutable `-g<sha>` tag whenever `VCS_REF` is non-empty.
 | `lmcache-wheel` | `lmcache-wheel` | `${LMCACHE_REF}-${ROCM_VERSION}-${ARCH}` |
 | `vllm-emu` | `vllm-emu` | `${VLLM_REF}-emu` (no arch, no ROCm) |
 | `vllm-emu-wheel` | `vllm-emu-wheel` | `${VLLM_REF}-emu` (no arch, no ROCm) |
+| `vllm-emu-capture` | `vllm-emu-capture` | `${VLLM_REF}-${ROCM_VERSION}-${ARCH}` |
 
-The last two carry no `${ARCH}` because they contain no device code:
+`vllm-emu` and `vllm-emu-wheel` carry no `${ARCH}` because they contain no device code:
 one wheel serves every card, from a profile pack rather than a GPU.
 See [Emulated Serving](../architecture/emulation.md). `pytorch-src` and
 `triton-wheel` drop the arch for their own reasons — a source tree and

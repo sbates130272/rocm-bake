@@ -1,0 +1,25 @@
+---
+# Override for a profile-pack capture run. Layered on top of
+# docker-compose.yml by `make emu-capture-serve`; never used alone.
+#
+# It changes two things about the `vllm` service and nothing else, so a
+# capture is the ordinary serving stack with a recorder attached rather
+# than a second, differently-shaped stack:
+#
+#   * the image is vllm-emu-capture — the same per-arch vLLM with the
+#     capture half of the emulator shim installed
+#     (docker/Dockerfile.vllm-emu-capture);
+#   * tracing is switched on and its output is bind-mounted out, so the
+#     trace survives the container and can be read while it runs.
+#
+# The trace path is on the GPU host, not on the machine running make:
+# compose is driven over DOCKER_HOST=ssh://, so a bind mount resolves
+# there.
+services:
+  vllm:
+    image: ${REGISTRY:-snoc-strix.fold-leaffish.ts.net:8080}/rocm-pytorch/vllm-emu-capture:${VLLM_TAG:-v0.33.0-10.1.0-full-gfx1201}
+    environment:
+      VLLM_EMULATOR_TRACE_STEP_CYCLE: "1"
+      VLLM_EMULATOR_STEP_TRACE_OUTPUT: /trace/steps.jsonl
+    volumes:
+      - ${EMU_TRACE_DIR:-/tmp/emu-trace}:/trace

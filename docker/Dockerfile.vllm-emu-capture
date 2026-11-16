@@ -1,0 +1,68 @@
+# syntax=docker/dockerfile:1
+# The real vLLM serving image with the capture half of the emulator
+# shim installed: what a profile pack is measured with.
+#
+# WHAT THIS IS FOR. The emulator lane (Dockerfile.vllm-emu) replays
+# step latencies from a profile pack, and the only pack it has is
+# upstream's, measured on an NVIDIA A40 and relabelled. A pack that
+# describes one of this repo's own targets has to be captured on that
+# target, from a real vLLM, on a real GPU. This image is that vLLM: the
+# per-arch `vllm` image, unchanged, plus vllm_emu_shim, whose
+# _capture.py records one line per engine step when
+# VLLM_EMULATOR_TRACE_STEP_CYCLE=1.
+#
+# WHY A LAYER AND NOT A MOUNT. vLLM finds the shim through a
+# `vllm.general_plugins` entry point, and entry points come from an
+# installed distribution's metadata — a source directory on PYTHONPATH
+# has none. Dockerfile.atom-vllm layers a plugin onto `vllm` for the
+# same reason.
+#
+# WHAT IS NOT HERE. No llm-emu: the capture side needs none of it, and
+# keeping it out means its platform plugin and CUDA mock cannot be
+# anywhere near a run that is supposed to be real. No emulator
+# environment either — tracing is switched on at serve time
+# (serving/docker-compose.emu-capture.yml), so the image is an ordinary
+# vLLM until asked.
+#
+# Arch-specific, unlike the rest of the emu lane, because it is the
+# device build: tags and cache carry ARCH_TAG like `vllm` and
+# `atom-vllm`.
+
+ARG VLLM_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/vllm:latest
+
+FROM ${VLLM_IMAGE} AS final
+
+ARG VLLM_REF=v0.33.0
+ARG PYTORCH_ROCM_ARCH
+ARG ROCM_VERSION
+
+LABEL org.opencontainers.image.description="vLLM ${VLLM_REF} with step-latency capture, ROCm ${ROCM_VERSION}, ${PYTORCH_ROCM_ARCH}"
+
+COPY docker/vllm-emu-shim/ /opt/vllm-emu-shim/
+
+# --no-deps and nothing resolved: the shim declares no dependencies,
+# and this image's torch, triton and vllm are the ones under test — a
+# resolver has no business near them. Stale build output is cleared
+# first for the reason Dockerfile.vllm-emu gives.
+RUN rm -rf /opt/vllm-emu-shim/build /opt/vllm-emu-shim/*.egg-info && \
+    pip install --no-cache-dir --no-deps /opt/vllm-emu-shim && \
+    rm -rf /opt/vllm-emu-shim
+
+# The image must still be the device build it was a moment ago, and
+# the shim must be inert in it.
+RUN python -c "\
+import torch, vllm;\
+assert torch.version.hip, 'torch lost its HIP build';\
+from importlib.metadata import version;\
+assert 'empty' not in version('vllm'), 'this is the arch-free vLLM, not a device build';\
+print('vllm', version('vllm'), '/ torch', torch.__version__, '/ shim', version('vllm-emu-shim'))"
+
+# The capture wiring's premises, against THIS vLLM. It attributes each
+# step's device time to a batch on the strength of where vLLM waits
+# for a result; if a release moves that, tracing would write plausible
+# numbers under the wrong batch. Fail the build instead.
+#
+# Redirect-then-cat rather than `| tee`: under plain /bin/sh a pipeline
+# reports tee's status, so a failing selftest would pass the build.
+RUN cd / && { vllm-emu-selftest --capture > /vllm-emu-capture-selftest.txt 2>&1; rc=$?; \
+    cat /vllm-emu-capture-selftest.txt; exit $rc; }

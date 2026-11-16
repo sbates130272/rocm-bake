@@ -17,11 +17,18 @@ fact about one release. When a VLLM_REF bump changes it, this fails
 with the reason rather than the serving path failing later with none.
 
 Usage:  vllm-emu-selftest [--require-platform]
+        vllm-emu-selftest --capture
 
   --require-platform  also resolve vllm.platforms.current_platform and
                       require LLM-Emu's EmulatorPlatform. Needs a
                       readable VLLM_EMULATOR_PROFILE_PACK, so it is
                       opt-in: the wheel-build check has no pack.
+
+  --capture           check the CAPTURE wiring instead, on a real GPU
+                      build of vLLM. None of the emulator checks apply
+                      there — that vLLM has a device backend and no
+                      llm-emu — so this runs only the premises
+                      _capture.py depends on.
 """
 
 from __future__ import annotations
@@ -264,9 +271,70 @@ def _report_platform_gaps(current_platform) -> None:
             print(f"          {attr}")
 
 
+def _check_capture() -> None:
+    """The premises vllm_emu_shim/_capture.py rests on, re-measured.
+
+    The capture wiring attributes each step's device time to a batch by
+    wrapping EngineCore.capture_iteration_details, on the strength of
+    one fact about vLLM: both step paths call it with the batch whose
+    result they are about to wait for. If a release moves that wait,
+    or stops passing the scheduler output, tracing would keep writing
+    plausible numbers filed under the wrong batch — the failure that
+    made upstream's own wiring unusable on v0.33. So the facts are
+    checked rather than trusted.
+    """
+    import dataclasses
+
+    import vllm.v1.engine.core as core_mod
+    from vllm.v1.core.sched.output import CachedRequestData, SchedulerOutput
+
+    from vllm_emu_shim import _capture
+
+    cls = core_mod.EngineCore
+    cid = getattr(cls, "capture_iteration_details", None)
+    if not _check("EngineCore.capture_iteration_details exists", cid is not None):
+        return
+    sig = inspect.signature(cid)
+    _check("capture_iteration_details takes scheduler_output",
+           "scheduler_output" in sig.parameters, str(sig))
+
+    for name in ("step", "step_with_batch_queue"):
+        fn = getattr(cls, name, None)
+        if not _check(f"EngineCore.{name} exists", fn is not None):
+            continue
+        src = inspect.getsource(inspect.unwrap(fn))
+        _check(f"{name} waits inside capture_iteration_details(scheduler_output)",
+               "self.capture_iteration_details(scheduler_output)" in src)
+        _check(f"{name} submits with model_executor.execute_model",
+               "self.model_executor.execute_model(" in src)
+
+    so_fields = {f.name for f in dataclasses.fields(SchedulerOutput)}
+    need = {"scheduled_new_reqs", "scheduled_cached_reqs",
+            "num_scheduled_tokens", "total_num_scheduled_tokens"}
+    _check("SchedulerOutput still has the fields a batch is described by",
+           need <= so_fields, ", ".join(sorted(need - so_fields)) or "all present")
+    cached_fields = {f.name for f in dataclasses.fields(CachedRequestData)}
+    _check("CachedRequestData still has req_ids and num_computed_tokens",
+           {"req_ids", "num_computed_tokens"} <= cached_fields)
+
+    # And that the patch takes on this vLLM.
+    _capture._patch_engine_core(core_mod)
+    _check("EngineCore patched for capture",
+           getattr(cls, _capture._MARK, False))
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     require_platform = "--require-platform" in argv
+
+    if "--capture" in argv:
+        print("vllm-emu-selftest --capture")
+        _check_capture()
+        if _FAILURES:
+            print(f"\n{len(_FAILURES)} check(s) failed: {', '.join(_FAILURES)}")
+            return 1
+        print("\nall checks passed")
+        return 0
 
     print("vllm-emu-selftest")
     _check_entry_points()

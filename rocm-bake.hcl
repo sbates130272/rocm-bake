@@ -1688,6 +1688,55 @@ target "atom-vllm" {
   output = ["type=image,compression=zstd"]
 }
 
+# ─── vLLM with step-latency capture ──────────────────────────────
+# The per-arch `vllm` image plus the capture half of the emulator shim:
+# what a profile pack for one of this repo's own targets is measured
+# with. See docker/Dockerfile.vllm-emu-capture.
+#
+# Arch-scoped in tags and cache, unlike vllm-emu and vllm-emu-wheel,
+# because this one IS the device build — it is the same shape as
+# atom-vllm, a small layer on `vllm`.
+#
+# In no group. A capture is run deliberately, on one node, for one
+# architecture; nothing should build this as a side effect.
+target "vllm-emu-capture" {
+  dockerfile = "docker/Dockerfile.vllm-emu-capture"
+  target     = "final"
+  platforms  = ["linux/amd64"]
+
+  tags = compact([
+    "${REGISTRY}/${REGISTRY_NAME}/vllm-emu-capture:${VLLM_REF}-${ROCM_VERSION}-${ARCH_TAG}",
+    "${REGISTRY}/${REGISTRY_NAME}/vllm-emu-capture:latest",
+    VCS_REF != "" ? "${REGISTRY}/${REGISTRY_NAME}/vllm-emu-capture:${VLLM_REF}-${ROCM_VERSION}-${ARCH_TAG}-g${VCS_REF}" : "",
+  ])
+
+  labels = merge(OCI_LABELS, {
+    "org.opencontainers.image.title"       = "vllm-emu-capture"
+    "org.opencontainers.image.description" = "vLLM ${VLLM_REF} with step-latency capture, ROCm ${ROCM_VERSION}, ${PYTORCH_ROCM_ARCH}"
+    "org.opencontainers.image.version"     = "${VLLM_REF}-${ROCM_VERSION}-${ARCH_TAG}"
+  })
+
+  cache-from = [
+    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/vllm-emu-capture-cache:latest${CACHE_ARCH},mode=max,registry.insecure=${REGISTRY_INSECURE}",
+  ]
+  cache-to   = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/vllm-emu-capture-cache:latest${CACHE_ARCH}${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=${REGISTRY_INSECURE},ignore-error=true"]
+
+  contexts = USE_PUB ? {} : {
+    vllm-img = "target:vllm"
+  }
+
+  args = {
+    BUILDKIT_BUILD_NAME = "rocm-pytorch-build/vllm-emu-capture/${PYTORCH_ROCM_ARCH}/${RUN_ID}"
+    SOURCE_DATE_EPOCH   = EPOCH_VLLM_EMU
+    VLLM_IMAGE          = USE_PUB ? PUB_VLLM : "vllm-img"
+    VLLM_REF            = VLLM_REF
+    PYTORCH_ROCM_ARCH   = PYTORCH_ROCM_ARCH
+    ROCM_VERSION        = ROCM_VERSION
+  }
+
+  output = ["type=image,compression=zstd"]
+}
+
 # ─── vLLM wheel artifact ─────────────────────────────────────────
 target "vllm-wheel" {
   # Its own build record name. Inheriting the parent's meant this

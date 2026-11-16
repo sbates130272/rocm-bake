@@ -170,6 +170,8 @@ and no fleet.
 | `emu-index` | Fetch from Zot and build the `emu` pip index |
 | `emu-index-check` | Resolve that index in a throwaway venv |
 | `emu-publish` | Release the wheels and publish the index (`-dry` first) |
+| `push-vllm-emu-capture` | The per-arch vLLM image with step tracing, for capturing a pack |
+| `emu-capture-serve` | Serve real vLLM on `GPU_HOST` with tracing on (`-status`, `-down`) |
 
 See [Emulated serving](../architecture/emulation.md).
 

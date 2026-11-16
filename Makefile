@@ -278,6 +278,8 @@ BAKE_PRINT = docker buildx bake -f rocm-bake.hcl
         build-vllm-emu push-vllm-emu build-vllm-emu-wheel push-vllm-emu-wheel \
         push-emu emu-wheels fetch-vllm-emu-wheel emu-test emu-load \
         emu-index emu-index-check emu-publish emu-publish-dry \
+        build-vllm-emu-capture push-vllm-emu-capture \
+        emu-capture-serve emu-capture-status emu-capture-down \
         cache-summary cache-check cache-logs builder-load \
         perf-plan perf-cold perf-warm perf-report perf-runs perf-serve \
         perf-serve-stop perf-serve-status perf-publish \
@@ -1642,6 +1644,16 @@ push-vllm-emu-wheel: builder-ensure ## * Build and push the arch-free vLLM wheel
 push-emu: builder-ensure ## * Build and push the whole emulator lane (bake group `emu`)
 	$(call bake,emu,--push)
 
+# The capture image is the odd one out in this lane: it is the per-arch
+# device build of vLLM with step tracing added, so it takes
+# PYTORCH_ROCM_ARCH like `vllm` does and builds FROM the published
+# `vllm` image for that arch.
+build-vllm-emu-capture: builder-ensure ## Build the capture image: vLLM + step tracing (no push)
+	$(call bake,vllm-emu-capture)
+
+push-vllm-emu-capture: builder-ensure ## * Build and push the capture image for PYTORCH_ROCM_ARCH
+	$(call bake,vllm-emu-capture,--push,pub)
+
 # Straight to local output rather than through Zot, unlike
 # fetch-vllm-wheel: there is no per-arch tag to disambiguate and no
 # reason to round-trip a 30 MB artifact through the registry to look
@@ -1997,6 +2009,50 @@ serve-test-l2: ## Prove the disk tier serves KV blocks (needs KV_TIER=file)
 serve-down: ## Stop the serving stack and remove its containers
 	$(require_gpu_host)
 	@$(COMPOSE) down --remove-orphans
+
+# ─── Profile-pack capture ────────────────────────────────────────
+# The ordinary serving stack with a recorder attached: the same compose
+# file plus an override that swaps in the vllm-emu-capture image and
+# switches step tracing on. What it writes is the raw material for an
+# emulator profile pack measured on GPU_HOST's own card rather than
+# borrowed from someone else's. See docs/architecture/emulation.md.
+#
+# A capture is a measurement of the whole node, not just of vLLM:
+# anything else using the GPU while it runs is recorded as this card's
+# latency. Check /sys/class/drm/card*/device/mem_info_vram_used on the
+# host before starting.
+#
+# The trace directory is on GPU_HOST. An existing trace is moved aside
+# rather than appended to: the tracer appends, and the pack builder
+# would merge two runs — possibly of two models — into one pack.
+EMU_TRACE_DIR ?= /tmp/emu-trace
+EMU_CAPTURE_COMPOSE = EMU_TRACE_DIR=$(EMU_TRACE_DIR) $(COMPOSE) \
+                      -f $(SERVE_DIR)/docker-compose.emu-capture.yml
+
+emu-capture-serve: ## Serve real vLLM on GPU_HOST with step-latency tracing on
+	$(require_gpu_host)
+	@echo "serving $(SERVE_MODEL) on $(GPU_HOST), tracing to $(GPU_HOST):$(EMU_TRACE_DIR)/steps.jsonl"
+	@$(EMU_CAPTURE_COMPOSE) down --remove-orphans 2>/dev/null || true
+	@ssh -o BatchMode=yes $(GPU_HOST) 'mkdir -p $(EMU_TRACE_DIR) && cd $(EMU_TRACE_DIR) && \
+		if [ -s steps.jsonl ]; then mv steps.jsonl "steps.$$(date +%Y%m%dT%H%M%S).jsonl"; fi'
+	@$(EMU_CAPTURE_COMPOSE) up -d --wait lmcache 2>/dev/null || true
+	@KV_OFFLOAD=0 $(EMU_CAPTURE_COMPOSE) up -d vllm
+	@$(MAKE_BIN) --no-print-directory serve-wait
+
+# The header line and a count, read over ssh: enough to see that
+# tracing is on and steps are arriving, without pulling the file.
+emu-capture-status: ## Show the capture trace's header and how many steps it holds
+	$(require_gpu_host)
+	@ssh -o BatchMode=yes $(GPU_HOST) 'f=$(EMU_TRACE_DIR)/steps.jsonl; \
+		[ -s "$$f" ] || { echo "no trace at $$f"; exit 1; }; \
+		head -1 "$$f" | cut -c1-700; echo; \
+		echo "$$(grep -c total_tokens "$$f") steps recorded in $$f"'
+
+# Stopping is what flushes the last buffered steps, so stop the stack
+# this way rather than killing the container.
+emu-capture-down: ## Stop the capture stack (flushes the trace)
+	$(require_gpu_host)
+	@$(EMU_CAPTURE_COMPOSE) down --remove-orphans
 
 # Not `compose logs`: that only knows about the compose stack, and the
 # benchmark harness starts its containers with plain docker run. The
