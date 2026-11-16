@@ -144,6 +144,38 @@ log "arch ${ARCH}, ${#TARGETS[@]} targets: ${TARGETS[*]}"
 # A named builder rather than --use, so running this on a workstation
 # does not repoint that machine's default away from its fleet builder.
 BUILDER_NAME="${BUILDER_NAME:-rocm-nightly}"
+
+# The buildkit image the builder runs, pinned rather than left to
+# buildx's default of moby/buildkit:buildx-stable-1.
+#
+# WHY. That tag resolved to v0.34.2 on 2026-11-16, and v0.34.2 carries
+# moby/buildkit#6418: when more than one cache-from manifest describes
+# the same stage, combinedCacheManager.Query deduplicates the cache
+# keys and keeps only the manager that answered first, so every other
+# imported cache stops being queryable for the rest of the build. Which
+# one wins is a race. Every target here imports between 3 and 9
+# cache-from refs -- pytorch and pytorch-wheel import 9 -- and most of
+# them are the fleet's unsuffixed tags, which do not exist in ECR at
+# all. When a nonexistent manager wins the race, the stage answers
+# nothing and rebuilds from its first step.
+#
+# That is the shape of what was measured. Two runs of `--targets
+# triton-wheel` sixteen minutes apart, on an identical tree, with the
+# first run's mode=max cache exported to ECR (17.0 GB) and imported by
+# the second without error: both reported 14 of 41 build steps CACHED,
+# the same 11 steps missing in the same order at the same durations.
+# Base image digests were identical, commands byte-identical.
+#
+# The fix is upstream in moby/buildkit#7312, merged 2026-10-26 and
+# released in v0.35.0 on 2026-11-11 -- five days before this pin. It
+# unions matching candidates across equivalent keys instead of
+# requiring every alternative to match.
+#
+# Remove this pin once buildx-stable-1 moves past v0.35.0; it is a
+# version floor, not a preference. Check with:
+#   docker buildx inspect <builder> | grep -i buildkit
+BUILDKIT_IMAGE="${BUILDKIT_IMAGE:-moby/buildkit:v0.35.0}"
+
 ensure_builder() {
     if docker buildx inspect "${BUILDER_NAME}" >/dev/null 2>&1; then
         log "builder ${BUILDER_NAME} exists"
@@ -161,8 +193,10 @@ ensure_builder() {
         # does NOT pick up edits to the file. On CodeBuild that is
         # moot, since the machine is new every run, but on a
         # workstation re-running this: docker buildx rm rocm-nightly.
+        log "buildkit image ${BUILDKIT_IMAGE}"
         docker buildx create --name "${BUILDER_NAME}" \
             --driver docker-container \
+            --driver-opt "image=${BUILDKIT_IMAGE}" \
             --config "${HERE}/buildkitd-nightly.toml" --bootstrap >/dev/null || {
                 echo "nightly: could not create a docker-container builder;" \
                      "cache export would silently fail" >&2
