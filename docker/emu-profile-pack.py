@@ -118,6 +118,21 @@ def _quantise(pack, points):
             ]
 
 
+def _pack_version(pack_bytes):
+    """0.1.0+<digest of the pack>.
+
+    The digest, not the commit that built it. pip may reuse a cached
+    wheel for a version it has seen, so a pack that changes while its
+    version does not can go on being served from someone's cache — the
+    trap wheelindex.py's metapackage already guards against by folding
+    its pin set into its version. A commit-based version would also
+    churn every build for packs that did not change.
+    """
+    import hashlib
+
+    return "0.1.0+" + hashlib.sha256(pack_bytes).hexdigest()[:8]
+
+
 def _emit_wheel_source(root, gpu_model, pack_filename, pack_bytes, version):
     """Write a source tree whose wheel is just this pack.
 
@@ -183,6 +198,41 @@ def _emit_wheel_source(root, gpu_model, pack_filename, pack_bytes, version):
     return project, module
 
 
+def _wrap_as_is(pack, args):
+    """Copy a finished pack and emit its wheel. Change nothing else."""
+    import shutil
+
+    gpu = pack.get("model_config", {}).get("gpu", {})
+    model = pack.get("gpu_model", "?")
+    if args.gpu_model and args.gpu_model != model:
+        raise SystemExit(
+            f"--as-is: pack says gpu_model={model!r} but --gpu-model is "
+            f"{args.gpu_model!r}. Refusing to rename a finished pack; "
+            f"recapture it, or drop --as-is to relabel deliberately.")
+
+    shutil.copyfile(args.src, args.dst)
+    prov = pack.get("rocm_bake_provenance", {})
+    print(f"wrapped {args.src} -> {args.dst} (unchanged)")
+    print(f"  gpu_model  {model}")
+    print(f"  gpu_name   {gpu.get('gpu_name', '?')}")
+    print(f"  measured   {prov.get('measured', 'unknown')}")
+    print(f"  samples    {_count_samples(pack)}")
+
+    if args.wheel_dir:
+        with open(args.src, "rb") as fh:
+            blob = fh.read()
+        project, module = _emit_wheel_source(
+            args.wheel_dir, model, args.dst.rsplit("/", 1)[-1], blob,
+            _pack_version(blob))
+        print(f"  wheel src  {args.wheel_dir} ({project} / {module})")
+    # Not a lint: the provenance is the file's own account of itself,
+    # and a pack that lost it would ship saying nothing about where
+    # its numbers came from.
+    if not prov:
+        print("  WARNING: this pack carries no rocm_bake_provenance block")
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("src")
@@ -197,6 +247,11 @@ def main(argv=None):
                     help="compute units; default keeps the source's")
     ap.add_argument("--source-ref", default="",
                     help="llm-emu ref the source pack came from")
+    ap.add_argument("--as-is", action="store_true",
+                    help="the pack is already final (a committed one in "
+                         "docker/packs): copy it and emit its wheel, "
+                         "changing nothing about its contents or its "
+                         "provenance")
     ap.add_argument("--measured", action="store_true",
                     help="the source pack was captured on the device named "
                          "by --gpu-model, so its latencies are a real "
@@ -217,6 +272,14 @@ def main(argv=None):
 
     with open(args.src, encoding="utf-8") as fh:
         pack = json.load(fh)
+
+    # A committed pack has already been dropped, quantised and
+    # labelled; the build only needs it wrapped in a wheel. Running
+    # the pipeline again would quantise quantiles and overwrite a
+    # provenance block that records a capture this invocation knows
+    # nothing about.
+    if args.as_is:
+        return _wrap_as_is(pack, args)
 
     before = _count_samples(pack)
     dropped = [] if args.keep_combined else _drop_combined(pack)
@@ -290,18 +353,23 @@ def main(argv=None):
             prov.pop(key, None)
 
     with open(args.dst, "w", encoding="utf-8") as fh:
-        json.dump(pack, fh)
+        # Indented, and with a trailing newline. A pack is a committed
+        # artifact (docker/packs/) and a 20 KB single line is not one
+        # anyone can read, grep or diff: `git diff` on a recaptured
+        # pack would be one changed line, and `grep provenance` prints
+        # the whole file. indent=1 rather than 2 because the line
+        # count is identical and the whitespace bill is half; on the
+        # relabelled A40 pack that is 1.19 MB against 836 KB, which
+        # the wheel's deflate gives back.
+        json.dump(pack, fh, indent=1)
+        fh.write("\n")
 
     if args.wheel_dir:
         with open(args.dst, "rb") as fh:
             blob = fh.read()
         project, module = _emit_wheel_source(
             args.wheel_dir, args.gpu_model,
-            args.dst.rsplit("/", 1)[-1], blob,
-            # Versioned by the llm-emu ref the pack came from, not by
-            # the shim: the two move for different reasons, and a pack
-            # changes when upstream recaptures or we relabel.
-            "0.1.0" if not args.source_ref else f"0.1.0+{args.source_ref[:7]}",
+            args.dst.rsplit("/", 1)[-1], blob, _pack_version(blob),
         )
         print(f"  wheel src  {args.wheel_dir} ({project} / {module})")
 

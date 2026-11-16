@@ -194,25 +194,44 @@ bump that invalidates one fails loudly rather than serving wrongly.
 
 ## Publishing
 
-The wheels go out under the pseudo-architecture **`emu`**:
+One index per device, named **`emu-<gfx>`**, each with its own release:
 
 ```bash
-make emu-index          # fetch from Zot, build the PEP 503 index
-make emu-index-check    # install it in a throwaway venv and import it
+make emu-index          # fetch from Zot, build a PEP 503 index per device
+make emu-index-check    # install each in a throwaway venv and import it
 make emu-publish-dry
-make emu-publish        # release + gh-pages index
+make emu-publish        # a release and a gh-pages index per device
 ```
+
+| index | pack | timings |
+| --- | --- | --- |
+| `emu-gfx1151` | `vllm-emu-pack-gfx1151` | measured on an AMD Radeon 8060S |
+| `emu-gfx1250` | `vllm-emu-pack-gfx1250` | an NVIDIA A40's, relabelled |
+
+**One pack per index, and that is a constraint rather than a
+convention.** The shim uses a pack only when exactly one is installed,
+and the generated `rocm-torch` metapackage pins every wheel in its
+index — so an index carrying two packs resolves to a server that comes
+up on LLM-Emu's fallback device. The wheel image builds every pack;
+`make emu-index` drops the ones each index must not carry, and narrows
+`wheels-arch.txt` to match so `wheelindex.py` still checks the
+directory against something true.
+
+**Not the plain `gfx` names.** `data/wheels/gfx1151/` is the ROCm wheel
+index for that card. Putting `vllm 0.33.0+empty` beside
+`vllm 0.33.0+rocm10.1.0` is the collision this lane exists to avoid,
+one directory further down.
 
 ### Installing from it needs a torch
 
 The index does not contain one, and the metapackage does not pin one:
 
 ```text
-rocm-torch 10.1.0+emu.<digest>  (extra: device-emu)
+rocm-torch 10.1.0+emu-gfx1151.<digest>  (extra: device-emu-gfx1151)
   llm-emu==0.1.0
   vllm==0.33.0+empty
   vllm-emu-shim==0.1.0
-  vllm-emu-pack-gfx1250==0.1.0+<ref>
+  vllm-emu-pack-gfx1151==0.1.0+<ref>
 ```
 
 vLLM built with `VLLM_TARGET_DEVICE=empty` resolves its dependencies
@@ -245,9 +264,9 @@ real stack. So the install is two steps:
 pip install --index-url https://download.pytorch.org/whl/cpu torch
 
 pip install \
-  --index-url https://sbates130272.github.io/rocm-bake/data/wheels/emu/ \
+  --index-url https://sbates130272.github.io/rocm-bake/data/wheels/emu-gfx1151/ \
   --extra-index-url https://pypi.org/simple \
-  "rocm-torch[device-emu]"
+  "rocm-torch[device-emu-gfx1151]"
 ```
 
 `make emu-index-check` runs exactly that against the freshly built
