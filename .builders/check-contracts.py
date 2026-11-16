@@ -467,6 +467,52 @@ def check_buildkit_pin():
              f"cannot reintroduce #6418 silently.")
 
 
+# ── 11. CACHE_REPOS ↔ every cache-to ref in the bake file ────────
+def check_cache_repos():
+    """The Makefile's cache repo list must name every cache bake writes.
+
+    CACHE_REPOS already says "Keep in step with the cache-to refs in
+    rocm-bake.hcl", and nothing made that true. It drifted three times:
+    pytorch-src-cache was never added, and neither was vllm-emu-cache
+    nor vllm-emu-capture-cache when the emulator lane landed.
+
+    What a missing entry costs is small but entirely silent. `make
+    image-sizes` and `image-data` report layer sizes per cache repo, so
+    an absent one simply does not appear in a table whose whole job is
+    showing where the cache got large; `make clean-cache` leaves its
+    local images behind. Nothing errors, and the repo is still written
+    to on every build.
+
+    Only the direction that can be wrong is checked. A name in
+    CACHE_REPOS that bake no longer writes is harmless -- it reports an
+    empty repo and removes nothing -- and insisting on exact equality
+    would fail the moment a target is retired, for no benefit.
+    """
+    bake = read("rocm-bake.hcl")
+    refs = set(re.findall(r'cache_own\("([a-z0-9-]+)"', bake))
+    refs |= set(re.findall(
+        r'ref=\$\{REGISTRY\}/\$\{REGISTRY_NAME\}/([a-z0-9-]+):', bake))
+    refs = {r for r in refs if r.endswith("-cache")}
+    if not refs:
+        return fail("cache-repos",
+                    "no cache-to refs found in rocm-bake.hcl; this check "
+                    "is reading the wrong thing")
+
+    m = re.search(r'^CACHE_REPOS \?=(.*?)(?=\n[A-Z#\n])', read("Makefile"),
+                  re.S | re.M)
+    if not m:
+        return fail("cache-repos", "no CACHE_REPOS in the Makefile")
+    listed = set(m.group(1).replace("\\", "").split())
+
+    missing = refs - listed
+    if missing:
+        fail("cache-repos",
+             f"bake writes a layer cache to {sorted(missing)}, which "
+             f"CACHE_REPOS does not name.\n"
+             f"    Those repos are invisible to `make image-sizes` and "
+             f"are left behind by `make clean-cache`.")
+
+
 def main():
     report = load("perfreport", ".builders/perfreport.py")
     sample = load("perfsample", ".builders/perfsample.py")
@@ -479,6 +525,7 @@ def main():
     check_version_wheel_repos()
     check_manifests()
     check_buildkit_pin()
+    check_cache_repos()
 
     if FAIL:
         print("contract violations:", file=sys.stderr)
@@ -487,8 +534,8 @@ def main():
         return 1
     print("contracts ok: nginx log_format, balance placement, sample "
           "shape, perf stages, build-* rules, build-record names, "
-          "target-costs, the fleet manifests, "
-          "versioncheck's wheel repos and the buildkit pin all agree")
+          "target-costs, the fleet manifests, versioncheck's wheel "
+          "repos, the buildkit pin and the cache repo list all agree")
     return 0
 
 
