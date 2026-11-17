@@ -59,7 +59,7 @@ Three things it buys:
 fleet currently has a usable GPU. `vllm`'s verification stops at "it
 imports"; `atom-vllm` ships with its plugin disabled and says so. This
 and the [CPU lane](cpu.md) are the only serving artifacts in the repo
-that are tested end to end — and this one's test runs in CI, on a free
+that are tested end to end, and both tests run in CI, on a free
 runner, before anything is published.
 See [`.github/workflows/emu.yml`][ci].
 

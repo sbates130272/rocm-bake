@@ -197,21 +197,29 @@ vCPUs. That is the cold case. What keeps a pull request off it:
 - **The compile is a cache read when nothing under it moved.** The
   wheel builder stages are cached in the Actions cache, one scope per
   Dockerfile.
-- **Pull requests read `main`'s cache and write none.** A cache written
-  from a pull request is visible to that pull request alone, so writing
-  one cost minutes of upload and about 2 GB of quota per PR for nobody
-  else's benefit.
-- **A daily scheduled run on `main` keeps that cache warm**, and takes
-  the recompile when the manylinux base image has moved overnight.
-- **Pull requests serve with `--enforce-eager`**, which more than
-  halves startup. The kernel compile it skips moves to the first
-  request and still runs; `main` and the schedule serve in the default
-  mode.
+- **Pull requests start from `main`'s cache.** A pull request can read
+  the cache its base branch wrote, and one written from a pull request
+  is visible to that pull request alone. So the push to `main` is what
+  warms everyone, and a pull request's own cache only helps its next
+  push.
+- **A daily scheduled run on `main`** reads that cache, which keeps it
+  inside the Actions cache's seven-day eviction.
+- **The manylinux base is a dated tag.** `:latest` was republished
+  eleven times in three weeks, each one a new digest under the builder
+  stage and a cold compile for whichever pull request came next.
+  `MANYLINUX_IMAGE` now moves only when someone bumps it.
 
-A pull request is still cold, and still about half an hour, when it
-changes the vLLM builder stage, `VLLM_REF` or `PYTORCH_VERSION`: the
-cache has nothing to give it, and it cannot write one for its own next
-push.
+A warm run took 5 min 46 s, with the wheel step down from 27 minutes
+to 4 seconds. That run served with `--enforce-eager` and wrote no
+cache; the workflow as it stands does neither, so expect a minute or
+two more. It serves in the default mode because eager skips the warmup
+compile of the backbone outright, and the pull requests that run this
+workflow are the ones that can break it.
+
+A pull request is still cold, about half an hour, on its first push
+when it changes something under the compile: the vLLM builder stage,
+`VLLM_REF`, `PYTORCH_VERSION` or `MANYLINUX_IMAGE`. Its later pushes
+read the cache that first one wrote.
 
 ## Installing From The `cpu` Index
 
@@ -270,11 +278,10 @@ never sit beside `vllm 0.33.0+rocm101`.
   real run here mapped `vllm/_C.abi3.so`. The first hosted runner
   without AVX-512 is the confirmation; `cpu-test.sh` prints which
   variant it got.
-- **CI has run it once, on a host with AVX-512.** The first hosted
-  run landed on an EPYC 9V74 that exposes `avx512f` and
-  `avx512_bf16`, so it too mapped `vllm/_C.abi3.so`. The trimmed
-  pull-request path described under [In CI](#in-ci) is an estimate
-  until a warm run has been timed.
+- **CI has run it twice, both on hosts with AVX-512.** Both hosted
+  runs landed on an EPYC 9V74 that exposes `avx512f` and
+  `avx512_bf16`, so they too mapped `vllm/_C.abi3.so`. The workflow
+  as it stands, see [In CI](#in-ci), has not itself been timed warm.
 - **`SERVE_DEVICE=cpu` has run on one serving host.** `serve-stack`
   and `serve-test-l2` passed all 14 checks against snoc-thinkstation
   over `DOCKER_HOST=ssh://`, file tier on a dedicated NVMe. That host

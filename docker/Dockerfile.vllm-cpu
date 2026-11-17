@@ -14,7 +14,7 @@
 # does earn the tag: the wheel carries five extensions and repairs to
 # manylinux_2_27.
 
-ARG MANYLINUX_IMAGE=quay.io/pypa/manylinux_2_28_x86_64:latest
+ARG MANYLINUX_IMAGE=quay.io/pypa/manylinux_2_28_x86_64:2026.11.14-1
 ARG PYTHON_VERSION=3.14
 ARG LMCACHE_WHEEL_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/lmcache-cpu-wheel:latest
 

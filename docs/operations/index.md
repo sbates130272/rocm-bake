@@ -40,9 +40,11 @@ rather than hanging.
 
 ## Continuous Integration
 
-Five workflows. Every pull-request check runs on a GitHub-hosted runner
-and builds no real image — the images need a build fleet — so the PR
-gate validates structure and agreement rather than output.
+Every pull-request check runs on a GitHub-hosted runner. The GPU images
+need a build fleet, so the main PR gate validates structure and
+agreement rather than output. Two lanes do build and serve there,
+because neither needs a card: [emulated serving](../architecture/emulation.md)
+and [CPU serving](../architecture/cpu.md), the second also daily.
 
 The exception is the nightly, which does build: a warm run per
 architecture on AWS CodeBuild, published to ECR, reported as a GitHub

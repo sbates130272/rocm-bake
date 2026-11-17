@@ -497,11 +497,16 @@ variable "LLM_EMU_REPO" {
 # vllm/vllm-rs references GLIBC_2.43 from Ubuntu 26.04, so its wheel is
 # linux_x86_64 by necessity. The emu wheel's whole claim is that it
 # installs anywhere, so it is built where a manylinux policy is
-# actually achievable. Pinned to the image's own tag rather than
-# :latest would be better still — quay publishes no digest-stable tag
-# per policy, so this is the one place the lane is not fully pinned.
+# actually achievable.
+#
+# A dated tag, not :latest. :latest was republished eleven times in
+# three weeks, and every republish changes the digest under the
+# builder stage, so the 22-minute vLLM compile in the cpu lane was
+# recompiled from cold on whichever pull request came next. A dated
+# tag moves only when someone bumps it here. Current tags:
+# https://quay.io/repository/pypa/manylinux_2_28_x86_64?tab=tags
 variable "MANYLINUX_IMAGE" {
-  default = "quay.io/pypa/manylinux_2_28_x86_64:latest"
+  default = "quay.io/pypa/manylinux_2_28_x86_64:2026.11.14-1"
 }
 
 

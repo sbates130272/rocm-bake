@@ -27,9 +27,9 @@ on:
   schedule:
     # Daily, 04:23 UTC. Two jobs: torch's CPU index, the triton-cpu
     # release and the unpinned half of the resolve all move with no
-    # commit of ours; and this is the run that keeps main's build cache
-    # warm, which is the only one a pull request can read. A base image
-    # that moved overnight is recompiled here, where nobody is waiting.
+    # commit of ours; and reading main's build cache every day keeps
+    # it inside the Actions cache's seven-day eviction. That cache is
+    # the one every pull request starts from.
     - cron: '23 4 * * *'
   workflow_dispatch:
 
@@ -40,17 +40,11 @@ jobs:
   cpu:
     name: Build and serve
     runs-on: ubuntu-latest
-    # Measured on a hosted runner, cold: 33 min, 22 of them the vLLM
-    # compile. Warm, that step is a cache read and the run is minutes.
-    # Cold happens when the cache has nothing to give: a change to the
-    # vLLM builder stage, a VLLM_REF or torch bump, or a moved base.
+    # Measured on a hosted runner: 33 min cold, 22 of them the vLLM
+    # compile; about 6 min warm, where that step is a cache read. Cold
+    # is a change under the compile: the vLLM builder stage, VLLM_REF,
+    # the torch version or MANYLINUX_IMAGE.
     timeout-minutes: 60
-    env:
-      # Pull requests read main's cache and write none. A cache written
-      # from a pull request is visible to that pull request alone, so
-      # writing one costs minutes of upload and 2 GB of the repository's
-      # quota to help nobody else.
-      WRITE_CACHE: ${{ github.event_name != 'pull_request' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -94,23 +88,20 @@ jobs:
       # ignore-error as in the hcl, which the override would otherwise
       # drop: a failed cache write must not fail the build.
       #
+      # A pull request reads main's cache and writes its own, which
+      # only it can read. That is what makes the second push of a pull
+      # request that changed the builder warm.
+      #
       # Both wheel targets are named. Reached only as vllm-cpu's
       # context, lmcache-cpu-wheel would be built and its output
       # dropped.
       - name: Build the wheels
         run: |
-          if [ "${WRITE_CACHE}" = true ]; then
-            cache_to=(
-              --set 'vllm-cpu*.cache-to=type=gha,mode=max,scope=vllm-cpu,ignore-error=true'
-              --set 'lmcache-cpu*.cache-to=type=gha,mode=max,scope=lmcache-cpu,ignore-error=true'
-            )
-          else
-            cache_to=(--set '*.cache-to=')
-          fi
           docker buildx bake -f rocm-bake.hcl \
             --set 'vllm-cpu*.cache-from=type=gha,scope=vllm-cpu' \
+            --set 'vllm-cpu*.cache-to=type=gha,mode=max,scope=vllm-cpu,ignore-error=true' \
             --set 'lmcache-cpu*.cache-from=type=gha,scope=lmcache-cpu' \
-            "${cache_to[@]}" \
+            --set 'lmcache-cpu*.cache-to=type=gha,mode=max,scope=lmcache-cpu,ignore-error=true' \
             --set 'vllm-cpu-wheel.output=type=local,dest=dist/cpu' \
             --set 'lmcache-cpu-wheel.output=type=local,dest=dist/cpu' \
             vllm-cpu-wheel lmcache-cpu-wheel
@@ -162,13 +153,11 @@ jobs:
             --load \
             vllm-cpu lmcache-cpu
 
-      # A pull request serves with --enforce-eager: startup drops by
-      # more than half, and the kernel compile it skips moves onto the
-      # first request, where it still runs. main and the schedule serve
-      # in the default mode, so the warmup compile is still covered.
+      # In the default mode, not --enforce-eager, though eager starts a
+      # minute sooner: eager skips the warmup compile of the backbone
+      # outright, and the pull requests that run this workflow are the
+      # ones that can break it.
       - name: Serve a model and read it back from LMCache
-        env:
-          VLLM_EXTRA_ARGS: ${{ github.event_name == 'pull_request' && '--enforce-eager' || '' }}
         run: .builders/cpu-test.sh --keep
 
       - name: Container logs
