@@ -248,10 +248,10 @@ never sit beside `vllm 0.33.0+rocm101`.
   both images and runs `cpu-test.sh` on a stock runner, and has never
   executed. `CPUSET=0-3` on a fast AVX-512 machine stood in for one;
   build and startup time there are unmeasured.
-- **`SERVE_DEVICE=cpu` has not run over a real ssh.** Its recipes and
-  `cpu-test.sh --attach` ran end to end against a local daemon, with
-  `DOCKER_HOST=ssh://localhost` answered by a stand-in for `ssh` that
-  runs the command locally. No serving host has been driven this way.
+- **`SERVE_DEVICE=cpu` has run on one serving host.** `serve-stack`
+  and `serve-test-l2` passed all 14 checks against snoc-thinkstation
+  over `DOCKER_HOST=ssh://`, file tier on a dedicated NVMe. That host
+  has AVX-512, like every other machine this lane has run on.
 - **The model is tiny.** 135M parameters and one checkable question.
   That proves weights load and tokens are real, not that a model you
   care about fits or is usable on CPU.

@@ -551,9 +551,14 @@ metric() {
 
 # metric() prints 0 for a counter that is not exported at all, so a
 # renamed one reads as an idle one. This tells them apart.
+#
+# Fetched whole, then searched. `curl | grep -q` under pipefail fails
+# when grep exits on its match while curl is still writing, which a
+# remote server's chunked reply makes likely and loopback hides.
 has_metric() {
-    curl -fsS --max-time 10 "${BASE}/metrics" 2>/dev/null \
-        | grep -aqE "^vllm:$1(\{| )"
+    local body
+    body=$(curl -fsS --max-time 10 "${BASE}/metrics" 2>/dev/null) || return 1
+    grep -aqE "^vllm:$1(\{| )" <<<"$body"
 }
 
 # 200 with {"success": false} while blocks are still referenced, which
