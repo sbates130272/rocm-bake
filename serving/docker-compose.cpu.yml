@@ -150,6 +150,14 @@ services:
       # Exposes /reset_prefix_cache, which cpu-test.sh uses to tell
       # LMCache's cache apart from vLLM's own. Off unless asked for.
       VLLM_SERVER_DEV_MODE: ${VLLM_DEV_MODE:-0}
+      # Turns SIGABRT into a traceback for every thread of the process,
+      # on stderr and so into the container log. Inherited by the engine
+      # and worker children, which is the point: a startup HANG leaves
+      # no exception for cpu-test.sh to print, and the last log line is
+      # whatever happened to run before the thread stopped. This is what
+      # lets it ask a stuck worker where it is. Costs nothing until
+      # something sends the signal — see startup_failure in cpu-test.sh.
+      PYTHONFAULTHANDLER: 1
     # The start period covers a cold model download; a container that
     # exits fails `up --wait` at once regardless.
     healthcheck:

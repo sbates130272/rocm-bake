@@ -144,9 +144,58 @@ cname() { docker inspect -f '{{.Name}}' "$1" 2>/dev/null | sed 's|^/||'; }
 # and the tail is "Engine core initialization failed" — the one line
 # that names the cause is in between. The stack is kept, as in
 # emu-test.sh: the trap would otherwise remove the only copy of the log.
+# Where a hung worker actually is, which no log line says.
+#
+# A startup HANG prints no exception and no final line: the tail is
+# whatever ran before the thread stopped, and on a 4-core hosted runner
+# that has been LMCache's "Registered KV cache", twelve minutes before
+# the timeout, with the engine waiting on a worker response that never
+# came. Every environment we can reach serves the same images fine, so
+# the only way to the frame is to ask the process in the environment
+# that hangs.
+#
+# PYTHONFAULTHANDLER=1 is set on the vllm service, so SIGABRT makes
+# Python write every thread's stack to stderr, which docker logs
+# already captures. Sent to the CHILDREN only: PID 1 is `vllm serve`
+# itself, and killing it ends the container before the logs can be
+# read, while the engine and worker children are both the interesting
+# ones and expendable. The stack is dumped before the process dies, so
+# this costs a container that was being torn down anyway.
+#
+# Silent when nothing answers. A container that already exited, a
+# docker without exec, a Python too old for the variable — none of
+# those should replace the log tail that follows with an error about
+# the diagnostics.
+stack_dump() {
+    [ -n "$VLLM_C" ] || return 0
+    [ "$(running "$VLLM_C")" = "true" ] || return 0
+    # One at a time, with a pause between. Signalled together, the
+    # engine and the worker write their stacks to the same stderr at
+    # once and the dumps interleave character by character — measured,
+    # and the result is unreadable rather than merely untidy. The
+    # resource tracker is skipped because its stack is always the same
+    # two frames of multiprocessing boilerplate.
+    docker exec "$VLLM_C" sh -c '
+        self=$$
+        for p in /proc/[0-9]*; do
+            pid=${p#/proc/}
+            case "$pid" in 1|"$self") continue ;; esac
+            grep -qa resource_tracker "$p/cmdline" 2>/dev/null && continue
+            kill -ABRT "$pid" 2>/dev/null || true
+            sleep 2
+        done' >/dev/null 2>&1 || return 0
+    sleep 3
+    dump=$(logs "$VLLM_C" | sed -n '/Fatal Python error/,$p' \
+        | head -120 | cut -c1-300)
+    [ -n "$dump" ] || return 0
+    info "--- thread stacks (SIGABRT, PYTHONFAULTHANDLER) ---"
+    printf '%s\n' "$dump"
+}
+
 startup_failure() {
     KEEP=1
     echo
+    stack_dump
     if [ -n "$VLLM_C" ]; then
         info "--- exceptions in the vllm log ---"
         logs "$VLLM_C" | grep -aoE '[A-Za-z_][A-Za-z_.]*(Error|Exception): .*' \
