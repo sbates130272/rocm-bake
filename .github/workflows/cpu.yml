@@ -25,10 +25,12 @@ on:
       - "rocm-bake.hcl"
       - ".github/workflows/cpu.yml"
   schedule:
-    # Tuesdays, 04:23 UTC. Weekly because torch's CPU index, the
-    # triton-cpu release and the unpinned half of the resolve all move
-    # with no commit of ours.
-    - cron: '23 4 * * 2'
+    # Daily, 04:23 UTC. Two jobs: torch's CPU index, the triton-cpu
+    # release and the unpinned half of the resolve all move with no
+    # commit of ours; and this is the run that keeps main's build cache
+    # warm, which is the only one a pull request can read. A base image
+    # that moved overnight is recompiled here, where nobody is waiting.
+    - cron: '23 4 * * *'
   workflow_dispatch:
 
 permissions:
@@ -38,11 +40,17 @@ jobs:
   cpu:
     name: Build and serve
     runs-on: ubuntu-latest
-    # Measured cold on a 32-thread host: 10 min to build both images
-    # (the vLLM compile is 6 of them, at 8 jobs), 1.5 min for the test.
-    # A 4-vCPU runner compiles at 4 jobs or fewer and downloads the
-    # model, so expect 30-40 min cold; the rest is headroom.
-    timeout-minutes: 90
+    # Measured on a hosted runner, cold: 33 min, 22 of them the vLLM
+    # compile. Warm, that step is a cache read and the run is minutes.
+    # Cold happens when the cache has nothing to give: a change to the
+    # vLLM builder stage, a VLLM_REF or torch bump, or a moved base.
+    timeout-minutes: 60
+    env:
+      # Pull requests read main's cache and write none. A cache written
+      # from a pull request is visible to that pull request alone, so
+      # writing one costs minutes of upload and 2 GB of the repository's
+      # quota to help nobody else.
+      WRITE_CACHE: ${{ github.event_name != 'pull_request' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -51,6 +59,10 @@ jobs:
       # not available on the docker driver.
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          # The runner is thrown away; removing the builder took a
+          # minute of every run.
+          cleanup: false
 
       # type=gha needs the runner's cache URL and token, which a run:
       # step does not get. Without them buildx drops the cache without
@@ -58,10 +70,10 @@ jobs:
       - name: Expose the Actions cache to buildx
         uses: crazy-max/ghaction-github-runtime@v3
 
-      # Hosted runners are a mix: Intel hosts with AVX-512, AMD EPYC
-      # hosts without. The vLLM wheel carries three kernel builds and
-      # picks one from CPUID, so one run exercises one of them. Say
-      # which, before anything can SIGILL.
+      # Hosted runners are a mix, and not every host exposes AVX-512.
+      # The vLLM wheel carries three kernel builds and picks one from
+      # CPUID, so one run exercises one of them. Say which, before
+      # anything can SIGILL.
       - name: Runner CPU
         run: |
           grep -m1 'model name' /proc/cpuinfo
@@ -87,11 +99,18 @@ jobs:
       # dropped.
       - name: Build the wheels
         run: |
+          if [ "${WRITE_CACHE}" = true ]; then
+            cache_to=(
+              --set 'vllm-cpu*.cache-to=type=gha,mode=max,scope=vllm-cpu,ignore-error=true'
+              --set 'lmcache-cpu*.cache-to=type=gha,mode=max,scope=lmcache-cpu,ignore-error=true'
+            )
+          else
+            cache_to=(--set '*.cache-to=')
+          fi
           docker buildx bake -f rocm-bake.hcl \
             --set 'vllm-cpu*.cache-from=type=gha,scope=vllm-cpu' \
-            --set 'vllm-cpu*.cache-to=type=gha,mode=max,scope=vllm-cpu,ignore-error=true' \
             --set 'lmcache-cpu*.cache-from=type=gha,scope=lmcache-cpu' \
-            --set 'lmcache-cpu*.cache-to=type=gha,mode=max,scope=lmcache-cpu,ignore-error=true' \
+            "${cache_to[@]}" \
             --set 'vllm-cpu-wheel.output=type=local,dest=dist/cpu' \
             --set 'lmcache-cpu-wheel.output=type=local,dest=dist/cpu' \
             vllm-cpu-wheel lmcache-cpu-wheel
@@ -143,7 +162,13 @@ jobs:
             --load \
             vllm-cpu lmcache-cpu
 
+      # A pull request serves with --enforce-eager: startup drops by
+      # more than half, and the kernel compile it skips moves onto the
+      # first request, where it still runs. main and the schedule serve
+      # in the default mode, so the warmup compile is still covered.
       - name: Serve a model and read it back from LMCache
+        env:
+          VLLM_EXTRA_ARGS: ${{ github.event_name == 'pull_request' && '--enforce-eager' || '' }}
         run: .builders/cpu-test.sh --keep
 
       - name: Container logs

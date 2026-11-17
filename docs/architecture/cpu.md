@@ -27,7 +27,7 @@ anywhere in it, and no `${ARCH}` in any tag.
 | Device latency | replayed from a profile pack | none | real |
 | KV blocks through LMCache | no | yes | yes |
 | Needs a card | no | no | yes |
-| Tested end to end | yes, in CI | yes, on a local daemon; [the workflow][ci] has not run yet | not in CI — `make serve-test` on a GPU node |
+| Tested end to end | yes, in CI | yes, [in CI][ci] | not in CI — `make serve-test` on a GPU node |
 
 So the two GPU-free lanes are complements. `emu` has timing and no
 tokens; this has tokens and no timing. Neither says anything about a
@@ -187,6 +187,32 @@ nothing wrong; own-cache against LMCache was bit-identical 100 of 100.
 With `KV_OFFLOAD=0` the check fails, as it should; `--baseline` says
 that was the intent and skips it.
 
+### In CI
+
+[`cpu.yml`][ci] builds both wheels and both images on a stock hosted
+runner and runs `cpu-test.sh`. Its first run passed 11 of 11 and took
+33 minutes, 22 of them the vLLM compile and 2 the 120 s startup on 4
+vCPUs. That is the cold case. What keeps a pull request off it:
+
+- **The compile is a cache read when nothing under it moved.** The
+  wheel builder stages are cached in the Actions cache, one scope per
+  Dockerfile.
+- **Pull requests read `main`'s cache and write none.** A cache written
+  from a pull request is visible to that pull request alone, so writing
+  one cost minutes of upload and about 2 GB of quota per PR for nobody
+  else's benefit.
+- **A daily scheduled run on `main` keeps that cache warm**, and takes
+  the recompile when the manylinux base image has moved overnight.
+- **Pull requests serve with `--enforce-eager`**, which more than
+  halves startup. The kernel compile it skips moves to the first
+  request and still runs; `main` and the schedule serve in the default
+  mode.
+
+A pull request is still cold, and still about half an hour, when it
+changes the vLLM builder stage, `VLLM_REF` or `PYTORCH_VERSION`: the
+cache has nothing to give it, and it cannot write one for its own next
+push.
+
 ## Installing From The `cpu` Index
 
 ```bash
@@ -244,10 +270,11 @@ never sit beside `vllm 0.33.0+rocm101`.
   real run here mapped `vllm/_C.abi3.so`. The first hosted runner
   without AVX-512 is the confirmation; `cpu-test.sh` prints which
   variant it got.
-- **Not yet run on a hosted runner at all.** [`cpu.yml`][ci] builds
-  both images and runs `cpu-test.sh` on a stock runner, and has never
-  executed. `CPUSET=0-3` on a fast AVX-512 machine stood in for one;
-  build and startup time there are unmeasured.
+- **CI has run it once, on a host with AVX-512.** The first hosted
+  run landed on an EPYC 9V74 that exposes `avx512f` and
+  `avx512_bf16`, so it too mapped `vllm/_C.abi3.so`. The trimmed
+  pull-request path described under [In CI](#in-ci) is an estimate
+  until a warm run has been timed.
 - **`SERVE_DEVICE=cpu` has run on one serving host.** `serve-stack`
   and `serve-test-l2` passed all 14 checks against snoc-thinkstation
   over `DOCKER_HOST=ssh://`, file tier on a dedicated NVMe. That host
