@@ -296,6 +296,11 @@ BAKE_PRINT = docker buildx bake -f rocm-bake.hcl
         wheel-index-only \
         build-vllm-emu-capture push-vllm-emu-capture \
         emu-capture-serve emu-capture-status emu-capture-down \
+        build-lmcache-cpu push-lmcache-cpu \
+        build-lmcache-cpu-wheel push-lmcache-cpu-wheel \
+        build-vllm-cpu push-vllm-cpu build-vllm-cpu-wheel push-vllm-cpu-wheel \
+        push-cpu cpu-wheels cpu-load cpu-serve cpu-down cpu-logs cpu-test \
+        cpu-index cpu-index-check cpu-publish cpu-publish-dry \
         cache-summary cache-check cache-logs builder-load \
         perf-plan perf-cold perf-warm perf-report perf-runs perf-serve \
         perf-serve-stop perf-serve-status perf-publish \
@@ -386,7 +391,8 @@ CACHE_REPOS ?= rocm-runtime-cache base-cache pytorch-cache \
                vllm-cache lmcache-cache triton-wheel-cache \
                aiter-wheel-cache cupy-wheel-cache nixl-wheel-cache \
                torchvision-wheel-cache atom-wheel-cache atom-vllm-cache \
-               vllm-emu-cache vllm-emu-capture-cache
+               vllm-emu-cache vllm-emu-capture-cache \
+               vllm-cpu-cache lmcache-cpu-cache
 
 # IMAGE_ARCH, not PYTORCH_ROCM_ARCH directly, so one table can be asked
 # for while a build for another architecture is in flight. Scoping to
@@ -1633,8 +1639,9 @@ fetch-vllm-wheel: ## Fetch the vLLM wheel from Zot into ./dist
 
 # ─── The arch-free emulator lane ─────────────────────────────────
 # One wheel for every card, built from a manylinux base with no ROCm
-# in sight, and the only serving artifact here that can be exercised
-# end to end on this fleet — because it needs no GPU at all. See
+# in sight, and one of the two serving artifacts here (the CPU lane
+# below is the other) that can be exercised end to end on this fleet —
+# because it needs no GPU at all. See
 # docker/Dockerfile.vllm-emu and docs/architecture/emulation.md.
 #
 # No PYTORCH_ROCM_ARCH in any of these. The bake macro still passes it
@@ -1868,6 +1875,170 @@ emu-test: ## Serve a model through the emulator and check it (no GPU needed)
 emu-load: builder-ensure ## Build the emulator image into the local docker daemon
 	$(call bake,vllm-emu,--load)
 
+# ─── The CPU lane ────────────────────────────────────────────────
+# Real inference with no GPU: vLLM built for VLLM_TARGET_DEVICE=cpu and
+# LMCache built with NO_GPU_EXT=1, both on the CPU torch. The emu lane's
+# complement — that one has timing and no tokens, this one has tokens
+# and no timing. See docker/Dockerfile.vllm-cpu.
+#
+# Arch-free like emu, so the same two rules hold: not in push-all, and
+# no `pub` on any rule here. vllm-cpu takes the LMCache wheel through a
+# `target:` context, so one invocation builds both.
+CPU_DIR ?= dist/cpu
+
+build-lmcache-cpu: builder-ensure ## Build the CPU LMCache image (no push)
+	$(call bake,lmcache-cpu)
+
+push-lmcache-cpu: builder-ensure ## * Build and push the CPU LMCache image
+	$(call bake,lmcache-cpu,--push)
+
+build-lmcache-cpu-wheel: builder-ensure ## Build the CPU LMCache wheel (no push)
+	$(call bake,lmcache-cpu-wheel)
+
+push-lmcache-cpu-wheel: builder-ensure ## * Build and push the CPU LMCache wheel image
+	$(call bake,lmcache-cpu-wheel,--push)
+
+build-vllm-cpu: builder-ensure ## Build the CPU vLLM image (no push)
+	$(call bake,vllm-cpu)
+
+push-vllm-cpu: builder-ensure ## * Build and push the CPU vLLM image
+	$(call bake,vllm-cpu,--push)
+
+build-vllm-cpu-wheel: builder-ensure ## Build the CPU vLLM wheel (no push)
+	$(call bake,vllm-cpu-wheel)
+
+push-vllm-cpu-wheel: builder-ensure ## * Build and push the CPU vLLM wheel image
+	$(call bake,vllm-cpu-wheel,--push)
+
+# The one that leaves the registry ready for cpu-index. push-vllm-cpu
+# and push-vllm-cpu-wheel build the LMCache wheel as a context and do
+# not push it.
+push-cpu: builder-ensure ## * Build and push the whole CPU lane (bake group `cpu`)
+	$(call bake,cpu,--push)
+
+# In a variable for the comma reason given at EMU_LOCAL_OUT. Both
+# targets are named, and have to be: bake builds a target it reaches
+# only as a context with output=cacheonly and ignores a --set on it, so
+# naming vllm-cpu-wheel alone leaves the LMCache wheel in the builder.
+CPU_LOCAL_OUT = --set vllm-cpu-wheel.output=type=local,dest=$(CPU_DIR) \
+                --set lmcache-cpu-wheel.output=type=local,dest=$(CPU_DIR)
+
+cpu-wheels: builder-ensure ## Build the CPU vLLM and LMCache wheels into ./dist/cpu
+	@rm -rf $(CPU_DIR) && mkdir -p $(CPU_DIR)
+	$(call bake,vllm-cpu-wheel lmcache-cpu-wheel,$(CPU_LOCAL_OUT))
+	@ls -la $(CPU_DIR)/wheels/
+
+# The two images only: the group would also --load the wheel images,
+# which are `FROM scratch` and of no use to a daemon.
+cpu-load: builder-ensure ## Build both CPU images into the local docker daemon
+	$(call bake,vllm-cpu lmcache-cpu,--load)
+
+# On THIS machine's docker daemon, not GPU_HOST's: the point of the
+# lane is that it needs no particular host. The compose file owns the
+# runtime defaults, the model included, so CPU_SERVE_MODEL is passed
+# only when set — SERVE_MODEL's ROCm default is far too large.
+CPU_COMPOSE_ENV = REGISTRY=$(REGISTRY) $(if $(CPU_SERVE_MODEL),MODEL='$(CPU_SERVE_MODEL)')
+CPU_COMPOSE     = $(CPU_COMPOSE_ENV) docker compose -f serving/docker-compose.cpu.yml
+# Extra flags for cpu-logs, e.g. CPU_LOG_ARGS='-f vllm'
+CPU_LOG_ARGS  ?=
+# Extra flags for cpu-test, e.g. CPU_TEST_ARGS='--keep'
+CPU_TEST_ARGS ?=
+
+# --wait is only as strong as the compose file's healthchecks; cpu-test
+# is what proves the stack serves.
+cpu-serve: ## Serve vLLM + LMCache on this machine's CPU (KV_TIER=cpu|file)
+	@$(CPU_COMPOSE) down --remove-orphans 2>/dev/null || true
+	@$(CPU_COMPOSE) up -d --wait
+	@$(CPU_COMPOSE) ps
+
+cpu-down: ## Stop the local CPU serving stack and remove its containers
+	@$(CPU_COMPOSE) down --remove-orphans
+
+cpu-logs: ## Show the local CPU stack's logs (CPU_LOG_ARGS='-f vllm')
+	@$(CPU_COMPOSE) logs --tail 200 $(CPU_LOG_ARGS)
+
+cpu-test: ## Serve a real model on CPU and check inference and the KV cache
+	@$(CPU_COMPOSE_ENV) .builders/cpu-test.sh $(CPU_TEST_ARGS)
+
+# ─── Publishing the cpu wheels ───────────────────────────────────
+# One index, named `cpu`, through the per-arch machinery — the same
+# reuse, and the same reason for a name of its own, as the emu
+# indexes: `vllm 0.33.0+cpu` must never sit beside `+rocm101`.
+# Both wheel stages write `cpu` to wheels-arch.txt themselves, so
+# unlike emu-index there is nothing to narrow afterwards.
+CPU_REPOS ?= vllm-cpu-wheel lmcache-cpu-wheel
+
+# wheel-index skips a repo it cannot fetch and indexes the rest, which
+# here would publish a vLLM with no LMCache. Hence the two globs.
+cpu-index: ## Fetch the CPU wheels from Zot and build their pip index
+	@$(MAKE) --no-print-directory wheel-index ARCHES=cpu WHEEL_REPOS="$(CPU_REPOS)"
+	@ls $(WHEELS_DIR)/cpu/vllm-*.whl $(WHEELS_DIR)/cpu/lmcache-*.whl >/dev/null || \
+		{ echo "cpu-index: a wheel is missing — run make push-cpu"; exit 1; }
+	@printf '\ncpu: that install line also needs --extra-index-url %s\n' "$(CPU_TORCH_INDEX)"
+	@printf '     (make cpu-index-check runs the full one)\n'
+
+# Its own recipe, like emu-index-check, and for a related reason: the
+# index carries no torch. Here the vLLM wheel does name one — it pins
+# torch==X+cpu and asks for torchvision, torchaudio and torchcodec —
+# and none of those +cpu builds exist on PyPI. So the CPU index is
+# given twice: to preinstall torch, and as an extra index for the rest.
+#
+# The nvidia-* test is the one that matters. A resolve that reached
+# PyPI's torch would still import and still report no CUDA on a host
+# with no card. The platform is asserted here because nothing sets
+# VLLM_TARGET_DEVICE in a venv: only the wheel's `+cpu` selects it.
+CPU_TORCH_INDEX ?= https://download.pytorch.org/whl/cpu
+
+cpu-index-check: ## Install the cpu index into a throwaway venv and import it
+	@set -e; \
+	port=8099; \
+	[ -d "$(INDEX_DIR)/cpu" ] || \
+		{ echo "no index for cpu — run make cpu-index"; exit 1; }; \
+	python3 -m http.server $$port --directory dist >/dev/null 2>&1 & \
+	srv=$$!; v=$$(mktemp -d); \
+	trap 'kill '"$$srv"' 2>/dev/null || true; rm -rf '"$$v" EXIT; sleep 2; \
+	python3 -m venv "$$v" >/dev/null; \
+	echo "== cpu"; \
+	"$$v/bin/pip" install -q --no-cache-dir \
+		--index-url "$(CPU_TORCH_INDEX)" "torch==$(PYTORCH_VERSION)"; \
+	no_proxy=127.0.0.1,localhost NO_PROXY=127.0.0.1,localhost \
+	"$$v/bin/pip" install -q --no-cache-dir \
+		--index-url "http://127.0.0.1:$$port/index/cpu/" \
+		--extra-index-url https://pypi.org/simple \
+		--extra-index-url "$(CPU_TORCH_INDEX)" \
+		"rocm-torch[device-cpu]"; \
+	"$$v/bin/pip" list 2>/dev/null \
+		| grep -iE '^(vllm|lmcache|rocm-torch|torch|torchvision|torchaudio|torchcodec|triton) ' \
+		| sed 's/^/     /'; \
+	"$$v/bin/python" -c "import torch, vllm, lmcache; \
+from importlib.metadata import version; \
+from vllm.platforms import current_platform as p; \
+assert torch.version.cuda is None and not torch.cuda.is_available(), 'CUDA torch'; \
+assert p.is_cpu(), type(p).__name__; \
+print('     torch', torch.__version__, '/ vLLM', vllm.__version__, '/ LMCache', version('lmcache'))"; \
+	if "$$v/bin/pip" list --format=freeze 2>/dev/null | grep -iE '^nvidia'; then \
+		echo "cpu-index-check: nvidia-* distributions in a CPU install"; exit 1; \
+	fi; \
+	echo "     no CUDA, no nvidia-* distribution"
+
+# Own title and notes, for the reason given at emu_publish: the
+# generated ones describe a per-card ROCm release, and their one-line
+# install cannot resolve this index's torch pin. Both directories are
+# passed, so the assets are the wheels the notes were read from.
+cpu_publish = notes=$$(mktemp); trap 'rm -f "$$notes"' EXIT; \
+	.builders/cpu-release-notes.sh "$(WHEELS_DIR)/cpu" > "$$notes"; \
+	.builders/wheelpublish.sh --arch cpu \
+		--wheels "$(WHEELS_DIR)/cpu" --index "$(INDEX_DIR)/cpu" \
+		--rocm "$(ROCM_VERSION)" \
+		--title "vLLM + LMCache CPU wheels (no GPU required)" \
+		--notes-file "$$notes"
+
+cpu-publish-dry: ## Show what publishing the cpu index would do
+	@set -e; $(cpu_publish) --dry-run $(WHEELS_PUBLISH_ARGS)
+
+cpu-publish: ## * Publish the cpu index to its own release and gh-pages
+	@set -e; $(cpu_publish) $(WHEELS_PUBLISH_ARGS)
+
 build-lmcache: builder-ensure ## Build the LMCache MP image (single builder)
 	$(call bake,lmcache)
 
@@ -1947,12 +2118,39 @@ gpu-test: ## Run the published image on a real GPU (GPU_HOST=, PYTORCH_ROCM_ARCH
 # file. The file's default is right for someone running it locally;
 # driving it from this machine needs the port off loopback. Narrow it
 # again, or tunnel, if the host is not on a trusted network.
-##@ Serve
+#
+# SERVE_DEVICE picks which stack these rules drive on that host. rocm,
+# the default, is docker-compose.yml and needs the card. cpu is
+# docker-compose.cpu.yml, the `cpu` bake group's two images, and asks
+# the host nothing: no /dev/kfd, no rocminfo. It is the only switch —
+# file, tags, model default, knobs and test script all follow from it.
+#
+# Pass it to every rule of a session, serve-down included: the two are
+# separate compose projects, so a rule run without it addresses the
+# ROCm one. Do not test the ROCm stack while the CPU one is up:
+# serve-test.sh finds LMCache by container name and would read both.
+#
+# cpu-serve, cpu-test and friends are not this. They run the same
+# compose file on THIS machine's daemon, which is what CI and a laptop
+# have; these run it on GPU_HOST's.
+##@ Serve (on GPU_HOST; SERVE_DEVICE=cpu for the CPU lane)
 SERVE_DIR     := serving
+SERVE_DEVICE  ?= rocm
+# `SERVE_DEVICE=` is still *set*, so ?= leaves it empty; that means the
+# default, not an unknown device.
+ifeq ($(strip $(SERVE_DEVICE)),)
+override SERVE_DEVICE := rocm
+endif
+ifeq ($(SERVE_DEVICE),cpu)
+COMPOSE_FILE  := $(SERVE_DIR)/docker-compose.cpu.yml
+else ifeq ($(SERVE_DEVICE),rocm)
 COMPOSE_FILE  := $(SERVE_DIR)/docker-compose.yml
+else
+$(error SERVE_DEVICE=$(SERVE_DEVICE) — expected rocm (the default) or cpu)
+endif
 GPU_RENDER_GID = $(shell ssh -o BatchMode=yes $(GPU_HOST) 'stat -c %g /dev/kfd' 2>/dev/null || echo 993)
 
-# docker-compose.yml owns the serving runtime defaults, the way rocm-bake.hcl
+# The compose file owns the serving runtime defaults, the way rocm-bake.hcl
 # owns the build ones, and for the same reason: a second copy here would
 # agree until someone changed one. Reads the `${NAME:-default}` form out
 # of the file.
@@ -1962,13 +2160,22 @@ compose_default = $(shell sed -n 's/.*$${$(1):-\([^}]*\)}.*/\1/p' $(COMPOSE_FILE
 # *set*, so `VAR=` would override the compose file's own default with
 # "" — the same trap the bake refs hit. $(if ...) omits it instead,
 # leaving the default to apply.
-COMPOSE_VARS = $(foreach v,TRANSFER_MODE KV_TIER VLLM_DEV_MODE HSA_IPC_LEGACY \
-                           L1_SIZE_GB CHUNK_SIZE MAX_MODEL_LEN GPU_UTIL \
-                           KV_STORE HF_CACHE VLLM_EXTRA_ARGS \
-                           TORCH_BLAS_PREFER_HIPBLASLT, \
+#
+# One list per device: each compose file is offered the knobs it reads
+# and no others.
+COMPOSE_KNOBS_rocm := TRANSFER_MODE KV_TIER VLLM_DEV_MODE HSA_IPC_LEGACY \
+                      L1_SIZE_GB CHUNK_SIZE MAX_MODEL_LEN GPU_UTIL \
+                      KV_STORE HF_CACHE VLLM_EXTRA_ARGS \
+                      TORCH_BLAS_PREFER_HIPBLASLT
+COMPOSE_KNOBS_cpu  := TRANSFER_MODE KV_TIER VLLM_DEV_MODE \
+                      L1_SIZE_GB CHUNK_SIZE MAX_MODEL_LEN \
+                      KV_STORE HF_CACHE VLLM_EXTRA_ARGS \
+                      KV_CACHE_GB SHM_SIZE OMP_BIND CPUSET \
+                      VLLM_MEM_LIMIT LMCACHE_MEM_LIMIT VLLM_PORT START_PERIOD
+COMPOSE_VARS = $(foreach v,$(COMPOSE_KNOBS_$(SERVE_DEVICE)), \
                  $(if $($(v)),$(v)='$($(v))'))
 
-COMPOSE        = DOCKER_HOST=ssh://$(GPU_HOST) RENDER_GID=$(GPU_RENDER_GID) \
+COMPOSE        = DOCKER_HOST=ssh://$(GPU_HOST) $(COMPOSE_HOST_ENV) \
                  VLLM_BIND=$(VLLM_BIND) MODEL=$(SERVE_MODEL) \
                  VLLM_TAG=$(VLLM_TAG) LMCACHE_TAG=$(LMCACHE_TAG) \
                  $(COMPOSE_VARS) \
@@ -1996,10 +2203,69 @@ SERVE_ARCH = $(or $(shell ssh -o BatchMode=yes -o ConnectTimeout=5 $(GPU_HOST) \
 # because bake's copy is not visible to make.
 SERVE_ARCH_TAG = $(subst ;,_,$(SERVE_ARCH))
 
-SERVE_MODEL  ?= Qwen/Qwen2.5-3B-Instruct
 VLLM_BIND    ?= 0.0.0.0
+ifeq ($(SERVE_DEVICE),cpu)
+# Nothing in this branch may expand GPU_RENDER_GID or SERVE_ARCH: each
+# is an ssh to the host about a card this stack does not use. The tags
+# are the first ones the `cpu` bake targets push. The model is the
+# compose file's own, read rather than copied — SERVE_MODEL's ROCm
+# default is far too large for a CPU.
+COMPOSE_HOST_ENV =
+SERVE_MODEL  ?= $(call compose_default,MODEL)
+VLLM_TAG     ?= $(VLLM_REF)-cpu
+LMCACHE_TAG  ?= $(LMCACHE_REF)-cpu
+# The CPU file publishes on VLLM_PORT; the ROCm one is fixed at 8000.
+SERVE_PORT    = $(or $(VLLM_PORT),$(call compose_default,VLLM_PORT))
+# COMPOSE_PROJECT_NAME outranks the file's `name:` in compose, so the
+# test has to look where compose put the containers.
+SERVE_PROJECT = $(or $(COMPOSE_PROJECT_NAME),$(shell sed -n 's/^name: *//p' $(COMPOSE_FILE) | head -1))
+# Not serve-test.sh: that runs curl inside the lmcache container, which
+# the CPU image does not have, and reads a store line worded for the
+# ROCm path. cpu-test.sh knows this stack; --attach points it at the
+# one already running instead of starting its own.
+SERVE_TEST    = DOCKER_HOST=ssh://$(GPU_HOST) .builders/cpu-test.sh --attach $(SERVE_PROJECT)
+serve_test_host = $(require_gpu_host)
+else
+COMPOSE_HOST_ENV = RENDER_GID=$(GPU_RENDER_GID)
+SERVE_MODEL  ?= Qwen/Qwen2.5-3B-Instruct
 VLLM_TAG     ?= $(VLLM_REF)-$(ROCM_VERSION)-$(SERVE_ARCH_TAG)
 LMCACHE_TAG  ?= $(LMCACHE_REF)-$(ROCM_VERSION)-$(SERVE_ARCH_TAG)
+SERVE_PORT   := 8000
+SERVE_TEST    = .builders/serve-test.sh
+serve_test_host =
+endif
+
+# The ROCm file says `pull_policy: always`. The CPU one cannot: CI loads
+# its images and has no registry to ask. On a host that is served to,
+# not built on, that leaves the first image ever pulled in place for
+# good, so the cpu path pulls here — and stops if it cannot, rather
+# than serve a stale image as the current one. SERVE_PULL=0 is for a
+# host whose images were loaded by hand.
+SERVE_PULL ?= 1
+ifeq ($(SERVE_DEVICE)/$(filter 0,$(SERVE_PULL)),cpu/)
+define serve_pull
+	@$(COMPOSE) pull || { \
+		echo "could not pull the CPU images onto $(GPU_HOST). Push them (make push-cpu),"; \
+		echo "or pass SERVE_PULL=0 to serve whatever the host already has."; \
+		exit 1; }
+endef
+else
+serve_pull =
+endif
+
+# vLLM's KV segment lives in lmcache's /dev/shm (`ipc: service:lmcache`)
+# and outlives a recreated vllm: `up -d` on a running stack replaces
+# vllm alone, each replacement leaves KV_CACHE_GB behind, and the
+# second one finds SHM_SIZE full and dies. So the cpu serve-stack takes
+# the stack down first, as serve-vllm and cpu-serve do. After the pull,
+# so that a pull that fails leaves the old stack serving.
+ifeq ($(SERVE_DEVICE),cpu)
+define serve_fresh
+	@$(COMPOSE) down --remove-orphans 2>/dev/null || true
+endef
+else
+serve_fresh =
+endif
 # The runtime knobs below have no default here on purpose — the compose
 # file carries them and list-vars reads them back out with
 # compose_default. Set any of them to override for one invocation:
@@ -2018,6 +2284,14 @@ LMCACHE_TAG  ?= $(LMCACHE_REF)-$(ROCM_VERSION)-$(SERVE_ARCH_TAG)
 #   VLLM_DEV_MODE   1 exposes /reset_prefix_cache, which serve-test
 #                   needs to tell LMCache's cache from vLLM's own
 #   L1_SIZE_GB CHUNK_SIZE MAX_MODEL_LEN GPU_UTIL
+#
+# SERVE_DEVICE=cpu has no HSA_IPC_LEGACY and no GPU_UTIL, and adds:
+#
+#   KV_CACHE_GB     vLLM's KV cache, GiB. SHM_SIZE must exceed it under
+#                   lmcache_driven, which moves that cache into /dev/shm
+#   CPUSET VLLM_MEM_LIMIT LMCACHE_MEM_LIMIT
+#                   what the containers may take of a shared host
+#   OMP_BIND VLLM_PORT START_PERIOD
 
 # Extra flags for serve-logs*, e.g. SERVE_LOG_ARGS='-n 200 ov-vllm'
 SERVE_LOG_ARGS ?=
@@ -2041,14 +2315,17 @@ SERVE_TEST_ARGS ?=
 serve-vllm: ## Serve vLLM alone on GPU_HOST, no KV offload (the baseline)
 	$(require_gpu_host)
 	@echo "serving $(SERVE_MODEL) on $(GPU_HOST) — vLLM only"
+	$(serve_pull)
 	@$(COMPOSE) down --remove-orphans 2>/dev/null || true
 	@$(COMPOSE) up -d --wait lmcache 2>/dev/null || true
 	@KV_OFFLOAD=0 $(COMPOSE) up -d vllm
 	@$(MAKE_BIN) --no-print-directory serve-wait
 
-serve-stack: ## Serve vLLM + LMCache MP on GPU_HOST (KV_TIER=cpu|file)
+serve-stack: ## Serve vLLM + LMCache MP on GPU_HOST (KV_TIER=cpu|file, SERVE_DEVICE=cpu)
 	$(require_gpu_host)
 	@echo "serving $(SERVE_MODEL) on $(GPU_HOST) — vLLM + LMCache MP, tier=$(or $(KV_TIER),$(call compose_default,KV_TIER))"
+	$(serve_pull)
+	$(serve_fresh)
 	@KV_OFFLOAD=1 $(COMPOSE) up -d
 	@$(MAKE_BIN) --no-print-directory serve-wait
 
@@ -2057,9 +2334,9 @@ serve-stack: ## Serve vLLM + LMCache MP on GPU_HOST (KV_TIER=cpu|file)
 # capturing graphs, and asking the endpoint is the only thing that
 # distinguishes "running" from "serving".
 serve-wait: ## Block until the endpoint answers /health
-	@echo "waiting for http://$(GPU_HOST):8000/health"
+	@echo "waiting for http://$(GPU_HOST):$(SERVE_PORT)/health"
 	@for i in $$(seq 1 240); do \
-		if curl -fsS --max-time 3 "http://$(GPU_HOST):8000/health" >/dev/null 2>&1; then \
+		if curl -fsS --max-time 3 "http://$(GPU_HOST):$(SERVE_PORT)/health" >/dev/null 2>&1; then \
 			echo "  ready after ~$$((i*5))s"; exit 0; \
 		fi; \
 		sleep 5; \
@@ -2071,21 +2348,30 @@ serve-wait: ## Block until the endpoint answers /health
 # cache nothing at all, with no error anywhere — see the #4419 note in
 # serving/docker-compose.yml. The test measures a repeated prefill and
 # reads LMCache's own log rather than trusting /health.
-serve-test: ## Exercise the running stack and prove the KV cache works
-	@.builders/serve-test.sh $(SERVE_TEST_ARGS)
+#
+# With SERVE_DEVICE=cpu the three rules below run cpu-test.sh against
+# the stack already up on GPU_HOST, over the same DOCKER_HOST. It
+# starts and stops nothing, and a host it cannot reach is a failure,
+# not a skipped check. Its cache check needs the stack started with
+# VLLM_DEV_MODE=1, and fails saying so when it was not.
+serve-test: ## Exercise the running stack and prove the KV cache works (cpu: stack started with VLLM_DEV_MODE=1)
+	$(serve_test_host)
+	@$(SERVE_TEST) $(SERVE_TEST_ARGS)
 
 # The baseline has no connector, so the cache checks are skipped rather
 # than failed.
 serve-test-baseline: ## Same, for a stack started with serve-vllm
-	@.builders/serve-test.sh --baseline $(SERVE_TEST_ARGS)
+	$(serve_test_host)
+	@$(SERVE_TEST) --baseline $(SERVE_TEST_ARGS)
 
 # Empties LMCache's L1 as well as vLLM's VRAM between the two requests,
 # so a hit can only have come off disk. Needs KV_TIER=file — with the
 # default cpu tier there is no L2 to serve from.
 serve-test-l2: ## Prove the disk tier serves KV blocks (needs KV_TIER=file)
-	@.builders/serve-test.sh --l2 $(SERVE_TEST_ARGS)
+	$(serve_test_host)
+	@$(SERVE_TEST) --l2 $(SERVE_TEST_ARGS)
 
-serve-down: ## Stop the serving stack and remove its containers
+serve-down: ## Stop the serving stack and remove its containers (SERVE_DEVICE=cpu for the CPU one)
 	$(require_gpu_host)
 	@$(COMPOSE) down --remove-orphans
 
@@ -2104,6 +2390,14 @@ serve-down: ## Stop the serving stack and remove its containers
 # The trace directory is on GPU_HOST. An existing trace is moved aside
 # rather than appended to: the tracer appends, and the pack builder
 # would merge two runs — possibly of two models — into one pack.
+#
+# ROCm only. A capture records a card's step latency, and the override
+# file swaps in a per-arch image; layered on the CPU stack it would
+# start something that is neither.
+ifeq ($(SERVE_DEVICE),cpu)
+emu-capture-serve emu-capture-status emu-capture-down:
+	@echo "$@ records a GPU's step latency and has no CPU form — run it without SERVE_DEVICE=cpu" >&2; exit 1
+else
 EMU_TRACE_DIR ?= /tmp/emu-trace
 EMU_CAPTURE_COMPOSE = EMU_TRACE_DIR=$(EMU_TRACE_DIR) $(COMPOSE) \
                       -f $(SERVE_DIR)/docker-compose.emu-capture.yml
@@ -2132,6 +2426,7 @@ emu-capture-status: ## Show the capture trace's header and how many steps it hol
 emu-capture-down: ## Stop the capture stack (flushes the trace)
 	$(require_gpu_host)
 	@$(EMU_CAPTURE_COMPOSE) down --remove-orphans
+endif
 
 # Not `compose logs`: that only knows about the compose stack, and the
 # benchmark harness starts its containers with plain docker run. The
@@ -2387,13 +2682,19 @@ list-vars: ## Show the variables these targets read, and their values
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' SDE_EPOCH \
 		"$(call bake_default,SDE_EPOCH)  ($(shell date -u -d @$(call bake_default,SDE_EPOCH) '+%Y-%m-%d %H:%M' 2>/dev/null))  (bake)"
 	@printf '  %s\n' 'pinned into every image config; SDE_<IMAGE> overrides one'
-	@for v in $(foreach i,ROCM BASE PYTORCH TRITON AITER RUNTIME NIXL VLLM LMCACHE CUPY TORCHVISION,$(if $(SDE_$(i)),SDE_$(i)=$(SDE_$(i)))); do \
+	@for v in $(foreach i,ROCM BASE PYTORCH TRITON AITER RUNTIME NIXL VLLM LMCACHE CUPY TORCHVISION VLLM_CPU LMCACHE_CPU,$(if $(SDE_$(i)),SDE_$(i)=$(SDE_$(i)))); do \
 		printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' "$${v%%=*}" "$${v#*=}  (overridden)"; \
 	done
 	@printf '\n$(C_BOLD)Serving$(C_OFF)  (make serve-vllm / serve-stack / serve-test)\n'
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' SERVE_DEVICE "$(SERVE_DEVICE)  (rocm|cpu; the values below are this device's, from $(COMPOSE_FILE))"
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' GPU_HOST "$(or $(GPU_HOST),(none — this fleet declares no gpu node))"
+ifeq ($(SERVE_DEVICE),cpu)
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' SERVE_MODEL "$(SERVE_MODEL)$(if $(filter file,$(origin SERVE_MODEL)),  (compose))"
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' SERVE_PULL "$(SERVE_PULL)  (0 serves the images the host already has, unpulled)"
+else
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' SERVE_MODEL "$(SERVE_MODEL)"
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' SERVE_ARCH "$(SERVE_ARCH)  (probed from GPU_HOST, not the build arch)"
+endif
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' VLLM_TAG "$(VLLM_TAG)"
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' LMCACHE_TAG "$(LMCACHE_TAG)"
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' VLLM_BIND "$(VLLM_BIND)  (0.0.0.0 to drive it from another host)"
@@ -2401,14 +2702,26 @@ list-vars: ## Show the variables these targets read, and their values
 		"$(or $(KV_TIER),$(call compose_default,KV_TIER))  (cpu = L1 only, file = L1 + L2 on disk)  (compose)"
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' TRANSFER_MODE \
 		"$(or $(TRANSFER_MODE),$(call compose_default,TRANSFER_MODE))  (auto|engine_driven|lmcache_driven)  (compose)"
+ifneq ($(SERVE_DEVICE),cpu)
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' HSA_IPC_LEGACY \
 		"$(or $(HSA_IPC_LEGACY),$(call compose_default,HSA_IPC_LEGACY))  (1 required for cross-container HIP IPC)  (compose)"
+endif
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' VLLM_DEV_MODE \
 		"$(or $(VLLM_DEV_MODE),$(call compose_default,VLLM_DEV_MODE))  (1 exposes /reset_prefix_cache for serve-test)  (compose)"
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' L1_SIZE_GB \
 		"$(or $(L1_SIZE_GB),$(call compose_default,L1_SIZE_GB))  (LMCache host-RAM tier)  (compose)"
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' CHUNK_SIZE \
 		"$(or $(CHUNK_SIZE),$(call compose_default,CHUNK_SIZE))  (tokens per cached chunk)  (compose)"
+ifeq ($(SERVE_DEVICE),cpu)
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' KV_CACHE_GB \
+		"$(or $(KV_CACHE_GB),$(call compose_default,KV_CACHE_GB))  (vLLM's KV cache, GiB)  (compose)"
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' SHM_SIZE \
+		"$(or $(SHM_SIZE),$(call compose_default,SHM_SIZE))  (must exceed KV_CACHE_GB under lmcache_driven)  (compose)"
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' VLLM_PORT \
+		"$(SERVE_PORT)  (published on GPU_HOST; serve-wait asks it)  (compose)"
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' CPUSET \
+		"$(or $(CPUSET),(unset: every CPU))  (also VLLM_MEM_LIMIT, LMCACHE_MEM_LIMIT, OMP_BIND)  (compose)"
+endif
 	@printf '\n$(C_BOLD)Toggles$(C_OFF)\n'
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' TELEMETRY "$(TELEMETRY)  (0 skips metrics collection)"
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' FORCE_RECACHE "$(if $(FORCE_RECACHE),$(FORCE_RECACHE),false)  (true = recompile everything, ignoring sccache)"

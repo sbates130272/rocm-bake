@@ -104,3 +104,5 @@ to `serving/docker-compose.yml`, which owns the runtime defaults.
 - [Serving stack](serving.md) — vLLM, LMCache and NIXL
 - [Emulated serving](emulation.md) — one vLLM wheel for every card,
   serving without a GPU
+- [CPU serving](cpu.md) — vLLM and LMCache on CPU: real tokens, no
+  GPU, no latency claim

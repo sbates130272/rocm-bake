@@ -101,6 +101,7 @@ nav:
       - Serving Stack: architecture/serving.md
       - ATOM and vLLM Skew: architecture/atom-vllm-skew.md
       - Emulated Serving (No GPU): architecture/emulation.md
+      - CPU Serving (No GPU, Real Tokens): architecture/cpu.md
   - Performance:
       - performance/index.md
       - Methodology: performance/methodology.md

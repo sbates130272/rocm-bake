@@ -1,0 +1,184 @@
+# Build the CPU-only vLLM and LMCache wheels and serve a real model
+# through them, on a stock GitHub runner.
+#
+# The emu lane's complement: emu.yml proves the stack comes up with no
+# weights, this one that it answers with them. Neither build needs
+# ROCm or a fleet node, so both fit here. See docs/architecture/cpu.md.
+name: CPU — vLLM + LMCache wheels & inference test
+
+on:
+  pull_request:
+    paths:
+      - "docker/Dockerfile.vllm-cpu"
+      - "docker/Dockerfile.lmcache-cpu"
+      - "serving/docker-compose.cpu.yml"
+      - ".builders/cpu-test.sh"
+      - "rocm-bake.hcl"
+      - ".github/workflows/cpu.yml"
+  push:
+    branches: [main]
+    paths:
+      - "docker/Dockerfile.vllm-cpu"
+      - "docker/Dockerfile.lmcache-cpu"
+      - "serving/docker-compose.cpu.yml"
+      - ".builders/cpu-test.sh"
+      - "rocm-bake.hcl"
+      - ".github/workflows/cpu.yml"
+  schedule:
+    # Daily, 04:23 UTC. Two jobs: torch's CPU index, the triton-cpu
+    # release and the unpinned half of the resolve all move with no
+    # commit of ours; and reading main's build cache every day keeps
+    # it inside the Actions cache's seven-day eviction. That cache is
+    # the one every pull request starts from.
+    - cron: '23 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cpu:
+    name: Build and serve
+    runs-on: ubuntu-latest
+    # Measured on a hosted runner: 33 min cold, 22 of them the vLLM
+    # compile; about 6 min warm, where that step is a cache read. Cold
+    # is a change under the compile: the vLLM builder stage, VLLM_REF,
+    # the torch version or MANYLINUX_IMAGE.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # The docker-container driver: bake links vllm-cpu to
+      # lmcache-cpu-wheel through a target: context, and type=gha is
+      # not available on the docker driver.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          # The runner is thrown away; removing the builder took a
+          # minute of every run.
+          cleanup: false
+
+      # type=gha needs the runner's cache URL and token, which a run:
+      # step does not get. Without them buildx drops the cache without
+      # a word and every run compiles from cold.
+      - name: Expose the Actions cache to buildx
+        uses: crazy-max/ghaction-github-runtime@v3
+
+      # Hosted runners are a mix, and not every host exposes AVX-512.
+      # The vLLM wheel carries three kernel builds and picks one from
+      # CPUID, so one run exercises one of them. Say which, before
+      # anything can SIGILL.
+      - name: Runner CPU
+        run: |
+          grep -m1 'model name' /proc/cpuinfo
+          echo "$(nproc) cpus, $(free -g | awk '/^Mem:/ {print $2}') GiB"
+          flags=$(grep -m1 '^flags' /proc/cpuinfo)
+          for f in avx2 avx512f avx512_bf16; do
+            case " ${flags} " in
+              *" ${f} "*) echo "${f}: yes" ;;
+              *)          echo "${f}: no" ;;
+            esac
+          done
+          df -h / | tail -1
+
+      # The registry in the hcl is a tailnet name a runner cannot
+      # reach, so both cache ends are overridden, as in emu.yml. One
+      # scope per Dockerfile: a scope holds one cache index, and two
+      # targets exporting to the default one overwrite each other.
+      # ignore-error as in the hcl, which the override would otherwise
+      # drop: a failed cache write must not fail the build.
+      #
+      # A pull request reads main's cache and writes its own, which
+      # only it can read. That is what makes the second push of a pull
+      # request that changed the builder warm.
+      #
+      # Both wheel targets are named. Reached only as vllm-cpu's
+      # context, lmcache-cpu-wheel would be built and its output
+      # dropped.
+      - name: Build the wheels
+        run: |
+          docker buildx bake -f rocm-bake.hcl \
+            --set 'vllm-cpu*.cache-from=type=gha,scope=vllm-cpu' \
+            --set 'vllm-cpu*.cache-to=type=gha,mode=max,scope=vllm-cpu,ignore-error=true' \
+            --set 'lmcache-cpu*.cache-from=type=gha,scope=lmcache-cpu' \
+            --set 'lmcache-cpu*.cache-to=type=gha,mode=max,scope=lmcache-cpu,ignore-error=true' \
+            --set 'vllm-cpu-wheel.output=type=local,dest=dist/cpu' \
+            --set 'lmcache-cpu-wheel.output=type=local,dest=dist/cpu' \
+            vllm-cpu-wheel lmcache-cpu-wheel
+          ls -la dist/cpu/wheels/
+
+      - name: Assert the wheels are CPU builds that install elsewhere
+        run: |
+          set -eu
+          test "$(cat dist/cpu/wheels-arch.txt)" = cpu \
+            || { echo "wheels-arch.txt is not 'cpu'" >&2; exit 1; }
+          for pkg in vllm lmcache; do
+            n=$(find dist/cpu/wheels -name "${pkg}-*.whl" | wc -l)
+            test "${n}" -eq 1 || { echo "${pkg}: ${n} wheels, want 1" >&2; exit 1; }
+            whl=$(find dist/cpu/wheels -name "${pkg}-*.whl")
+            echo "== $(basename "${whl}")"
+            case "$(basename "${whl}")" in
+              *+cpu-*) ;;
+              *) echo "version carries no +cpu" >&2; exit 1 ;;
+            esac
+            case "$(basename "${whl}")" in
+              *manylinux*) ;;
+              *) echo "not manylinux — installs nowhere else" >&2; exit 1 ;;
+            esac
+            python3 -m zipfile -l "${whl}" > "${RUNNER_TEMP}/${pkg}.lst"
+            if grep -iE '(_rocm_C|cuda|amdhip|hipblas|nvidia|cupy)[^/]*\.so' \
+                "${RUNNER_TEMP}/${pkg}.lst"; then
+              echo "GPU extension in a CPU wheel" >&2
+              exit 1
+            fi
+          done
+          # All three, or the wheel SIGILLs on the hosts whose build is
+          # missing — and this runner is only one kind of host.
+          for so in _C _C_AVX512 _C_AVX2; do
+            grep -q "vllm/${so}\.abi3\.so" "${RUNNER_TEMP}/vllm.lst" \
+              || { echo "vllm/${so}.abi3.so missing" >&2; exit 1; }
+          done
+          echo "ok: +cpu, manylinux, three kernel builds, no GPU extension"
+
+      # Reads the cache, does not write it: the builder stages are
+      # already in this builder from the step above, and the final
+      # stages are gigabytes of pip-installed torch that would crowd
+      # the repository's cache quota to save a download.
+      - name: Build the runnable images
+        run: |
+          docker buildx bake -f rocm-bake.hcl \
+            --set 'vllm-cpu*.cache-from=type=gha,scope=vllm-cpu' \
+            --set 'lmcache-cpu*.cache-from=type=gha,scope=lmcache-cpu' \
+            --set '*.cache-to=' \
+            --load \
+            vllm-cpu lmcache-cpu
+
+      # In the default mode, not --enforce-eager, though eager starts a
+      # minute sooner: eager skips the warmup compile of the backbone
+      # outright, and the pull requests that run this workflow are the
+      # ones that can break it.
+      - name: Serve a model and read it back from LMCache
+        run: .builders/cpu-test.sh --keep
+
+      - name: Container logs
+        if: always()
+        run: |
+          for svc in lmcache vllm; do
+            echo "::group::${svc}"
+            docker logs "rocm-serving-cpu-test-${svc}-1" 2>&1 | tail -200 || true
+            echo "::endgroup::"
+          done
+
+      - name: Tear down
+        if: always()
+        run: |
+          docker compose -p rocm-serving-cpu-test \
+            -f serving/docker-compose.cpu.yml down -v --remove-orphans || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cpu-wheels
+          path: dist/cpu/wheels/*.whl
+          if-no-files-found: error
+          retention-days: 14

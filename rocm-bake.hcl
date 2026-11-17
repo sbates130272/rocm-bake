@@ -183,7 +183,9 @@ variable "SDE_RUNTIME" { default = "" }
 variable "SDE_NIXL"    { default = "" }
 variable "SDE_VLLM"    { default = "" }
 variable "SDE_VLLM_EMU" { default = "" }
+variable "SDE_VLLM_CPU" { default = "" }
 variable "SDE_LMCACHE" { default = "" }
+variable "SDE_LMCACHE_CPU" { default = "" }
 variable "SDE_CUPY"    { default = "" }
 variable "SDE_TORCHVISION" { default = "" }
 variable "SDE_ATOM"    { default = "" }
@@ -197,7 +199,9 @@ EPOCH_RUNTIME = SDE_RUNTIME != "" ? SDE_RUNTIME : SDE_EPOCH
 EPOCH_NIXL    = SDE_NIXL    != "" ? SDE_NIXL    : SDE_EPOCH
 EPOCH_VLLM    = SDE_VLLM    != "" ? SDE_VLLM    : SDE_EPOCH
 EPOCH_VLLM_EMU = SDE_VLLM_EMU != "" ? SDE_VLLM_EMU : SDE_EPOCH
+EPOCH_VLLM_CPU = SDE_VLLM_CPU != "" ? SDE_VLLM_CPU : SDE_EPOCH
 EPOCH_LMCACHE = SDE_LMCACHE != "" ? SDE_LMCACHE : SDE_EPOCH
+EPOCH_LMCACHE_CPU = SDE_LMCACHE_CPU != "" ? SDE_LMCACHE_CPU : SDE_EPOCH
 EPOCH_CUPY    = SDE_CUPY    != "" ? SDE_CUPY    : SDE_EPOCH
 EPOCH_TORCHVISION = SDE_TORCHVISION != "" ? SDE_TORCHVISION : SDE_EPOCH
 EPOCH_ATOM    = SDE_ATOM    != "" ? SDE_ATOM    : SDE_EPOCH
@@ -423,6 +427,9 @@ PUB_TRITON  = "${REGISTRY}/${REGISTRY_NAME}/triton-wheel:${TRITON_VERSION}-${ROC
 PUB_AITER   = "${REGISTRY}/${REGISTRY_NAME}/aiter-wheel:${PYTORCH_VERSION}-${ROCM_VERSION}-${ARCH_TAG}"
 PUB_NIXL    = "${REGISTRY}/${REGISTRY_NAME}/nixl-wheel:${NIXL_REF}-${ROCM_VERSION}-${ARCH_TAG}"
 PUB_LMCACHE = "${REGISTRY}/${REGISTRY_NAME}/lmcache-wheel:${LMCACHE_REF}-${ROCM_VERSION}-${ARCH_TAG}"
+# The cpu lane's LMCache wheel: no arch and no ROCm in the tag, because
+# the wheel has neither.
+PUB_LMCACHE_CPU = "${REGISTRY}/${REGISTRY_NAME}/lmcache-cpu-wheel:${LMCACHE_REF}-cpu"
 PUB_CUPY    = "${REGISTRY}/${REGISTRY_NAME}/cupy-wheel:${CUPY_REF}-${ROCM_VERSION}-${ARCH_TAG}"
 PUB_TORCHVISION = "${REGISTRY}/${REGISTRY_NAME}/torchvision-wheel:${TORCHVISION_REF}-${ROCM_VERSION}-${ARCH_TAG}"
 PUB_ATOM    = "${REGISTRY}/${REGISTRY_NAME}/atom-wheel:${ATOM_REF}-${ROCM_VERSION}-${ARCH_TAG}"
@@ -490,11 +497,16 @@ variable "LLM_EMU_REPO" {
 # vllm/vllm-rs references GLIBC_2.43 from Ubuntu 26.04, so its wheel is
 # linux_x86_64 by necessity. The emu wheel's whole claim is that it
 # installs anywhere, so it is built where a manylinux policy is
-# actually achievable. Pinned to the image's own tag rather than
-# :latest would be better still — quay publishes no digest-stable tag
-# per policy, so this is the one place the lane is not fully pinned.
+# actually achievable.
+#
+# A dated tag, not :latest. :latest was republished eleven times in
+# three weeks, and every republish changes the digest under the
+# builder stage, so the 22-minute vLLM compile in the cpu lane was
+# recompiled from cold on whichever pull request came next. A dated
+# tag moves only when someone bumps it here. Current tags:
+# https://quay.io/repository/pypa/manylinux_2_28_x86_64?tab=tags
 variable "MANYLINUX_IMAGE" {
-  default = "quay.io/pypa/manylinux_2_28_x86_64:latest"
+  default = "quay.io/pypa/manylinux_2_28_x86_64:2026.11.14-1"
 }
 
 
@@ -784,12 +796,22 @@ group "serving" {
 # identical bytes under identical tags, once per card, and the last
 # writer would win a race nobody can observe.
 #
-# It is also the only group here that needs no GPU, no ROCm and no
-# fleet: it builds from a manylinux base in minutes on any x86 node,
+# It is also one of the two groups here (`cpu` is the other) that need
+# no GPU, no ROCm and no fleet: it builds from a manylinux base in
+# minutes on any x86 node,
 # which is what lets .github/workflows/emu.yml run the whole thing —
 # build and smoke test — on a stock GitHub runner.
 group "emu" {
   targets = ["vllm-emu", "vllm-emu-wheel"]
+}
+
+# The CPU lane: real inference with no GPU. See docker/Dockerfile.vllm-cpu.
+#
+# In no other group, for the reason `emu` is not: these four build one
+# artifact set for every architecture, and `default`, `wheels` and
+# `serving` are each driven once per entry in ARCHES.
+group "cpu" {
+  targets = ["lmcache-cpu", "lmcache-cpu-wheel", "vllm-cpu", "vllm-cpu-wheel"]
 }
 
 # There was an `attrs = { cache-from/cache-to }` block here pointing at
@@ -1968,6 +1990,141 @@ target "lmcache-wheel" {
     "org.opencontainers.image.title"       = "lmcache wheel"
     "org.opencontainers.image.description" = "LMCache ${LMCACHE_REF} wheel for ${PYTORCH_ROCM_ARCH}, ROCm ${ROCM_VERSION}"
     "org.opencontainers.image.version"     = "${LMCACHE_REF}-${ROCM_VERSION}-${ARCH_TAG}"
+  })
+}
+
+# ─── LMCache for CPU (arch-free) ─────────────────────────────────
+# LMCache built with NO_GPU_EXT=1 on the CPU torch: the MP server and
+# its RAM and fs tiers, no cuda_ops, no CuPy, no NIXL. Noarch tags and
+# cache for the reason spelled out on vllm-emu — there is no device
+# code in it to qualify.
+target "lmcache-cpu" {
+  dockerfile = "docker/Dockerfile.lmcache-cpu"
+  platforms  = ["linux/amd64"]
+  target     = "final"
+
+  tags = compact([
+    "${REGISTRY}/${REGISTRY_NAME}/lmcache-cpu:${LMCACHE_REF}-cpu",
+    "${REGISTRY}/${REGISTRY_NAME}/lmcache-cpu:latest",
+    VCS_REF != "" ? "${REGISTRY}/${REGISTRY_NAME}/lmcache-cpu:${LMCACHE_REF}-cpu-g${VCS_REF}" : "",
+  ])
+
+  labels = merge(OCI_LABELS, {
+    "org.opencontainers.image.title"       = "lmcache-cpu"
+    "org.opencontainers.image.description" = "LMCache ${LMCACHE_REF} multi-process runtime on PyTorch ${PYTORCH_VERSION}+cpu — no GPU"
+    "org.opencontainers.image.version"     = "${LMCACHE_REF}-cpu"
+  })
+
+  cache-from = distinct(concat(cache_own("lmcache-cpu-cache", ""), [
+    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/lmcache-cpu-cache:latest,mode=max,registry.insecure=${REGISTRY_INSECURE}",
+  ]))
+  cache-to   = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/lmcache-cpu-cache:latest${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=${REGISTRY_INSECURE},ignore-error=true"]
+
+  args = {
+    BUILDKIT_BUILD_NAME = "rocm-pytorch-build/lmcache-cpu/noarch/${RUN_ID}"
+    SOURCE_DATE_EPOCH   = EPOCH_LMCACHE_CPU
+    MANYLINUX_IMAGE     = MANYLINUX_IMAGE
+    PYTHON_VERSION      = PYTHON_VERSION
+    PYTORCH_VERSION     = PYTORCH_VERSION
+    LMCACHE_REF         = LMCACHE_REF
+    MAX_JOBS            = MAX_JOBS
+  }
+
+  output = ["type=image,compression=zstd"]
+}
+
+# ─── LMCache CPU wheel artifact ──────────────────────────────────
+target "lmcache-cpu-wheel" {
+  # Its own build record name; see vllm-wheel.
+  args = {
+    BUILDKIT_BUILD_NAME = "rocm-pytorch-build/lmcache-cpu-wheel/noarch/${RUN_ID}"
+  }
+
+  inherits   = ["lmcache-cpu"]
+  target     = "wheel"
+  dockerfile = "docker/Dockerfile.lmcache-cpu"
+
+  # The version-qualified tag stays first: it is the one PUB_LMCACHE_CPU
+  # mirrors and the one `make cpu-index` fetches.
+  tags = compact([
+    "${REGISTRY}/${REGISTRY_NAME}/lmcache-cpu-wheel:${LMCACHE_REF}-cpu",
+    "${REGISTRY}/${REGISTRY_NAME}/lmcache-cpu-wheel:latest",
+    VCS_REF != "" ? "${REGISTRY}/${REGISTRY_NAME}/lmcache-cpu-wheel:${LMCACHE_REF}-cpu-g${VCS_REF}" : "",
+  ])
+
+  labels = merge(OCI_LABELS, {
+    "org.opencontainers.image.title"       = "lmcache cpu wheel"
+    "org.opencontainers.image.description" = "LMCache ${LMCACHE_REF} CPU wheel (+cpu), no GPU extension"
+    "org.opencontainers.image.version"     = "${LMCACHE_REF}-cpu"
+  })
+}
+
+# ─── vLLM for CPU (arch-free) ────────────────────────────────────
+# vLLM built with VLLM_TARGET_DEVICE=cpu on the CPU torch. Unlike
+# vllm-emu it loads weights and runs the forward pass, so it does take
+# an input from this repo: the LMCache CPU wheel, because the image
+# serves with LMCache's own MP connector.
+target "vllm-cpu" {
+  dockerfile = "docker/Dockerfile.vllm-cpu"
+  platforms  = ["linux/amd64"]
+  target     = "final"
+
+  tags = compact([
+    "${REGISTRY}/${REGISTRY_NAME}/vllm-cpu:${VLLM_REF}-cpu",
+    "${REGISTRY}/${REGISTRY_NAME}/vllm-cpu:latest",
+    VCS_REF != "" ? "${REGISTRY}/${REGISTRY_NAME}/vllm-cpu:${VLLM_REF}-cpu-g${VCS_REF}" : "",
+  ])
+
+  labels = merge(OCI_LABELS, {
+    "org.opencontainers.image.title"       = "vllm-cpu"
+    "org.opencontainers.image.description" = "vLLM ${VLLM_REF} (+cpu) on PyTorch ${PYTORCH_VERSION}+cpu with LMCache ${LMCACHE_REF} — no GPU"
+    "org.opencontainers.image.version"     = "${VLLM_REF}-cpu"
+  })
+
+  cache-from = distinct(concat(cache_own("vllm-cpu-cache", ""), [
+    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/vllm-cpu-cache:latest,mode=max,registry.insecure=${REGISTRY_INSECURE}",
+  ]))
+  cache-to   = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/vllm-cpu-cache:latest${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=${REGISTRY_INSECURE},ignore-error=true"]
+
+  contexts = USE_PUB ? {} : {
+    lmcache-cpu-wheels = "target:lmcache-cpu-wheel"
+  }
+
+  args = {
+    BUILDKIT_BUILD_NAME = "rocm-pytorch-build/vllm-cpu/noarch/${RUN_ID}"
+    SOURCE_DATE_EPOCH   = EPOCH_VLLM_CPU
+    LMCACHE_WHEEL_IMAGE = USE_PUB ? PUB_LMCACHE_CPU : "lmcache-cpu-wheels"
+    MANYLINUX_IMAGE     = MANYLINUX_IMAGE
+    PYTHON_VERSION      = PYTHON_VERSION
+    PYTORCH_VERSION     = PYTORCH_VERSION
+    VLLM_REF            = VLLM_REF
+    MAX_JOBS            = MAX_JOBS
+  }
+
+  output = ["type=image,compression=zstd"]
+}
+
+# ─── vLLM CPU wheel artifact ─────────────────────────────────────
+target "vllm-cpu-wheel" {
+  # Its own build record name; see vllm-wheel.
+  args = {
+    BUILDKIT_BUILD_NAME = "rocm-pytorch-build/vllm-cpu-wheel/noarch/${RUN_ID}"
+  }
+
+  inherits   = ["vllm-cpu"]
+  target     = "wheel"
+  dockerfile = "docker/Dockerfile.vllm-cpu"
+
+  tags = compact([
+    "${REGISTRY}/${REGISTRY_NAME}/vllm-cpu-wheel:${VLLM_REF}-cpu",
+    "${REGISTRY}/${REGISTRY_NAME}/vllm-cpu-wheel:latest",
+    VCS_REF != "" ? "${REGISTRY}/${REGISTRY_NAME}/vllm-cpu-wheel:${VLLM_REF}-cpu-g${VCS_REF}" : "",
+  ])
+
+  labels = merge(OCI_LABELS, {
+    "org.opencontainers.image.title"       = "vllm cpu wheel"
+    "org.opencontainers.image.description" = "vLLM ${VLLM_REF} CPU wheel (+cpu), pinned to torch ${PYTORCH_VERSION}+cpu"
+    "org.opencontainers.image.version"     = "${VLLM_REF}-cpu"
   })
 }
 

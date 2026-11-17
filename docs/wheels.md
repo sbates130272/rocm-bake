@@ -33,6 +33,18 @@ the whole interface.
     two steps — see
     [Emulated serving](architecture/emulation.md#installing-from-it-needs-a-torch).
 
+!!! note "No GPU, real inference: the `cpu` index"
+    `cpu` carries vLLM and LMCache built for CPU, which serve real
+    tokens from a small model. It is separate for the same reason, and
+    its metapackage is still `rocm-torch[device-cpu]`. Not published
+    yet: the index URL returns 404 until the first `make cpu-publish`.
+
+    Its vLLM pins `torch==2.15.0+cpu`, so torch is installed first from
+    PyTorch's CPU index and that index is given again as a second
+    `--extra-index-url`. pip only: uv refuses the wheel's direct-URL
+    triton requirement. The exact lines are in
+    [CPU serving](architecture/cpu.md#installing-from-the-cpu-index).
+
 !!! warning "Both index URLs are required"
     `--extra-index-url` is not optional. Ordinary dependencies — numpy,
     pydantic, a hundred others — live on PyPI and the install cannot

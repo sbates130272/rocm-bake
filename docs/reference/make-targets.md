@@ -151,13 +151,21 @@ layer cache nor compiler-cache hits.
 | `serve-status` | What is running on `GPU_HOST` |
 | `serve-down` | Stop and remove |
 
+`SERVE_DEVICE=cpu` on any `serve-*` rule drives the
+[CPU stack](../architecture/cpu.md#on-the-serving-host) on `GPU_HOST`
+instead: its own compose file, tags and model, no GPU probe, and
+`cpu-test.sh --attach` as the test. Pass it to every rule, `serve-down`
+included. `serve-stack` then pulls and replaces a running stack, and
+`serve-test` needs that stack started with `VLLM_DEV_MODE=1`. The
+`emu-capture-*` rules refuse it.
+
 See [Serving stack](../architecture/serving.md).
 
 ## Emulated Serving (No GPU)
 
 One vLLM wheel for every architecture, serving from a captured profile
-pack instead of a card. The only lane here that needs no GPU, no ROCm
-and no fleet.
+pack instead of a card. With [CPU serving](#cpu-serving-no-gpu), one of
+the two lanes here that need no GPU, no ROCm and no fleet.
 
 | Target | |
 | --- | --- |
@@ -174,6 +182,28 @@ and no fleet.
 | `emu-capture-serve` | Serve real vLLM on `GPU_HOST` with tracing on (`-status`, `-down`) |
 
 See [Emulated serving](../architecture/emulation.md).
+
+## CPU Serving (No GPU)
+
+vLLM and LMCache built for CPU, serving a small model for real. Tokens
+and no timing, where the emulator has timing and no tokens. The `cpu-*`
+rules below serve on this machine's docker daemon, for CI and a laptop;
+`serve-* SERVE_DEVICE=cpu` serves the same stack on `GPU_HOST`.
+
+| Target | |
+| --- | --- |
+| `push-cpu` | Build and push the whole lane (bake group `cpu`); the one that leaves Zot ready for `cpu-index` |
+| `push-vllm-cpu` / `push-lmcache-cpu` | Either image on its own (`-wheel` for the wheel image, `build-` for no push) |
+| `cpu-wheels` | Build both wheels straight into `./dist/cpu` |
+| `cpu-load` | Build both images into the local docker daemon |
+| `cpu-serve` | Serve vLLM + LMCache here (`KV_TIER=cpu\|file`, `CPU_SERVE_MODEL=`) |
+| `cpu-logs` / `cpu-down` | Its logs (`CPU_LOG_ARGS='-f vllm'`); stop and remove |
+| `cpu-test` | Serve a real model and check inference and the KV cache (`CPU_TEST_ARGS=--l2`) |
+| `cpu-index` | Fetch from Zot and build the `cpu` pip index |
+| `cpu-index-check` | Install that index in a throwaway venv and refuse any `nvidia-*` |
+| `cpu-publish` | Release the wheels and publish the index (`-dry` first) |
+
+See [CPU serving](../architecture/cpu.md).
 
 ## Benchmarks
 

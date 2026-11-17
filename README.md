@@ -4,9 +4,10 @@ Reproducible builds of PyTorch, Triton, AITER, CuPy, NIXL, vLLM and
 LMCache against ROCm, on a three-node BuildKit fleet, with every
 artifact published to a local OCI registry.
 
-Plus one that is not tied to ROCm at all: an arch-free vLLM that serves
-from a captured latency profile instead of a GPU, so the serving path
-can be exercised on any machine — including CI.
+Plus two lanes that are not tied to ROCm at all, so the serving path
+can be exercised on any machine: an arch-free vLLM that serves from a
+captured latency profile instead of a GPU, and a CPU build of vLLM and
+LMCache that serves real tokens from a small model.
 
 **Full documentation: <https://sbates130272.github.io/rocm-bake/>**
 
@@ -61,9 +62,10 @@ That table is generated from `rocm-bake.hcl` by `make version-scrub`, and
 CI fails if it drifts. Triton is pinned to a commit (`TRITON_REF`) as well
 as a version; `RUST_VERSION` and `SCCACHE_VERSION` are toolchain pins and
 live in [the bake variables reference][vars]. Built for `gfx950` (default),
-`gfx1201` and `gfx1250` — plus one arch-free vLLM that needs no GPU at
-all, which is how the serving stack gets tested; see [emulated
-serving][emu].
+`gfx1201` and `gfx1250` — plus two arch-free lanes that need no GPU at
+all, which is how the serving stack gets tested: [emulated
+serving][emu] for timing without tokens, and [CPU serving][cpu] for
+tokens without timing.
 
 `rocm-bake.hcl` is the single source for every value a build reads.
 `make list-vars` prints what is actually in effect, and `make version-check`
@@ -71,6 +73,7 @@ compares it against what upstream has released and what we have published.
 
 [vars]: https://sbates130272.github.io/rocm-bake/reference/bake-variables/
 [emu]: https://sbates130272.github.io/rocm-bake/architecture/emulation/
+[cpu]: https://sbates130272.github.io/rocm-bake/architecture/cpu/
 
 ## Quick start
 
@@ -82,6 +85,7 @@ make fleet-apply                   # bring every node to the manifest's state
 make builder-setup                 # a buildx builder per node
 make push-all BUILDER=snoc-pool    # build and publish everything
 make build-watch                   # follow it from a second terminal
+make cpu-load && make cpu-test     # no GPU: serve a small model on this CPU
 ```
 
 The step-by-step version is in the

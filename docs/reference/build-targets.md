@@ -27,10 +27,17 @@ immutable `-g<sha>` tag whenever `VCS_REF` is non-empty.
 | `vllm-emu` | `vllm-emu` | `${VLLM_REF}-emu` (no arch, no ROCm) |
 | `vllm-emu-wheel` | `vllm-emu-wheel` | `${VLLM_REF}-emu` (no arch, no ROCm) |
 | `vllm-emu-capture` | `vllm-emu-capture` | `${VLLM_REF}-${ROCM_VERSION}-${ARCH}` |
+| `vllm-cpu` | `vllm-cpu` | `${VLLM_REF}-cpu` (no arch, no ROCm) |
+| `vllm-cpu-wheel` | `vllm-cpu-wheel` | `${VLLM_REF}-cpu` (no arch, no ROCm) |
+| `lmcache-cpu` | `lmcache-cpu` | `${LMCACHE_REF}-cpu` (no arch, no ROCm) |
+| `lmcache-cpu-wheel` | `lmcache-cpu-wheel` | `${LMCACHE_REF}-cpu` (no arch, no ROCm) |
 
 `vllm-emu` and `vllm-emu-wheel` carry no `${ARCH}` because they contain no device code:
 one wheel serves every card, from a profile pack rather than a GPU.
-See [Emulated Serving](../architecture/emulation.md). `pytorch-src` and
+See [Emulated Serving](../architecture/emulation.md). The four `-cpu`
+targets carry none because they are built for CPU on PyTorch's own CPU
+torch, and form a bake group of their own, `cpu`, that is in no other
+group; see [CPU Serving](../architecture/cpu.md). `pytorch-src` and
 `triton-wheel` drop the arch for their own reasons — a source tree and
 a compiler, respectively.
 
@@ -52,6 +59,10 @@ vllm:v0.33.0-10.1.0-full-gfx950
 vllm-wheel:v0.33.0-10.1.0-full-gfx950
 vllm-emu:v0.33.0-emu
 vllm-emu-wheel:v0.33.0-emu
+vllm-cpu:v0.33.0-cpu
+vllm-cpu-wheel:v0.33.0-cpu
+lmcache-cpu:v0.5.7-cpu
+lmcache-cpu-wheel:v0.5.7-cpu
 lmcache:v0.5.7-10.1.0-full-gfx950
 lmcache-wheel:v0.5.7-10.1.0-full-gfx950
 ```

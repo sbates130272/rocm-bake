@@ -1,0 +1,216 @@
+# syntax=docker/dockerfile:1
+# LMCache's multi-process cache server with no GPU in it.
+#
+# The CPU half of Dockerfile.lmcache: same source and the same
+# requirement patches, but NO_GPU_EXT=1 against a CPU torch, so setup.py
+# builds only the three device-free C++ extensions and cuda_ops is never
+# hipified. No ROCm, NIXL or CuPy: on a torch with no accelerator
+# LMCache selects its CPU device, and the cupy import in the cuda cache
+# context sits in a function that device never calls. Pairs with
+# Dockerfile.vllm-cpu; see docs/architecture/cpu.md.
+#
+# manylinux for the reason Dockerfile.vllm-emu gives: this wheel goes to
+# an index of its own (`cpu`) and should install wherever a CPU torch
+# does, not only where the ROCm base's glibc is.
+
+ARG MANYLINUX_IMAGE=quay.io/pypa/manylinux_2_28_x86_64:2026.11.14-1
+ARG PYTHON_VERSION=3.14
+
+# ─── Builder ─────────────────────────────────────────────────────
+FROM ${MANYLINUX_IMAGE} AS builder
+
+ARG PYTHON_VERSION
+ARG LMCACHE_REF=v0.5.7
+ARG PYTORCH_VERSION
+ARG MAX_JOBS=
+ARG SOURCE_DATE_EPOCH
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_ROOT_USER_ACTION=ignore \
+    PYTHONUNBUFFERED=1
+
+# Interpreter selection as in Dockerfile.vllm-emu: cp314 from 3.14.
+RUN set -eu; \
+    tag="cp$(echo "${PYTHON_VERSION}" | tr -d '.')"; \
+    test -x "/opt/python/${tag}-${tag}/bin/python" \
+        || { echo "no ${tag} interpreter in this manylinux image" >&2; \
+             ls /opt/python >&2; exit 1; }; \
+    ln -s "/opt/python/${tag}-${tag}/bin" /usr/local/pybin
+ENV PATH=/usr/local/pybin:$PATH
+
+# The extensions compile against this torch's headers and link its
+# libraries, so it has to be the build the runtime image installs.
+RUN pip install --no-cache-dir \
+        --index-url https://download.pytorch.org/whl/cpu \
+        "torch==${PYTORCH_VERSION}" && \
+    python -c "import torch; assert not torch.version.hip and not torch.version.cuda, \
+        'this lane must build against a CPU torch'; print('torch', torch.__version__)"
+
+RUN git clone --depth 1 --branch ${LMCACHE_REF} \
+    https://github.com/LMCache/LMCache.git /opt/lmcache
+
+WORKDIR /opt/lmcache
+
+# common.txt becomes the wheel's install_requires, so it is patched
+# before the build. The drops and the prometheus_client cap lift are
+# Dockerfile.lmcache's, which has the reasons. Its other two patches do
+# not apply: rocm_core.txt is never read under NO_GPU_EXT=1, and
+# upstream already lifts the numpy cap on 3.14.
+#
+# The torch pin is this lane's own. Upstream names a bare `torch`, which
+# on its own resolves PyPI's CUDA build, and the extensions link the
+# libtorch_cpu of the torch above. The `cpu` index carries no torch to
+# steer the resolve, so the wheel has to name it.
+ARG LMCACHE_DROP_REQS='^(cufile-python|nvtx|grpcio-observability)([<=>;\[[:space:]]|$)'
+
+RUN set -eu; \
+    cp requirements/common.txt /tmp/common.txt.orig; \
+    sed -i -E "/${LMCACHE_DROP_REQS}/d" requirements/common.txt; \
+    sed -i -E 's/^prometheus_client *>=.*$/prometheus_client >= 0.18.0/' \
+        requirements/common.txt; \
+    sed -i -E "s/^torch\$/torch==${PYTORCH_VERSION}+cpu/" \
+        requirements/common.txt; \
+    diff /tmp/common.txt.orig requirements/common.txt || true; \
+    grep -q '^prometheus_client >= 0.18.0$' requirements/common.txt; \
+    grep -q "^torch==${PYTORCH_VERSION}+cpu\$" requirements/common.txt; \
+    ! grep -E "${LMCACHE_DROP_REQS}" requirements/common.txt
+
+# grpcio-tools generates the MP transport's stubs during build_py.
+RUN pip install --no-cache-dir -r requirements/build.txt auditwheel && \
+    python -c "import grpc_tools; print('grpc_tools ok')"
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# `+cpu`, so the wheel cannot be mistaken for the `+rocm` one that
+# carries the same upstream version. MAX_JOBS is passed through only
+# when pinned: three extensions, well under a minute.
+RUN set -eu; \
+    if [ -z "${MAX_JOBS}" ]; then unset MAX_JOBS; fi; \
+    SETUPTOOLS_SCM_PRETEND_VERSION="${LMCACHE_REF#v}+cpu" \
+    NO_GPU_EXT=1 \
+    PYTHONDONTWRITEBYTECODE=1 python setup.py bdist_wheel --dist-dir=/raw-wheels \
+    2>&1 | tee /wheels-build.log
+
+SHELL ["/bin/sh", "-c"]
+
+# The inverse of Dockerfile.lmcache's offload-bundle check: that one
+# proves the wheel has code objects for its arch, this proves it has
+# none for any. cuda_ops present means NO_GPU_EXT did not take.
+#
+# Plain auditwheel, not auditwheel-rocm.sh, which derives its excludes
+# from a ROCm tree this image does not have. Checked by name because
+# the repair is piped.
+RUN --mount=type=tmpfs,target=/tmp/w \
+    set -eu; \
+    test "$(find /raw-wheels -maxdepth 1 -name '*.whl' | wc -l)" -eq 1; \
+    raw=$(basename /raw-wheels/*.whl); \
+    case "${raw}" in \
+        "lmcache-${LMCACHE_REF#v}+cpu-"*) ;; \
+        *) echo "wheel is ${raw}, expected lmcache-${LMCACHE_REF#v}+cpu-*" >&2; \
+           exit 1 ;; \
+    esac; \
+    python -m zipfile -e /raw-wheels/*.whl /tmp/w; \
+    for m in lmcache_native lmcache_redis lmcache_fs; do \
+        find /tmp/w/lmcache -maxdepth 1 -name "${m}.*.so" | grep -q . \
+            || { echo "wheel has no ${m} extension" >&2; exit 1; }; \
+    done; \
+    if find /tmp/w -name 'cuda_ops*' | grep -q . ; then \
+        echo "cuda_ops present — NO_GPU_EXT=1 did not take" >&2; exit 1; fi; \
+    if grep -rl -e '__CLANG_OFFLOAD_BUNDLE' /tmp/w | grep -q . ; then \
+        echo "GPU offload bundles found in a CPU wheel" >&2; exit 1; fi; \
+    auditwheel repair /raw-wheels/*.whl -w /wheels \
+        --exclude 'libtorch*.so*' --exclude 'libc10*.so*' \
+        2>&1 | tee /wheels-tag.txt; \
+    test "$(find /wheels -maxdepth 1 -name '*.whl' | wc -l)" -eq 1; \
+    case "$(basename /wheels/*.whl)" in \
+        *manylinux*) echo "repaired to $(basename /wheels/*.whl)" ;; \
+        *) echo "auditwheel left ${raw} unrepaired" >&2; exit 1 ;; \
+    esac; \
+    echo cpu > /wheels-arch.txt
+
+# wheels-arch.txt names the one index this wheel may be published
+# under; wheelindex.py's check_arch() reads it back and refuses any
+# other. No wheel-verdict call: its two gates exist to justify a
+# skipped repair, and `report` asserts nothing — wheelindex.py runs
+# that measurement itself at index time.
+
+# ─── Multi-process runtime image ─────────────────────────────────
+FROM python:${PYTHON_VERSION}-slim AS final
+
+ARG LMCACHE_REF
+ARG PYTORCH_VERSION
+
+LABEL org.opencontainers.image.source="https://github.com/LMCache/LMCache"
+LABEL org.opencontainers.image.description="LMCache ${LMCACHE_REF} multi-process runtime, CPU-only"
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_ROOT_USER_ACTION=ignore \
+    PYTHONUNBUFFERED=1
+
+RUN pip install --no-cache-dir \
+        --index-url https://download.pytorch.org/whl/cpu \
+        "torch==${PYTORCH_VERSION}"
+
+# The constraint makes any later resolve that would replace the CPU
+# torch fail instead. Same construction as Dockerfile.lmcache.
+RUN pip list --format=freeze > /tmp/pip-freeze.txt && \
+    grep -E '^torch==' /tmp/pip-freeze.txt > /etc/pip-constraints.txt && \
+    rm /tmp/pip-freeze.txt && \
+    cat /etc/pip-constraints.txt
+ENV PIP_CONSTRAINT=/etc/pip-constraints.txt
+
+COPY --from=builder /wheels-build.log /wheels-tag.txt /wheels-arch.txt \
+    /var/log/lmcache-build/
+COPY --from=builder /opt/lmcache/requirements/common.txt \
+    /opt/lmcache-requirements/common.txt
+
+# Requirements first, then the wheel --no-deps, mounted rather than
+# copied — both as Dockerfile.lmcache does, though here the wheel's own
+# metadata is this same patched file and would resolve identically.
+RUN --mount=type=bind,from=builder,source=/wheels,target=/w/lmcache \
+    pip install --no-cache-dir -r /opt/lmcache-requirements/common.txt && \
+    pip install --no-cache-dir --no-deps /w/lmcache/*.whl && \
+    pip check && \
+    python -c "import lmcache; print('LMCache', lmcache.__version__)"
+
+# What the image claims: no GPU package got in, and the server module
+# resolves the CPU device without importing cupy.
+# get_service_bindings() proves the gRPC stubs were generated into the
+# wheel, as in Dockerfile.lmcache.
+RUN pip list --format=freeze > /tmp/pip-freeze.txt && \
+    if grep -iE '^(nvidia|cupy|nixl)|cuda' /tmp/pip-freeze.txt; then \
+        echo "GPU distribution in a CPU image" >&2; exit 1; fi && \
+    rm /tmp/pip-freeze.txt && \
+    python -c "\
+import sys, torch, lmcache;\
+assert not torch.cuda.is_available();\
+assert lmcache.torch_device_type == 'cpu', lmcache.torch_device_type;\
+from lmcache.v1.platform import current_device_spec as spec;\
+assert type(spec).__name__ == 'CpuDeviceSpec', type(spec).__name__;\
+import lmcache.v1.multiprocess.http_server;\
+assert 'cupy' not in sys.modules, 'the CPU server imported cupy';\
+from lmcache.v1.multiprocess.transport.grpc_impl.descriptors import get_service_bindings;\
+print('MP server ok —', type(spec).__name__, '—', len(get_service_bindings()), 'gRPC services')" && \
+    lmcache server --help > /dev/null
+
+# 5555 is the cache server's --port default, 8080 its HTTP API
+# (--http-port; bound to 127.0.0.1 unless --http-host says otherwise).
+EXPOSE 5555 8080
+
+# No ENTRYPOINT, so a container names its role, as with the ROCm image:
+#
+#   docker run <img> lmcache server --host 0.0.0.0 --port 5555
+CMD ["lmcache", "server", "--help"]
+
+# ─── Wheel-only image ────────────────────────────────────────────
+FROM scratch AS wheel
+
+ARG LMCACHE_REF
+LABEL org.opencontainers.image.source="https://github.com/LMCache/LMCache"
+LABEL org.opencontainers.image.description="LMCache ${LMCACHE_REF} CPU-only (+cpu) wheel"
+
+# No /requirements/ beside the wheel, unlike lmcache-wheel: nothing was
+# dropped that the wheel's own metadata still names. It pins the +cpu
+# torch, so a resolve needs PyTorch's CPU index beside PyPI.
+COPY --from=builder /wheels/ /wheels/
+COPY --from=builder /wheels-build.log /wheels-tag.txt /wheels-arch.txt /
