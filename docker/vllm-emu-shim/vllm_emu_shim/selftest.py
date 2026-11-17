@@ -236,6 +236,26 @@ def _check_platform() -> None:
         _check("CacheConfig.gpu_memory_utilization is settleable",
                False, f"could not import: {exc}")
 
+    # The shape llm-emu's executor hook builds for every emulated step.
+    # v0.34.0 deleted req_id_to_index, which the hook still passes, and
+    # the TypeError lands on the first request rather than at startup.
+    try:
+        from vllm.v1.outputs import ModelRunnerOutput
+
+        got = ModelRunnerOutput(
+            req_ids=["r0"],
+            req_id_to_index={"r0": 0},
+            sampled_token_ids=[[1]],
+            logprobs=None,
+            prompt_logprobs_dict={},
+            pooler_output=[None],
+        )
+        _check("ModelRunnerOutput takes what llm-emu's hook passes",
+               got.req_ids == ["r0"], repr(got))
+    except Exception as exc:  # noqa: BLE001
+        _check("ModelRunnerOutput takes what llm-emu's hook passes",
+               False, f"{type(exc).__name__}: {exc}")
+
     # The return type the executor destructures across every worker.
     try:
         from vllm.v1.worker.gpu_worker import Worker
