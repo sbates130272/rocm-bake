@@ -209,8 +209,17 @@ ARG LMCACHE_REF
 LABEL org.opencontainers.image.source="https://github.com/LMCache/LMCache"
 LABEL org.opencontainers.image.description="LMCache ${LMCACHE_REF} CPU-only (+cpu) wheel"
 
-# No /requirements/ beside the wheel, unlike lmcache-wheel: nothing was
-# dropped that the wheel's own metadata still names. It pins the +cpu
-# torch, so a resolve needs PyTorch's CPU index beside PyPI.
+# The patched requirements travel with the wheel, as they do beside
+# lmcache-wheel. Nothing was dropped that the wheel's own metadata still
+# names, so a consumer that resolves the wheel normally gets the same
+# answer — but a consumer that cannot resolve it needs this file to
+# install the dependencies itself. Dockerfile.vllm-cpu is that consumer:
+# LMCache caps opentelemetry-api at 1.40 and vLLM v0.34.0 floors it at
+# 1.45.1, so there is no single resolve, and it installs these and then
+# the wheel --no-deps.
+#
+# It pins the +cpu torch, so a resolve needs PyTorch's CPU index beside
+# PyPI.
+COPY --from=builder /opt/lmcache/requirements/common.txt /requirements/
 COPY --from=builder /wheels/ /wheels/
 COPY --from=builder /wheels-build.log /wheels-tag.txt /wheels-arch.txt /

@@ -214,34 +214,89 @@ COPY --from=builder /wheels-build.log /wheels-tag.txt /wheels-arch.txt \
     /var/log/vllm-cpu-build/
 
 # ─── vLLM and the LMCache client ─────────────────────────────────
-# WITH dependencies, unlike Dockerfile.vllm: neither wheel's metadata
-# names anything unresolvable, so installing through it is the test
-# that the published wheels resolve. The CPU index is an extra because
-# vLLM's metadata pins torch==<version>+cpu, which PyPI does not carry.
-# LMCache is not optional — vLLM's MP connector imports it at module
-# scope.
+# vLLM WITH dependencies: its metadata names nothing unresolvable, so
+# installing through it is the test that the published wheel resolves.
+# The CPU index is an extra because vLLM's metadata pins
+# torch==<version>+cpu, which PyPI does not carry. LMCache is not
+# optional — vLLM's MP connector imports it at module scope.
 #
-# ONE resolve for both. LMCache caps opentelemetry-api at 1.40; vLLM
-# alone resolves 1.45, whose exporter spans two more distributions.
-# Installed in sequence, the downgrade strands those two and `pip
-# check` fails:
+# LMCache --no-deps, which Dockerfile.vllm has always done and this
+# lane now has to. The two wheels stopped being co-resolvable at vLLM
+# v0.34.0:
 #
-#     opentelemetry-exporter-otlp-common 0.66b2 has requirement
-#     opentelemetry-sdk~=1.45.2, but you have opentelemetry-sdk 1.40.0
+#     vllm 0.34.0+cpu         depends on opentelemetry-api>=1.45.1
+#     lmcache 0.5.7.post1+cpu depends on opentelemetry-api<=1.40.0,>=1.20.0
+#     ERROR: ResolutionImpossible
+#
+# v0.33.0 floored it at 1.27.0, which left a window under LMCache's cap;
+# v0.34.0 raised the floor past it. LMCache's cap is its own — the
+# grpcio-observability pin that reads like its cause asks only for
+# >=1.21.0 — and their dev branch still carries it, so there is no
+# LMCache to bump to.
+#
+# Breaking LMCache's ceiling rather than vLLM's floor, because of what
+# each side does with opentelemetry here. LMCache's is its
+# mp_observability subsystem, which runs in the LMCache SERVER — a
+# separate image and a separate process. What this image holds is the
+# client shim behind LMCacheMPConnector, and the one otel import on that
+# path, in lmcache/logging.py, is already inside a try/except ImportError
+# that upstream documents as "no-op if opentelemetry is not installed".
+# vLLM's floor, by contrast, is load-bearing for the server that runs
+# here. Same reasoning as Dockerfile.vllm, reached from the other side.
+#
+# The requirements file is LMCache's own, patched at wheel-build time and
+# shipped beside the wheel; the sed lifts the ceiling and fails loudly if
+# the line is not the shape it expects, so an LMCache that fixes this
+# upstream makes this a no-op rather than a silent edit.
 #
 # triton joins the constraints afterwards: it arrived by direct URL as
 # the +cpu build, and xgrammar's bare `triton` must not be answered
 # with PyPI's by a later install.
+COPY --from=lmcachewheels /requirements/common.txt \
+    /opt/lmcache-requirements/common.txt
+
+RUN set -eu; \
+    f=/opt/lmcache-requirements/common.txt; \
+    grep -qE '^opentelemetry-api *>= *[0-9.]+, *<= *1\.40\.0$' "$f" || { \
+        echo "LMCache's opentelemetry-api pin is not the capped shape:" >&2; \
+        grep -n opentelemetry-api "$f" >&2; exit 1; }; \
+    sed -i -E 's/^(opentelemetry-api *>= *[0-9.]+), *<= *1\.40\.0$/\1/' "$f"; \
+    grep -n opentelemetry-api "$f"
+
 RUN --mount=type=bind,from=builder,source=/wheels,target=/w/vllm \
     --mount=type=bind,from=lmcachewheels,source=/wheels,target=/w/lmcache \
     pip install --no-cache-dir \
         --extra-index-url https://download.pytorch.org/whl/cpu \
-        /w/vllm/*.whl /w/lmcache/*.whl && \
-    pip check && \
+        /w/vllm/*.whl && \
+    pip install --no-cache-dir \
+        --extra-index-url https://download.pytorch.org/whl/cpu \
+        -r /opt/lmcache-requirements/common.txt && \
+    pip install --no-cache-dir --no-deps /w/lmcache/*.whl && \
     pip list --format=freeze > /tmp/pip-freeze.txt && \
     grep -E '^triton==.*\+cpu$' /tmp/pip-freeze.txt >> /etc/pip-constraints.txt && \
     rm /tmp/pip-freeze.txt && \
     cat /etc/pip-constraints.txt
+
+# `pip check` still runs, and still fails the build on anything real.
+# The one tolerated line is the ceiling deliberately broken above: the
+# INSTALLED wheel's metadata keeps saying <=1.40.0, because only the
+# requirements file was patched and the wheel is the published artifact.
+# Matched on both names together so that any other complaint about
+# either distribution — a missing dependency, a second conflict — is
+# still a failure.
+RUN set -eu; \
+    if pip check > /tmp/pip-check.txt 2>&1; then \
+        cat /tmp/pip-check.txt; \
+    else \
+        cat /tmp/pip-check.txt; \
+        if grep -v -E 'lmcache .*opentelemetry-api' /tmp/pip-check.txt \
+            | grep -qE '[^[:space:]]'; then \
+            echo "pip check reported more than the broken otel ceiling" >&2; \
+            exit 1; \
+        fi; \
+        echo "pip check: only the deliberately broken otel ceiling"; \
+    fi; \
+    rm /tmp/pip-check.txt
 
 # CpuPlatform is selected by the `+cpu` in the version. The variable
 # makes that hold if the suffix is ever renamed: every other platform
