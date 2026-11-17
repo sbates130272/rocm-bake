@@ -245,9 +245,23 @@ COPY --from=builder /wheels-build.log /wheels-tag.txt /wheels-arch.txt \
 # here. Same reasoning as Dockerfile.vllm, reached from the other side.
 #
 # The requirements file is LMCache's own, patched at wheel-build time and
-# shipped beside the wheel; the sed lifts the ceiling and fails loudly if
-# the line is not the shape it expects, so an LMCache that fixes this
-# upstream makes this a no-op rather than a silent edit.
+# shipped beside the wheel; the sed lifts the ceilings and fails loudly
+# if there are none left to lift, so an LMCache that fixes this upstream
+# becomes an error here rather than a silent edit.
+#
+# CEILINGS, plural, and that is the whole trick. LMCache caps two:
+#
+#     opentelemetry-api                 >= 1.20.0, <= 1.40.0
+#     opentelemetry-exporter-prometheus >= 0.50b0, <= 0.61b0
+#
+# The second is the binding one. OpenTelemetry's exporters version as
+# 0.xxbN against the 1.xx core — 0.61b0 belongs to 1.40.0 — so capping
+# the exporter caps opentelemetry-sdk no matter what the api line says.
+# Lifting only the api line leaves the resolve legal and silently
+# DOWNGRADES the whole stack to 1.40 under a vLLM that asked for 1.45.1,
+# which `pip check` then reports against vllm rather than lmcache. Every
+# upper bound on an `opentelemetry-*` line goes, which also covers a
+# third if LMCache adds one.
 #
 # triton joins the constraints afterwards: it arrived by direct URL as
 # the +cpu build, and xgrammar's bare `triton` must not be answered
@@ -257,11 +271,15 @@ COPY --from=lmcachewheels /requirements/common.txt \
 
 RUN set -eu; \
     f=/opt/lmcache-requirements/common.txt; \
-    grep -qE '^opentelemetry-api *>= *[0-9.]+, *<= *1\.40\.0$' "$f" || { \
-        echo "LMCache's opentelemetry-api pin is not the capped shape:" >&2; \
-        grep -n opentelemetry-api "$f" >&2; exit 1; }; \
-    sed -i -E 's/^(opentelemetry-api *>= *[0-9.]+), *<= *1\.40\.0$/\1/' "$f"; \
-    grep -n opentelemetry-api "$f"
+    grep -qE '^opentelemetry-[a-z-]+ *>=.*<=' "$f" || { \
+        echo "no capped opentelemetry pin left in LMCache's requirements;" >&2; \
+        echo "upstream may have fixed this — drop the lift below:" >&2; \
+        grep -n opentelemetry "$f" >&2; exit 1; }; \
+    sed -i -E 's/^(opentelemetry-[a-z-]+ *>= *[0-9a-z.]+) *, *<= *[0-9a-z.]+$/\1/' "$f"; \
+    ! grep -qE '^opentelemetry-[a-z-]+ *>=.*<=' "$f" || { \
+        echo "an opentelemetry cap survived the lift:" >&2; \
+        grep -n opentelemetry "$f" >&2; exit 1; }; \
+    grep -n opentelemetry "$f"
 
 RUN --mount=type=bind,from=builder,source=/wheels,target=/w/vllm \
     --mount=type=bind,from=lmcachewheels,source=/wheels,target=/w/lmcache \
@@ -278,23 +296,25 @@ RUN --mount=type=bind,from=builder,source=/wheels,target=/w/vllm \
     cat /etc/pip-constraints.txt
 
 # `pip check` still runs, and still fails the build on anything real.
-# The one tolerated line is the ceiling deliberately broken above: the
-# INSTALLED wheel's metadata keeps saying <=1.40.0, because only the
+# The tolerated lines are the ceilings deliberately broken above: the
+# INSTALLED wheel's metadata still carries both, because only the
 # requirements file was patched and the wheel is the published artifact.
-# Matched on both names together so that any other complaint about
-# either distribution — a missing dependency, a second conflict — is
-# still a failure.
+#
+# Matched on lmcache AND an opentelemetry name together, so a complaint
+# about any other distribution — notably vllm, which is what a
+# downgraded otel stack reads as — is still a failure, and so is a
+# missing LMCache dependency.
 RUN set -eu; \
     if pip check > /tmp/pip-check.txt 2>&1; then \
         cat /tmp/pip-check.txt; \
     else \
         cat /tmp/pip-check.txt; \
-        if grep -v -E 'lmcache .*opentelemetry-api' /tmp/pip-check.txt \
-            | grep -qE '[^[:space:]]'; then \
-            echo "pip check reported more than the broken otel ceiling" >&2; \
+        if grep -v -E '^lmcache [^ ]+ has requirement opentelemetry-' \
+            /tmp/pip-check.txt | grep -qE '[^[:space:]]'; then \
+            echo "pip check reported more than the broken otel ceilings" >&2; \
             exit 1; \
         fi; \
-        echo "pip check: only the deliberately broken otel ceiling"; \
+        echo "pip check: only the deliberately broken otel ceilings"; \
     fi; \
     rm /tmp/pip-check.txt
 
