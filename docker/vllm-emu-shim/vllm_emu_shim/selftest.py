@@ -211,6 +211,31 @@ def _check_platform() -> None:
         _check("torch.accelerator.get_memory_info returns (free, total)",
                ok, repr(info))
 
+    # The other half of the same memory probe, and the one that broke
+    # on v0.33.0 -> v0.34.0. vLLM made CacheConfig.gpu_memory_utilization
+    # Optional[float] defaulting to None, resolved through a property;
+    # llm-emu's cuda_mock reads the raw field and float(None) raises
+    # inside _initialize_kv_caches. Measured as a contract on vLLM's own
+    # class, so a vLLM that changes it again fails here rather than at
+    # the first served request.
+    try:
+        from vllm.config import CacheConfig
+
+        field = getattr(CacheConfig, "__dataclass_fields__", {}).get(
+            "gpu_memory_utilization")
+        default = getattr(field, "default", object())
+        # pydantic wraps it: the dataclass default is a FieldInfo whose
+        # own .default carries the None.
+        optional = default is None or getattr(default, "default", object()) is None
+        resolver = hasattr(CacheConfig, "resolved_gpu_memory_utilization")
+        _check("CacheConfig.gpu_memory_utilization is settleable",
+               (not optional) or resolver,
+               "defaults to None and vLLM ships no "
+               "resolved_gpu_memory_utilization to copy")
+    except ImportError as exc:  # noqa: BLE001
+        _check("CacheConfig.gpu_memory_utilization is settleable",
+               False, f"could not import: {exc}")
+
     # The return type the executor destructures across every worker.
     try:
         from vllm.v1.worker.gpu_worker import Worker

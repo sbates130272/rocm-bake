@@ -502,7 +502,63 @@ def _patch_accelerator_memory_info() -> None:
     print("[vllm-emu-shim] torch.accelerator.get_memory_info supplied")
 
 
-def _wrap_check_and_update_config(cls) -> None:
+def _settle_gpu_memory_utilization(vllm_config) -> None:
+    """Give cache_config.gpu_memory_utilization a number, not None.
+
+    v0.34.0 made the field optional and resolved it lazily:
+
+        gpu_memory_utilization: float | None = Field(default=None, ...)
+
+        @property
+        def resolved_gpu_memory_utilization(self) -> float:
+            if self.gpu_memory_utilization is not None:
+                return self.gpu_memory_utilization
+            if self.enable_extensible_kv_cache:
+                return 1.0
+            return self.DEFAULT_GPU_MEMORY_UTILIZATION   # 0.92
+
+    vLLM's own code goes through that property. LLM-Emu's does not:
+    cuda_mock._stub_determine_available_memory reads the raw field,
+
+        util = float(getattr(self.cache_config, "gpu_memory_utilization", 0.9))
+
+    and the getattr default never fires, because at v0.34.0 the
+    attribute exists and holds None. float(None) raises TypeError and
+    takes the engine core down inside _initialize_kv_caches, which is
+    what the emu lane failed with on the v0.33.0 -> v0.34.0 bump.
+
+    Resolving it here rather than patching that stub: the stub is one
+    reader of a field llm-emu reads raw in several places, and the
+    property is vLLM's own answer to what the value should be, so
+    settling the field once leaves every reader — theirs and ours —
+    agreeing with vLLM.
+
+    Inert on a vLLM that does not do this. v0.33.0's field is a plain
+    float and never None, so the second guard returns before anything
+    is written.
+    """
+    cache_config = getattr(vllm_config, "cache_config", None)
+    if cache_config is None:
+        return
+    # Absent entirely is not our problem to fix; present-and-None is.
+    if not hasattr(cache_config, "gpu_memory_utilization"):
+        return
+    if cache_config.gpu_memory_utilization is not None:
+        return
+
+    resolved = getattr(cache_config, "resolved_gpu_memory_utilization", None)
+    if resolved is None:
+        # A vLLM that made the field optional without shipping the
+        # resolver. Nothing to copy, so fall back to its own constant
+        # rather than inventing one.
+        resolved = getattr(cache_config, "DEFAULT_GPU_MEMORY_UTILIZATION", 0.92)
+
+    cache_config.gpu_memory_utilization = float(resolved)
+    print(f"[vllm-emu-shim] cache_config.gpu_memory_utilization None -> "
+          f"{cache_config.gpu_memory_utilization} (llm-emu reads it raw)")
+
+
+def _settle_compilation(vllm_config) -> None:
     """Turn torch.compile off in the way v0.33.0 understands.
 
     EmulatorPlatform's check_and_update_config does:
@@ -527,6 +583,30 @@ def _wrap_check_and_update_config(cls) -> None:
     user-facing knob resolved earlier into this same field, and writing
     the field is both narrower and the thing actually read.
     """
+    cc = getattr(vllm_config, "compilation_config", None)
+    if cc is None or not hasattr(cc, "mode"):
+        return
+    try:
+        from vllm.config import CompilationMode
+    except ImportError:
+        return
+    if cc.mode != CompilationMode.NONE:
+        print(f"[vllm-emu-shim] compilation {cc.mode!r} -> NONE "
+              f"(no model is loaded to compile)")
+        cc.mode = CompilationMode.NONE
+
+
+def _wrap_check_and_update_config(cls) -> None:
+    """Settle what EmulatorPlatform leaves wrong for this vLLM.
+
+    Two independent fixes, both applied after upstream's own method
+    runs so everything else it decides — device, worker_cls — is
+    untouched. Each is documented on the function that does it.
+
+    Kept in one wrapper rather than two: both edit the same config
+    object at the same moment, and wrapping a classmethod twice makes
+    the order they run in depend on the order they were installed.
+    """
     orig = cls.__dict__.get("check_and_update_config")
     if orig is None:
         return
@@ -534,17 +614,8 @@ def _wrap_check_and_update_config(cls) -> None:
 
     def check_and_update_config(_cls, vllm_config) -> None:
         orig_func(_cls, vllm_config)
-        cc = getattr(vllm_config, "compilation_config", None)
-        if cc is None or not hasattr(cc, "mode"):
-            return
-        try:
-            from vllm.config import CompilationMode
-        except ImportError:
-            return
-        if cc.mode != CompilationMode.NONE:
-            print(f"[vllm-emu-shim] compilation {cc.mode!r} -> NONE "
-                  f"(no model is loaded to compile)")
-            cc.mode = CompilationMode.NONE
+        _settle_compilation(vllm_config)
+        _settle_gpu_memory_utilization(vllm_config)
 
     cls.check_and_update_config = classmethod(check_and_update_config)
 
