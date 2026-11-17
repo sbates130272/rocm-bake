@@ -75,9 +75,10 @@ again, or tunnel, if the host is not on a trusted network.
 
 With no GPU to hand, `serving/docker-compose.cpu.yml` is the same
 two-service shape and the same `KV_TIER` switch with every ROCm part
-removed — no devices, no NIXL — serving a small model on the local
-machine's CPU, with its own defaults, not the ones above. See
-[CPU serving](cpu.md).
+removed — no devices, no NIXL — serving a small model on a CPU, with
+its own defaults, not the ones above. `SERVE_DEVICE=cpu` points the
+`serve-*` rules above at that file on `GPU_HOST` instead of this one.
+See [CPU serving](cpu.md#on-the-serving-host).
 
 !!! danger "`HSA_ENABLE_IPC_MODE_LEGACY` decides whether this works at all"
     It governs whether the two containers can share KV memory. When it

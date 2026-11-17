@@ -32,10 +32,12 @@ services:
   lmcache:
     # No `pull_policy: always`, unlike the ROCm file: these images are
     # loaded into the local daemon (make cpu-load, CI), and a stock
-    # runner cannot reach the registry the name points at.
+    # runner cannot reach the registry the name points at. On a host
+    # that is served to, `make serve-stack SERVE_DEVICE=cpu` pulls
+    # first instead.
     image: ${REGISTRY:-snoc-strix.fold-leaffish.ts.net:8080}/rocm-pytorch/lmcache-cpu:${LMCACHE_TAG:-latest}
-    # Owns the namespace; vllm joins it below. Only lmcache_driven
-    # needs it — see TRANSFER_MODE.
+    # Owns the namespace; vllm joins it below. lmcache_driven, the
+    # default, needs it — see TRANSFER_MODE.
     ipc: shareable
     entrypoint: ["/bin/bash", "-c"]
     command:
@@ -62,12 +64,14 @@ services:
       # lmcache_driven dies at startup with "LMCache server rejected
       # RPC 'register_kv_cache_engine_driven_context'".
       #
-      # engine_driven is what LMCache itself picks for a CPU engine.
-      # Blocks go inline over the ZMQ socket. lmcache_driven also works
-      # here and is about ten times quicker per transfer (0.015 s
-      # against 0.19 s for 1280 tokens), but it moves vLLM's whole KV
-      # cache into /dev/shm, so SHM_SIZE must exceed KV_CACHE_GB.
-      TRANSFER_MODE: ${TRANSFER_MODE:-engine_driven}
+      # lmcache_driven, as in the ROCm file, so this lane exercises the
+      # shared-memory IPC path rather than avoiding it. It moves vLLM's
+      # whole KV cache into /dev/shm, so SHM_SIZE must exceed
+      # KV_CACHE_GB. engine_driven is what LMCache itself picks for a
+      # CPU engine: blocks go inline over the ZMQ socket, no shared
+      # memory, about ten times slower per transfer (0.19 s against
+      # 0.015 s for 1280 tokens).
+      TRANSFER_MODE: ${TRANSFER_MODE:-lmcache_driven}
       L1_SIZE_GB: ${L1_SIZE_GB:-1}
       CHUNK_SIZE: ${CHUNK_SIZE:-256}
       LMCACHE_LOG_LEVEL: ${LMCACHE_LOG_LEVEL:-INFO}
@@ -138,7 +142,7 @@ services:
       # connector, and an explicit list must name CPUs the container
       # was actually given.
       VLLM_CPU_OMP_THREADS_BIND: ${OMP_BIND:-nobind}
-      LMCACHE_MP_TRANSFER_MODE: ${TRANSFER_MODE:-engine_driven}
+      LMCACHE_MP_TRANSFER_MODE: ${TRANSFER_MODE:-lmcache_driven}
       LMCACHE_LOG_LEVEL: ${LMCACHE_LOG_LEVEL:-INFO}
       HF_HOME: /root/.cache/huggingface
       # Passed through only when set; the default model needs none.

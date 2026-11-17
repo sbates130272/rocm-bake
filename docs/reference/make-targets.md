@@ -151,6 +151,14 @@ layer cache nor compiler-cache hits.
 | `serve-status` | What is running on `GPU_HOST` |
 | `serve-down` | Stop and remove |
 
+`SERVE_DEVICE=cpu` on any `serve-*` rule drives the
+[CPU stack](../architecture/cpu.md#on-the-serving-host) on `GPU_HOST`
+instead: its own compose file, tags and model, no GPU probe, and
+`cpu-test.sh --attach` as the test. Pass it to every rule, `serve-down`
+included. `serve-stack` then pulls and replaces a running stack, and
+`serve-test` needs that stack started with `VLLM_DEV_MODE=1`. The
+`emu-capture-*` rules refuse it.
+
 See [Serving stack](../architecture/serving.md).
 
 ## Emulated Serving (No GPU)
@@ -177,9 +185,10 @@ See [Emulated serving](../architecture/emulation.md).
 
 ## CPU Serving (No GPU)
 
-vLLM and LMCache built for CPU, serving a small model for real on this
-machine's docker daemon rather than `GPU_HOST`'s. Tokens and no
-timing, where the emulator has timing and no tokens.
+vLLM and LMCache built for CPU, serving a small model for real. Tokens
+and no timing, where the emulator has timing and no tokens. The `cpu-*`
+rules below serve on this machine's docker daemon, for CI and a laptop;
+`serve-* SERVE_DEVICE=cpu` serves the same stack on `GPU_HOST`.
 
 | Target | |
 | --- | --- |

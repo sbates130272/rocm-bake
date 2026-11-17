@@ -83,8 +83,8 @@ on a repeated 1280-token prefix:
 
 | Configuration | Result |
 | --- | --- |
-| `TRANSFER_MODE=engine_driven` (default) | works — stored in 0.191 s, retrieved in 0.050 s |
-| `TRANSFER_MODE=lmcache_driven` | works — 0.021 s and 0.014 s, but moves vLLM's whole KV cache into `/dev/shm`, so `SHM_SIZE` must exceed `KV_CACHE_GB` |
+| `TRANSFER_MODE=lmcache_driven` (default) | works — stored in 0.021 s, retrieved in 0.014 s; moves vLLM's whole KV cache into `/dev/shm`, so `SHM_SIZE` must exceed `KV_CACHE_GB`. The default so the lane exercises the shared-memory IPC path |
+| `TRANSFER_MODE=engine_driven` | works — 0.191 s and 0.050 s, inline over ZMQ, no shared memory |
 | `TRANSFER_MODE=auto` | works; the worker picks `engine_driven` |
 | `LMCACHE_USE_UPSTREAM_MP=1` | dies at startup: `TypeError: LMCacheMPSchedulerAdapter.__init__() got an unexpected keyword argument 'server_url'` |
 | server `lmcache_driven`, worker `auto` | dies at startup: `LMCache server rejected RPC 'register_kv_cache_engine_driven_context' (operation_not_enabled)` |
@@ -114,16 +114,67 @@ LMCache about 1.4 GiB, 67–76 s to healthy on four cores of an AVX-512
 host. `VLLM_EXTRA_ARGS=--enforce-eager` cuts that to 27 s and puts a
 ~5 s kernel compile on the first request.
 
+### On The Serving Host
+
+Those rules use this machine's docker daemon, which is what CI and a
+laptop have. The `serve-*` rules run the same compose file on
+`GPU_HOST` instead, over `DOCKER_HOST=ssh://`, when given
+`SERVE_DEVICE=cpu`:
+
+```bash
+make serve-stack SERVE_DEVICE=cpu VLLM_DEV_MODE=1 \
+     KV_TIER=file KV_STORE=/mnt/kv-nvme/rocm-bake-l2
+make serve-test  SERVE_DEVICE=cpu    # also serve-test-l2, serve-test-baseline
+make serve-logs
+make serve-down  SERVE_DEVICE=cpu
+```
+
+- **Pass it to every rule.** The CPU stack is its own compose project,
+  `rocm-serving-cpu`, so `serve-down` without it stops the ROCm one.
+  `VLLM_PORT=8001` moves it off the ROCm stack's port 8000 (`serve-wait`
+  run on its own needs that too), but take the CPU stack down before
+  running the ROCm `serve-test*`: `serve-test.sh` picks LMCache
+  containers by name, so it would read the CPU stack's log and, for
+  `serve-test-l2`, try to clear the CPU stack's L1.
+- **Nothing is asked of the host's GPU.** No `/dev/kfd` probe, no
+  `rocminfo`: the tags are `${VLLM_REF}-cpu` and `${LMCACHE_REF}-cpu`,
+  and the model is this compose file's default unless `SERVE_MODEL=`
+  says otherwise.
+- **It pulls before it serves, and stops if it cannot.** The compose
+  file has no `pull_policy` because CI loads its images, so a served
+  host would otherwise keep its first image for good. `SERVE_PULL=0`
+  serves images loaded onto the host by hand.
+- **`serve-stack` replaces a running CPU stack**, down then up, once
+  the pull has succeeded. vLLM's KV segment sits in LMCache's
+  `/dev/shm` and outlives a recreated vllm; `up` on a live stack left
+  one behind each time, and the third start died with `Insufficient
+  space in /dev/shm`. Settings are not remembered: repeat `KV_TIER`,
+  `KV_STORE` and the rest on every `serve-stack`.
+- **`serve-test` is `cpu-test.sh --attach`**, not `serve-test.sh`. It
+  runs the checks below against the stack already up, reading the
+  containers through docker on the host, and starts and stops nothing.
+  A host or a project it cannot find is a failure, not a skip.
+- **The cache check needs `VLLM_DEV_MODE=1`** on the stack, passed to
+  `serve-stack`, not to `serve-test`, and fails saying so without it.
+  `serve-test-baseline`, for a stack from `serve-vllm`, skips the cache
+  checks; `serve-test-l2` needs `KV_TIER=file` and empties LMCache's
+  L1. `KV_TIER` on a `serve-test*` line is ignored: the tier is read
+  from the stack.
+- `emu-capture-*` refuse: a capture records a card.
+
+### What The Test Checks
+
 [`.builders/cpu-test.sh`][test] starts the stack, tests it and removes
-it (`--keep`, `--l2`, `--endpoint URL`). `/health` and a non-empty
-completion only prove the HTTP stack is up, so the checks that matter
-are the later ones:
+it (`--keep`, `--l2`, `--baseline`, `--attach PROJECT`,
+`--endpoint URL`). `/health` and a non-empty completion only prove the
+HTTP stack is up, so the checks that matter are the later ones:
 
 | Check | What it proves |
 | --- | --- |
 | `cpu` | prints this host's ISA flags first, so a SIGILL is attributable |
 | `health`, `models`, `completion` | the server is up and serving the model asked for |
 | `inference` | a temperature-0 question is answered correctly, and the log shows weights were loaded |
+| `same-server` | with `--attach`: the container found through docker is the one that answered — its access log carries this run's tag. Otherwise `--endpoint` at another stack of the same model passes |
 | `isa` | which `vllm/_C*.abi3.so` the engine actually mapped |
 | `no-device` | no CUDA or HIP in torch, no `/dev/kfd`, no `/dev/dri` |
 | `cache` | a repeated prefix is served from LMCache with vLLM's own prefix cache emptied; the answer and every logprob match; LMCache logged the store and the retrieve |
@@ -133,7 +184,8 @@ The `cache` check compares the LMCache answer against the one from
 vLLM's own prefix cache, not against the first, computed one. Computed
 and cached answers differed on 8 of 130 prompts on 32 threads with
 nothing wrong; own-cache against LMCache was bit-identical 100 of 100.
-With `KV_OFFLOAD=0` the check fails, as it should.
+With `KV_OFFLOAD=0` the check fails, as it should; `--baseline` says
+that was the intent and skips it.
 
 ## Installing From The `cpu` Index
 
@@ -196,6 +248,10 @@ never sit beside `vllm 0.33.0+rocm101`.
   both images and runs `cpu-test.sh` on a stock runner, and has never
   executed. `CPUSET=0-3` on a fast AVX-512 machine stood in for one;
   build and startup time there are unmeasured.
+- **`SERVE_DEVICE=cpu` has not run over a real ssh.** Its recipes and
+  `cpu-test.sh --attach` ran end to end against a local daemon, with
+  `DOCKER_HOST=ssh://localhost` answered by a stand-in for `ssh` that
+  runs the command locally. No serving host has been driven this way.
 - **The model is tiny.** 135M parameters and one checkable question.
   That proves weights load and tokens are real, not that a model you
   care about fits or is usable on CPU.
