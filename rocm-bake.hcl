@@ -327,7 +327,7 @@ variable "RUN_ID" {
 }
 
 variable "AITER_REF" {
-  default = "v0.1.29"
+  default = "v0.1.29.post1"
 }
 
 # torchvision, built from source because PyPI publishes it only as a
@@ -348,25 +348,26 @@ variable "TORCHVISION_REF" {
 # this pipeline is artifacts built against its own torch and its own
 # AITER. See docker/Dockerfile.atom for what it is and is not.
 #
-# v0.1.9 is the newest tag. Note that ATOM declares no `aiter`
+# v0.1.10 is the newest tag. Note that ATOM declares no `aiter`
 # dependency or version range at all, so nothing checks our
-# AITER_REF = v0.1.29 against what this tag expects — ATOM dispatches
-# into AITER per-op across 701 call sites, so a mismatch surfaces deep
-# in one model's path rather than at import. Unassessed, deliberately:
-# the import check in Dockerfile.atom is the first thing that would
-# catch a gross one.
+# AITER_REF = v0.1.29.post1 against what this tag expects — ATOM
+# dispatches into AITER per-op across 701 call sites, so a mismatch
+# surfaces deep in one model's path rather than at import. Unassessed,
+# deliberately: the import check in Dockerfile.atom is the first thing
+# that would catch a gross one.
 variable "ATOM_REF" {
-  default = "v0.1.9"
+  default = "v0.1.10"
 }
 
 # Which ATOM to build. Upstream by default; set it to a fork to build a
 # branch of ATOM without editing Dockerfile.atom.
 #
-# The reason a fork exists at all: ATOM v0.1.9's vLLM plugin declares
-# VLLM_COMMIT=db9527a4 / VLLM_VERSION=0.31.0 in
-# atom/plugin/vllm/vllm-version.env, and this repo pins VLLM_REF=v0.33.0
-# — two minor releases ahead. Three symbols moved and one of them also
-# changed arity; worse, all seven functions ATOM monkeypatches onto
+# The reason a fork exists at all: ATOM v0.1.10's vLLM plugin still
+# declares VLLM_COMMIT=db9527a4 / VLLM_VERSION=0.31.0 in
+# atom/plugin/vllm/vllm-version.env — unchanged from v0.1.9 — and this
+# repo pins VLLM_REF=v0.34.0, three minor releases ahead. As of 0.33,
+# three symbols moved and one of them also changed arity; worse, all
+# seven functions ATOM monkeypatches onto
 # vllm.v1.core.kv_cache_utils moved to kv_cache_planning while that
 # module itself kept existing, so the installers imported fine and
 # patched nothing. See docs/architecture/atom-vllm-skew.md.
@@ -454,7 +455,7 @@ variable "UCX_REF" {
 }
 
 variable "VLLM_REF" {
-  default = "v0.33.0"
+  default = "v0.34.0"
 }
 
 # ─── LLM-Emu — the arch-free lane ────────────────────────────────
@@ -518,11 +519,11 @@ variable "CUPY_REF" {
 }
 
 variable "LMCACHE_REF" {
-  default = "v0.5.7"
+  default = "v0.5.7.post1"
 }
 
 # vLLM builds vllm/vllm-rs during setup.py; this tracks the channel in
-# its rust-toolchain.toml, which v0.33 still pins to 1.95.
+# its rust-toolchain.toml, which v0.34 still pins to 1.95.
 variable "RUST_VERSION" {
   default = "1.95"
 }

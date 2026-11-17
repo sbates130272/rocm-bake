@@ -49,7 +49,7 @@ ARG PYTHON_VERSION=3.14
 FROM ${MANYLINUX_IMAGE} AS builder
 
 ARG PYTHON_VERSION
-ARG VLLM_REF=v0.33.0
+ARG VLLM_REF=v0.34.0
 ARG RUST_VERSION=1.95
 # The repo's own torch version, from the CPU index rather than ROCm's.
 # setup.py imports torch on line 17 whatever the target device, so the

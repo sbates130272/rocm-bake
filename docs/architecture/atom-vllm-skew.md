@@ -6,7 +6,7 @@ noticed when they moved apart.
 
 ## The problem, stated precisely
 
-`ATOM_REF = v0.1.9` declares its target vLLM in
+`ATOM_REF = v0.1.10` declares its target vLLM in
 `atom/plugin/vllm/vllm-version.env`:
 
 ```
@@ -14,7 +14,13 @@ VLLM_COMMIT=db9527a46873454610df6dbedf79a36d6bf1a7f6
 VLLM_VERSION=0.31.0
 ```
 
-`VLLM_REF = v0.33.0`. Two minor releases apart.
+`VLLM_REF = v0.34.0`. Three minor releases apart. (v0.1.10 left that file
+byte-identical to v0.1.9's, so the skew only widened.)
+
+Everything measured below was measured against vLLM **v0.33.0**, when this
+repo pinned it. The pin has since moved to v0.34.0 and those symbol-level
+findings have not been re-measured against it; the gate in
+`docker/Dockerfile.atom-vllm` is what re-runs on every build.
 
 Nothing catches that. There is no reference to `vllm.__version__` anywhere
 under ATOM's `atom/`, and ATOM's `pyproject.toml` declares no `vllm` dependency

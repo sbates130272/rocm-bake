@@ -24,7 +24,7 @@ FROM ${LMCACHE_WHEEL_IMAGE} AS lmcachewheels
 FROM ${MANYLINUX_IMAGE} AS builder
 
 ARG PYTHON_VERSION
-ARG VLLM_REF=v0.33.0
+ARG VLLM_REF=v0.34.0
 ARG PYTORCH_VERSION
 ARG MAX_JOBS=
 # The largest single cc1plus measured was 2.7GB (csrc/cpu/cpu_attn.cpp,

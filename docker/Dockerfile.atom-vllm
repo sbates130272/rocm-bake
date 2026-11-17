@@ -12,8 +12,8 @@
 # so merely installing the wheel arms the plugin. That is the whole reason
 # this file carries a gate rather than just a `pip install`.
 #
-# WHY THE SKEW MATTERS. ATOM v0.1.9's plugin declares VLLM_VERSION=0.31.0;
-# this repo pins VLLM_REF=v0.33.0. The plugin reaches into ~150 distinct
+# WHY THE SKEW MATTERS. ATOM v0.1.10's plugin declares VLLM_VERSION=0.31.0;
+# this repo pins VLLM_REF=v0.34.0. The plugin reaches into ~150 distinct
 # private vLLM symbols and monkeypatches 48 call sites, and nothing upstream
 # checks the version — there is no reference to `vllm.__version__` anywhere
 # under `atom/`, and `pyproject.toml` declares no `vllm` dependency, so pip
@@ -50,8 +50,8 @@ FROM ${ATOM_WHEEL_IMAGE} AS atomwheels
 
 FROM ${VLLM_IMAGE} AS final
 
-ARG VLLM_REF=v0.33.0
-ARG ATOM_REF=v0.1.9
+ARG VLLM_REF=v0.34.0
+ARG ATOM_REF=v0.1.10
 ARG ATOM_REPO=https://github.com/ROCm/ATOM.git
 ARG PYTORCH_ROCM_ARCH
 ARG ROCM_VERSION

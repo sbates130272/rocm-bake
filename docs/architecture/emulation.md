@@ -153,9 +153,9 @@ step, rows are attributed to the wrong requests.
 ## How The Wiring Works
 
 LLM-Emu ships its vLLM integration as a unified diff against vLLM
-**0.18.1**; this repo pins **v0.33.0**. Measured against our tag, five
-of seven hunks in `vllm/v1/engine/core.py` and one of four in
-`vllm/v1/executor/uniproc_executor.py` fail to apply, and the
+**0.18.1**; this repo pins **v0.34.0**. Measured against **v0.33.0**, the
+pin at the time, five of seven hunks in `vllm/v1/engine/core.py` and one
+of four in `vllm/v1/executor/uniproc_executor.py` fail to apply, and the
 `scheduler.py` hunk turns out to add an unused import and two blank
 lines. Upstream says as much: regenerating the patch is expected on
 every vLLM bump.
