@@ -1,0 +1,170 @@
+# vLLM + LMCache (multi-process) on CPU: real weights, no GPU.
+#
+# The two-service shape of docker-compose.yml with every ROCm part
+# removed: no devices, no render group, no seccomp override, no HIP IPC
+# mode, no preflight. Standalone rather than an override of that file,
+# because an override cannot take those keys away. The images are the
+# `cpu` bake group (docker/Dockerfile.vllm-cpu, Dockerfile.lmcache-cpu).
+#
+# Sized for a 4 vCPU / 16 GB hosted runner and a 135M-parameter model.
+# Every memory figure is explicit, because unset, vLLM sizes the KV
+# cache from 92% of RAM. Measured with the defaults below:
+# vllm 3.8 GiB, lmcache 1.4 GiB, about 70 s to healthy on four cores.
+#
+# Usage:
+#   make cpu-load && make cpu-serve        (or: make cpu-test)
+#   KV_TIER=file docker compose -f serving/docker-compose.cpu.yml up -d --wait
+#
+# To look like a hosted runner on a larger machine:
+#   CPUSET=0-3 VLLM_MEM_LIMIT=12g LMCACHE_MEM_LIMIT=4g
+
+name: rocm-serving-cpu
+
+networks:
+  serving:
+    driver: bridge
+
+volumes:
+  hf-cache:
+  kv-store:
+
+services:
+  lmcache:
+    # No `pull_policy: always`, unlike the ROCm file: these images are
+    # loaded into the local daemon (make cpu-load, CI), and a stock
+    # runner cannot reach the registry the name points at.
+    image: ${REGISTRY:-snoc-strix.fold-leaffish.ts.net:8080}/rocm-pytorch/lmcache-cpu:${LMCACHE_TAG:-latest}
+    # Owns the namespace; vllm joins it below. Only lmcache_driven
+    # needs it — see TRANSFER_MODE.
+    ipc: shareable
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        if [ "$${KV_TIER}" = "file" ]; then
+          L2_ARGS='--l2-store-policy=default --l2-adapter={"type":"fs","base_path":"/kv-store"}'
+        else
+          L2_ARGS=''
+        fi
+        echo "lmcache: tier=$${KV_TIER} l1=$${L1_SIZE_GB}GB mode=$${TRANSFER_MODE} $${L2_ARGS}"
+        exec lmcache server \
+          --host 0.0.0.0 --port 5555 \
+          --l1-size-gb "$${L1_SIZE_GB}" \
+          --chunk-size "$${CHUNK_SIZE}" \
+          --transport zmq \
+          --supported-transfer-mode "$${TRANSFER_MODE}" \
+          --eviction-policy LRU \
+          $${L2_ARGS}
+    environment:
+      KV_TIER: ${KV_TIER:-cpu}
+      # Must match the vllm service, which is why one variable sets
+      # both: a CPU worker left on `auto` against a server started with
+      # lmcache_driven dies at startup with "LMCache server rejected
+      # RPC 'register_kv_cache_engine_driven_context'".
+      #
+      # engine_driven is what LMCache itself picks for a CPU engine.
+      # Blocks go inline over the ZMQ socket. lmcache_driven also works
+      # here and is about ten times quicker per transfer (0.015 s
+      # against 0.19 s for 1280 tokens), but it moves vLLM's whole KV
+      # cache into /dev/shm, so SHM_SIZE must exceed KV_CACHE_GB.
+      TRANSFER_MODE: ${TRANSFER_MODE:-engine_driven}
+      L1_SIZE_GB: ${L1_SIZE_GB:-1}
+      CHUNK_SIZE: ${CHUNK_SIZE:-256}
+      LMCACHE_LOG_LEVEL: ${LMCACHE_LOG_LEVEL:-INFO}
+    # python, because the image has no curl. The HTTP API is on
+    # 127.0.0.1:8080 inside the container and is not published.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request as u; u.urlopen('http://127.0.0.1:8080/healthcheck', timeout=3)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+      start_interval: 2s
+    volumes:
+      - ${KV_STORE:-kv-store}:/kv-store
+    networks:
+      - serving
+    # Shared with vllm through the IPC namespace, so set once, here.
+    shm_size: ${SHM_SIZE:-2g}
+    cpuset: ${CPUSET:-}
+    mem_limit: ${LMCACHE_MEM_LIMIT:-0}
+
+  vllm:
+    image: ${REGISTRY:-snoc-strix.fold-leaffish.ts.net:8080}/rocm-pytorch/vllm-cpu:${VLLM_TAG:-latest}
+    ipc: "service:lmcache"
+    depends_on:
+      lmcache:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    # The bare connector name is enough: with lmcache installed, vLLM
+    # resolves it to LMCache's own class and logs "Using external
+    # LMCacheMPConnector". Do not set LMCACHE_USE_UPSTREAM_MP — the
+    # class bundled in vLLM v0.33.0 fails against LMCache v0.5.7 with
+    # "unexpected keyword argument 'server_url'".
+    #
+    # --generation-config vllm ignores the model repo's sampling
+    # defaults, so temperature 0 is plain greedy for any model.
+    command:
+      - |
+        set -e
+        if [ "$${KV_OFFLOAD}" = "1" ]; then
+          KV_ARGS='--kv-transfer-config {"kv_connector":"LMCacheMPConnector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://lmcache","lmcache.mp.port":5555}}'
+        else
+          KV_ARGS=''
+        fi
+        echo "vllm: model=$${MODEL} kv_offload=$${KV_OFFLOAD} mode=$${LMCACHE_MP_TRANSFER_MODE}"
+        exec vllm serve "$${MODEL}" \
+          --host 0.0.0.0 --port 8000 \
+          --max-model-len "$${MAX_MODEL_LEN}" \
+          --generation-config vllm \
+          $${KV_ARGS} $${EXTRA_ARGS}
+    environment:
+      # 0 serves without the connector, as a baseline.
+      KV_OFFLOAD: ${KV_OFFLOAD:-1}
+      MODEL: ${MODEL:-HuggingFaceTB/SmolLM2-135M-Instruct}
+      MAX_MODEL_LEN: ${MAX_MODEL_LEN:-4096}
+      # Renamed on the way in: vLLM warns about any VLLM_* variable it
+      # does not know. --enforce-eager here cuts startup from about 70 s
+      # to 25 s and moves a 5 s kernel compile onto the first request.
+      EXTRA_ARGS: ${VLLM_EXTRA_ARGS:-}
+      # GiB, integer. 1 GiB holds 46,592 tokens of this model.
+      VLLM_CPU_KVCACHE_SPACE: ${KV_CACHE_GB:-1}
+      # nobind, because the alternatives depend on the host: `auto`
+      # counts physical cores and reserves two of them for a KV
+      # connector, and an explicit list must name CPUs the container
+      # was actually given.
+      VLLM_CPU_OMP_THREADS_BIND: ${OMP_BIND:-nobind}
+      LMCACHE_MP_TRANSFER_MODE: ${TRANSFER_MODE:-engine_driven}
+      LMCACHE_LOG_LEVEL: ${LMCACHE_LOG_LEVEL:-INFO}
+      HF_HOME: /root/.cache/huggingface
+      # Passed through only when set; the default model needs none.
+      HF_TOKEN:
+      # Exposes /reset_prefix_cache, which cpu-test.sh uses to tell
+      # LMCache's cache apart from vLLM's own. Off unless asked for.
+      VLLM_SERVER_DEV_MODE: ${VLLM_DEV_MODE:-0}
+    # The start period covers a cold model download; a container that
+    # exits fails `up --wait` at once regardless.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/health', timeout=3)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: ${START_PERIOD:-600s}
+      start_interval: 5s
+    volumes:
+      - ${HF_CACHE:-hf-cache}:/root/.cache/huggingface
+    # Loopback unless VLLM_BIND says otherwise, as in the ROCm file.
+    ports:
+      - "${VLLM_BIND:-127.0.0.1}:${VLLM_PORT:-8000}:8000"
+    networks:
+      - serving
+    cpuset: ${CPUSET:-}
+    mem_limit: ${VLLM_MEM_LIMIT:-0}

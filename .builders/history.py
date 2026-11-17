@@ -175,6 +175,8 @@ OUR_IMAGES = {
     # others stamp a gfx name — the same thing triton-wheel does, and
     # arch_of() already handles it.
     "vllm-emu", "vllm-emu-wheel", "vllm-emu-capture",
+    # The CPU lane, "noarch" like emu.
+    "lmcache-cpu", "lmcache-cpu-wheel", "vllm-cpu", "vllm-cpu-wheel",
 }
 
 

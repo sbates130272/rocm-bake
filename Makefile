@@ -296,6 +296,11 @@ BAKE_PRINT = docker buildx bake -f rocm-bake.hcl
         wheel-index-only \
         build-vllm-emu-capture push-vllm-emu-capture \
         emu-capture-serve emu-capture-status emu-capture-down \
+        build-lmcache-cpu push-lmcache-cpu \
+        build-lmcache-cpu-wheel push-lmcache-cpu-wheel \
+        build-vllm-cpu push-vllm-cpu build-vllm-cpu-wheel push-vllm-cpu-wheel \
+        push-cpu cpu-wheels cpu-load cpu-serve cpu-down cpu-logs cpu-test \
+        cpu-index cpu-index-check cpu-publish cpu-publish-dry \
         cache-summary cache-check cache-logs builder-load \
         perf-plan perf-cold perf-warm perf-report perf-runs perf-serve \
         perf-serve-stop perf-serve-status perf-publish \
@@ -386,7 +391,8 @@ CACHE_REPOS ?= rocm-runtime-cache base-cache pytorch-cache \
                vllm-cache lmcache-cache triton-wheel-cache \
                aiter-wheel-cache cupy-wheel-cache nixl-wheel-cache \
                torchvision-wheel-cache atom-wheel-cache atom-vllm-cache \
-               vllm-emu-cache vllm-emu-capture-cache
+               vllm-emu-cache vllm-emu-capture-cache \
+               vllm-cpu-cache lmcache-cpu-cache
 
 # IMAGE_ARCH, not PYTORCH_ROCM_ARCH directly, so one table can be asked
 # for while a build for another architecture is in flight. Scoping to
@@ -1633,8 +1639,9 @@ fetch-vllm-wheel: ## Fetch the vLLM wheel from Zot into ./dist
 
 # ─── The arch-free emulator lane ─────────────────────────────────
 # One wheel for every card, built from a manylinux base with no ROCm
-# in sight, and the only serving artifact here that can be exercised
-# end to end on this fleet — because it needs no GPU at all. See
+# in sight, and one of the two serving artifacts here (the CPU lane
+# below is the other) that can be exercised end to end on this fleet —
+# because it needs no GPU at all. See
 # docker/Dockerfile.vllm-emu and docs/architecture/emulation.md.
 #
 # No PYTORCH_ROCM_ARCH in any of these. The bake macro still passes it
@@ -1867,6 +1874,170 @@ emu-test: ## Serve a model through the emulator and check it (no GPU needed)
 # and nowhere else; --load is what moves it across.
 emu-load: builder-ensure ## Build the emulator image into the local docker daemon
 	$(call bake,vllm-emu,--load)
+
+# ─── The CPU lane ────────────────────────────────────────────────
+# Real inference with no GPU: vLLM built for VLLM_TARGET_DEVICE=cpu and
+# LMCache built with NO_GPU_EXT=1, both on the CPU torch. The emu lane's
+# complement — that one has timing and no tokens, this one has tokens
+# and no timing. See docker/Dockerfile.vllm-cpu.
+#
+# Arch-free like emu, so the same two rules hold: not in push-all, and
+# no `pub` on any rule here. vllm-cpu takes the LMCache wheel through a
+# `target:` context, so one invocation builds both.
+CPU_DIR ?= dist/cpu
+
+build-lmcache-cpu: builder-ensure ## Build the CPU LMCache image (no push)
+	$(call bake,lmcache-cpu)
+
+push-lmcache-cpu: builder-ensure ## * Build and push the CPU LMCache image
+	$(call bake,lmcache-cpu,--push)
+
+build-lmcache-cpu-wheel: builder-ensure ## Build the CPU LMCache wheel (no push)
+	$(call bake,lmcache-cpu-wheel)
+
+push-lmcache-cpu-wheel: builder-ensure ## * Build and push the CPU LMCache wheel image
+	$(call bake,lmcache-cpu-wheel,--push)
+
+build-vllm-cpu: builder-ensure ## Build the CPU vLLM image (no push)
+	$(call bake,vllm-cpu)
+
+push-vllm-cpu: builder-ensure ## * Build and push the CPU vLLM image
+	$(call bake,vllm-cpu,--push)
+
+build-vllm-cpu-wheel: builder-ensure ## Build the CPU vLLM wheel (no push)
+	$(call bake,vllm-cpu-wheel)
+
+push-vllm-cpu-wheel: builder-ensure ## * Build and push the CPU vLLM wheel image
+	$(call bake,vllm-cpu-wheel,--push)
+
+# The one that leaves the registry ready for cpu-index. push-vllm-cpu
+# and push-vllm-cpu-wheel build the LMCache wheel as a context and do
+# not push it.
+push-cpu: builder-ensure ## * Build and push the whole CPU lane (bake group `cpu`)
+	$(call bake,cpu,--push)
+
+# In a variable for the comma reason given at EMU_LOCAL_OUT. Both
+# targets are named, and have to be: bake builds a target it reaches
+# only as a context with output=cacheonly and ignores a --set on it, so
+# naming vllm-cpu-wheel alone leaves the LMCache wheel in the builder.
+CPU_LOCAL_OUT = --set vllm-cpu-wheel.output=type=local,dest=$(CPU_DIR) \
+                --set lmcache-cpu-wheel.output=type=local,dest=$(CPU_DIR)
+
+cpu-wheels: builder-ensure ## Build the CPU vLLM and LMCache wheels into ./dist/cpu
+	@rm -rf $(CPU_DIR) && mkdir -p $(CPU_DIR)
+	$(call bake,vllm-cpu-wheel lmcache-cpu-wheel,$(CPU_LOCAL_OUT))
+	@ls -la $(CPU_DIR)/wheels/
+
+# The two images only: the group would also --load the wheel images,
+# which are `FROM scratch` and of no use to a daemon.
+cpu-load: builder-ensure ## Build both CPU images into the local docker daemon
+	$(call bake,vllm-cpu lmcache-cpu,--load)
+
+# On THIS machine's docker daemon, not GPU_HOST's: the point of the
+# lane is that it needs no particular host. The compose file owns the
+# runtime defaults, the model included, so CPU_SERVE_MODEL is passed
+# only when set — SERVE_MODEL is the GPU stack's and far too large.
+CPU_COMPOSE_ENV = REGISTRY=$(REGISTRY) $(if $(CPU_SERVE_MODEL),MODEL='$(CPU_SERVE_MODEL)')
+CPU_COMPOSE     = $(CPU_COMPOSE_ENV) docker compose -f serving/docker-compose.cpu.yml
+# Extra flags for cpu-logs, e.g. CPU_LOG_ARGS='-f vllm'
+CPU_LOG_ARGS  ?=
+# Extra flags for cpu-test, e.g. CPU_TEST_ARGS='--keep'
+CPU_TEST_ARGS ?=
+
+# --wait is only as strong as the compose file's healthchecks; cpu-test
+# is what proves the stack serves.
+cpu-serve: ## Serve vLLM + LMCache on this machine's CPU (KV_TIER=cpu|file)
+	@$(CPU_COMPOSE) down --remove-orphans 2>/dev/null || true
+	@$(CPU_COMPOSE) up -d --wait
+	@$(CPU_COMPOSE) ps
+
+cpu-down: ## Stop the local CPU serving stack and remove its containers
+	@$(CPU_COMPOSE) down --remove-orphans
+
+cpu-logs: ## Show the local CPU stack's logs (CPU_LOG_ARGS='-f vllm')
+	@$(CPU_COMPOSE) logs --tail 200 $(CPU_LOG_ARGS)
+
+cpu-test: ## Serve a real model on CPU and check inference and the KV cache
+	@$(CPU_COMPOSE_ENV) .builders/cpu-test.sh $(CPU_TEST_ARGS)
+
+# ─── Publishing the cpu wheels ───────────────────────────────────
+# One index, named `cpu`, through the per-arch machinery — the same
+# reuse, and the same reason for a name of its own, as the emu
+# indexes: `vllm 0.33.0+cpu` must never sit beside `+rocm101`.
+# Both wheel stages write `cpu` to wheels-arch.txt themselves, so
+# unlike emu-index there is nothing to narrow afterwards.
+CPU_REPOS ?= vllm-cpu-wheel lmcache-cpu-wheel
+
+# wheel-index skips a repo it cannot fetch and indexes the rest, which
+# here would publish a vLLM with no LMCache. Hence the two globs.
+cpu-index: ## Fetch the CPU wheels from Zot and build their pip index
+	@$(MAKE) --no-print-directory wheel-index ARCHES=cpu WHEEL_REPOS="$(CPU_REPOS)"
+	@ls $(WHEELS_DIR)/cpu/vllm-*.whl $(WHEELS_DIR)/cpu/lmcache-*.whl >/dev/null || \
+		{ echo "cpu-index: a wheel is missing — run make push-cpu"; exit 1; }
+	@printf '\ncpu: that install line also needs --extra-index-url %s\n' "$(CPU_TORCH_INDEX)"
+	@printf '     (make cpu-index-check runs the full one)\n'
+
+# Its own recipe, like emu-index-check, and for a related reason: the
+# index carries no torch. Here the vLLM wheel does name one — it pins
+# torch==X+cpu and asks for torchvision, torchaudio and torchcodec —
+# and none of those +cpu builds exist on PyPI. So the CPU index is
+# given twice: to preinstall torch, and as an extra index for the rest.
+#
+# The nvidia-* test is the one that matters. A resolve that reached
+# PyPI's torch would still import and still report no CUDA on a host
+# with no card. The platform is asserted here because nothing sets
+# VLLM_TARGET_DEVICE in a venv: only the wheel's `+cpu` selects it.
+CPU_TORCH_INDEX ?= https://download.pytorch.org/whl/cpu
+
+cpu-index-check: ## Install the cpu index into a throwaway venv and import it
+	@set -e; \
+	port=8099; \
+	[ -d "$(INDEX_DIR)/cpu" ] || \
+		{ echo "no index for cpu — run make cpu-index"; exit 1; }; \
+	python3 -m http.server $$port --directory dist >/dev/null 2>&1 & \
+	srv=$$!; v=$$(mktemp -d); \
+	trap 'kill '"$$srv"' 2>/dev/null || true; rm -rf '"$$v" EXIT; sleep 2; \
+	python3 -m venv "$$v" >/dev/null; \
+	echo "== cpu"; \
+	"$$v/bin/pip" install -q --no-cache-dir \
+		--index-url "$(CPU_TORCH_INDEX)" "torch==$(PYTORCH_VERSION)"; \
+	no_proxy=127.0.0.1,localhost NO_PROXY=127.0.0.1,localhost \
+	"$$v/bin/pip" install -q --no-cache-dir \
+		--index-url "http://127.0.0.1:$$port/index/cpu/" \
+		--extra-index-url https://pypi.org/simple \
+		--extra-index-url "$(CPU_TORCH_INDEX)" \
+		"rocm-torch[device-cpu]"; \
+	"$$v/bin/pip" list 2>/dev/null \
+		| grep -iE '^(vllm|lmcache|rocm-torch|torch|torchvision|torchaudio|torchcodec|triton) ' \
+		| sed 's/^/     /'; \
+	"$$v/bin/python" -c "import torch, vllm, lmcache; \
+from importlib.metadata import version; \
+from vllm.platforms import current_platform as p; \
+assert torch.version.cuda is None and not torch.cuda.is_available(), 'CUDA torch'; \
+assert p.is_cpu(), type(p).__name__; \
+print('     torch', torch.__version__, '/ vLLM', vllm.__version__, '/ LMCache', version('lmcache'))"; \
+	if "$$v/bin/pip" list --format=freeze 2>/dev/null | grep -iE '^nvidia'; then \
+		echo "cpu-index-check: nvidia-* distributions in a CPU install"; exit 1; \
+	fi; \
+	echo "     no CUDA, no nvidia-* distribution"
+
+# Own title and notes, for the reason given at emu_publish: the
+# generated ones describe a per-card ROCm release, and their one-line
+# install cannot resolve this index's torch pin. Both directories are
+# passed, so the assets are the wheels the notes were read from.
+cpu_publish = notes=$$(mktemp); trap 'rm -f "$$notes"' EXIT; \
+	.builders/cpu-release-notes.sh "$(WHEELS_DIR)/cpu" > "$$notes"; \
+	.builders/wheelpublish.sh --arch cpu \
+		--wheels "$(WHEELS_DIR)/cpu" --index "$(INDEX_DIR)/cpu" \
+		--rocm "$(ROCM_VERSION)" \
+		--title "vLLM + LMCache CPU wheels (no GPU required)" \
+		--notes-file "$$notes"
+
+cpu-publish-dry: ## Show what publishing the cpu index would do
+	@set -e; $(cpu_publish) --dry-run $(WHEELS_PUBLISH_ARGS)
+
+cpu-publish: ## * Publish the cpu index to its own release and gh-pages
+	@set -e; $(cpu_publish) $(WHEELS_PUBLISH_ARGS)
 
 build-lmcache: builder-ensure ## Build the LMCache MP image (single builder)
 	$(call bake,lmcache)
@@ -2387,7 +2558,7 @@ list-vars: ## Show the variables these targets read, and their values
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' SDE_EPOCH \
 		"$(call bake_default,SDE_EPOCH)  ($(shell date -u -d @$(call bake_default,SDE_EPOCH) '+%Y-%m-%d %H:%M' 2>/dev/null))  (bake)"
 	@printf '  %s\n' 'pinned into every image config; SDE_<IMAGE> overrides one'
-	@for v in $(foreach i,ROCM BASE PYTORCH TRITON AITER RUNTIME NIXL VLLM LMCACHE CUPY TORCHVISION,$(if $(SDE_$(i)),SDE_$(i)=$(SDE_$(i)))); do \
+	@for v in $(foreach i,ROCM BASE PYTORCH TRITON AITER RUNTIME NIXL VLLM LMCACHE CUPY TORCHVISION VLLM_CPU LMCACHE_CPU,$(if $(SDE_$(i)),SDE_$(i)=$(SDE_$(i)))); do \
 		printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' "$${v%%=*}" "$${v#*=}  (overridden)"; \
 	done
 	@printf '\n$(C_BOLD)Serving$(C_OFF)  (make serve-vllm / serve-stack / serve-test)\n'

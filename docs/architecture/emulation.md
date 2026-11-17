@@ -1,6 +1,6 @@
 # Emulated Serving: One vLLM Wheel, No GPU
 
-Every other vLLM artifact here is welded to one card. The HIP
+Every ROCm vLLM artifact here is welded to one card. The HIP
 extensions carry code objects for a single architecture, so `gfx950`
 and `gfx1201` need separate wheels, separate indexes and separate
 releases — and a machine with no supported AMD GPU can install none of
@@ -53,13 +53,14 @@ The result serves. It schedules, batches, admits, streams, and answers
 
 ## Why This Repo Wants It
 
-Three things it buys that nothing else here can:
+Three things it buys:
 
 **A serving lane that can actually be exercised.** No node on the
 fleet currently has a usable GPU. `vllm`'s verification stops at "it
 imports"; `atom-vllm` ships with its plugin disabled and says so. This
-is the only serving artifact in the repo that is tested end to end
-before it is published — and the test runs in CI, on a free runner.
+and the [CPU lane](cpu.md) are the only serving artifacts in the repo
+that are tested end to end — and this one's test runs in CI, on a free
+runner, before anything is published.
 See [`.github/workflows/emu.yml`][ci].
 
 **An installable vLLM for machines without AMD hardware.** Laptops,
@@ -92,6 +93,8 @@ Worth being blunt, because the output looks like a benchmark:
   regress. A faster kernel changes nothing a run reports.
 - **No accuracy signal.** The emulator emits a fixed filler token. The
   text coming back is not model output and is not meant to be read.
+  [CPU serving](cpu.md) is the complement: real weights and real
+  tokens on the same GPU-free footing, and no latency claim at all.
 - **Fidelity is the pack's, not ours.** Upstream reports TPOT and ITL
   within ~1% of real runs and TTFT within ~10% at low request rates —
   for the model and hardware a pack was captured on. Serving a model

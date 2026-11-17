@@ -12,10 +12,14 @@ else exists to make that build fast, repeatable and measurable.
 PyTorch from source against ROCm, with Triton, AITER, CuPy, NIXL, vLLM
 and LMCache on top, for `gfx950` (default), `gfx1201` and `gfx1250`.
 
-And one artifact that is tied to no architecture: a vLLM built with no
-device backend, which serves from a captured latency profile rather
-than a GPU. It is the only serving lane here that is tested end to end
-before it ships — see [emulated serving](architecture/emulation.md).
+And two lanes that are tied to no architecture and need no GPU. One is
+a vLLM built with no device backend, which serves from a captured
+latency profile rather than a card — see
+[emulated serving](architecture/emulation.md). The other is vLLM and
+LMCache built for CPU, which loads a small model and serves real
+tokens — see [CPU serving](architecture/cpu.md). They are the only
+serving lanes here that are tested end to end: the first has timing
+and no tokens, the second tokens and no timing.
 
 Every pinned version is on the
 [bake variables](reference/bake-variables.md) page, generated from
