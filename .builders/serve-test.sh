@@ -281,9 +281,18 @@ if [ -z "$LOGS" ]; then
 else
     # Matched against what this LMCache version actually prints, not a
     # guess at the vocabulary:
-    #   Stored 1280 tokens in 0.023 seconds
+    #   Stored 1280 tokens in 0.023 seconds                      <= v0.5.7
+    #   Stored 1280 of 1280 requested tokens in 0.021 seconds     >= v0.5.8rc1
     #   Prefetch request completed (L1+L2): 5/5 retained keys (5 L1, 0 L2)
-    STORED=$(printf '%s' "$LOGS" | grep -acE 'Stored [0-9]+ tokens' || true)
+    #
+    # Both spellings, because matching only the first one is not a
+    # missed line but a WRONG ANSWER: v0.5.8rc1 reworded it, and this
+    # check then reported "no stores" against a stack that was storing
+    # correctly — and reported it as a regression, since the version it
+    # was compared against still printed the old wording and passed.
+    # cpu-test.sh was updated for this and this file was not, which is
+    # exactly how the two came to disagree.
+    STORED=$(printf '%s' "$LOGS" | grep -acE 'Stored [0-9]+ (of [0-9]+ requested )?tokens' || true)
     GOT=$(printf '%s' "$LOGS" | grep -acE 'retained keys|Retrieved [0-9]+' || true)
     NOKEY=$(printf '%s' "$LOGS" | grep -aci 'no lookup ipc key' || true)
 
