@@ -518,8 +518,35 @@ variable "CUPY_REF" {
   default = "v14.2.0"
 }
 
+# A release CANDIDATE, deliberately, and the only ref that serves at
+# VLLM_REF=v0.34.0. v0.34.0 deleted CachedRequestData.resumed_req_ids;
+# LMCache's MP connector reads it unguarded at
+# lmcache_mp_connector.py:1874, reached from build_connector_meta on the
+# first scheduled request, so the pairing dies with
+#
+#     AttributeError: 'CachedRequestData' object has no attribute
+#                     'resumed_req_ids'
+#
+# and takes the engine core with it. Measured on both lanes: the CPU
+# stack and the gfx1201 GPU stack fail identically at the same two
+# frames, because build_connector_meta is scheduler-side and the device
+# has nothing to do with it. Startup is clean either way — /health and
+# /v1/models answer, and the first completion is what kills it.
+#
+# Upstream fixed it in LMCache PR #6457 (merged 2026-11-08), which
+# changed that site to getattr(cached_reqs, "resumed_req_ids", ()).
+# v0.5.7 predates it and v0.5.7.post1 carries only CI changes over
+# v0.5.7, so neither has it; v0.5.8rc1 is the first tag that does.
+# Their comment gives the reason the empty default is right rather than
+# merely quiet: "vLLM MRV2 readmits resumed requests as full new
+# requests", so on v0.34.0 there is no resumed set to consult.
+#
+# `make version-check` will report this pin as not matching upstream:
+# versioncheck.py filters release candidates out of "upstream latest"
+# on purpose, so v0.5.7.post1 is what it sees there. Expected, and the
+# reason this comment exists. Move to v0.5.8 proper when it ships.
 variable "LMCACHE_REF" {
-  default = "v0.5.7.post1"
+  default = "v0.5.8rc1"
 }
 
 # vLLM builds vllm/vllm-rs during setup.py; this tracks the channel in
