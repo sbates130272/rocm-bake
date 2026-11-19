@@ -26,7 +26,15 @@ REGISTRY="${REGISTRY:-$(python3 -I "$(dirname "${BASH_SOURCE[0]}")/fleet.py" \
     --make 2>/dev/null | sed -n 's/^FLEET_REGISTRY=//p')}"
 REGISTRY_NAME="${REGISTRY_NAME:-rocm-pytorch}"
 PYTORCH_VERSION="${PYTORCH_VERSION:-2.15.0}"
-ROCM_VERSION="${ROCM_VERSION:-10.1.0-full}"
+# Same awk as the Makefile's BAKE_DEFAULTS and bench.sh's bake_default:
+# rocm-bake.hcl is the single source, so no copy of the version here.
+ROCM_VERSION="${ROCM_VERSION:-$(awk '
+    /^variable[ \t]*"/ {
+        n = $0; sub(/^variable[ \t]*"/, "", n); sub(/".*/, "", n) }
+    n == "ROCM_VERSION" && /default[ \t]*=[ \t]*"/ {
+        v = $0; sub(/^.*default[ \t]*=[ \t]*"/, "", v); sub(/".*/, "", v)
+        print v; exit }' "$(dirname "${BASH_SOURCE[0]}")/../rocm-bake.hcl")}"
+[ -n "$ROCM_VERSION" ] || { echo "gpu-test: no ROCM_VERSION in env or rocm-bake.hcl" >&2; exit 2; }
 
 while [ $# -gt 0 ]; do
     case "$1" in

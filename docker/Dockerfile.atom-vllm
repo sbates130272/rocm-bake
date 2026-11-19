@@ -45,6 +45,10 @@
 
 ARG VLLM_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/vllm:latest
 ARG ATOM_WHEEL_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/atom-wheel:latest
+# No default: rocm-bake.hcl is the only source. The second ARG fails a
+# build that was not passed one at parse time, instead of going empty.
+ARG ROCM_VERSION
+ARG ROCM_VERSION_REQUIRED="${ROCM_VERSION:?must be passed as a build arg - rocm-bake.hcl is the source of truth}"
 
 FROM ${ATOM_WHEEL_IMAGE} AS atomwheels
 

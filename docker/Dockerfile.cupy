@@ -20,13 +20,17 @@
 # dependency, and the base already carries ROCm and the venv this
 # wheel has to match. Same reasoning as Dockerfile.triton.
 
-ARG BASE_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/base:10.1.0-full-3.14
+ARG BASE_IMAGE
+# No default: rocm-bake.hcl is the only source. The second ARG fails a
+# build that was not passed one at parse time, instead of going empty.
+ARG ROCM_VERSION
+ARG ROCM_VERSION_REQUIRED="${ROCM_VERSION:?must be passed as a build arg - rocm-bake.hcl is the source of truth}"
 
 FROM ${BASE_IMAGE} AS builder
 
 ARG CUPY_REF=v14.2.0
 ARG PYTORCH_ROCM_ARCH=gfx950
-ARG ROCM_VERSION=10.1.0-full
+ARG ROCM_VERSION
 ARG SCCACHE_WEBDAV_ENDPOINT=http://snoc-strix.fold-leaffish.ts.net:8081
 
 # sccache on S3, for builds that are not on the fleet. Empty selects

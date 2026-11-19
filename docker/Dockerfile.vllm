@@ -36,6 +36,10 @@ ARG TORCHVISION_WHEEL_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/to
 # package present. The cache engine still runs in its own container;
 # only this client-side shim lives here.
 ARG LMCACHE_WHEEL_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/lmcache-wheel:latest
+# No default: rocm-bake.hcl is the only source. The second ARG fails a
+# build that was not passed one at parse time, instead of going empty.
+ARG ROCM_VERSION
+ARG ROCM_VERSION_REQUIRED="${ROCM_VERSION:?must be passed as a build arg - rocm-bake.hcl is the source of truth}"
 
 FROM ${TRITON_WHEEL_IMAGE} AS tritonwheels
 FROM ${AITER_WHEEL_IMAGE} AS aiterwheels
@@ -50,7 +54,7 @@ FROM ${LMCACHE_WHEEL_IMAGE} AS lmcachewheels
 FROM ${PYTORCH_IMAGE} AS deps
 
 ARG PYTORCH_ROCM_ARCH=gfx950
-ARG ROCM_VERSION=10.1.0-full
+ARG ROCM_VERSION
 
 # GPU_ARCHS is not a duplicate of PYTORCH_ROCM_ARCH. `import aiter`
 # resolves the target architecture eagerly, and with GPU_ARCHS unset it

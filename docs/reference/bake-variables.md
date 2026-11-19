@@ -14,7 +14,7 @@ is authoritative if this page has aged.
 | Variable | Default |
 | --- | --- |
 | `PYTORCH_VERSION` | `2.15.0` |
-| `ROCM_VERSION` | `10.1.0-full` |
+| `ROCM_VERSION` | `10.2.0-full` |
 | `PYTHON_VERSION` | `3.14` |
 | `TRITON_VERSION` | `3.9.0` |
 | `TRITON_REF` | `aad2a60d958f945420c5c40936b37d411fb02e89` |

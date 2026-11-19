@@ -3,7 +3,6 @@
 # Receives pre-built PyTorch wheel from pytorch target context
 
 ARG PYTHON_VERSION=3.14
-ARG ROCM_VERSION=10.1.0-full
 
 # AMD publishes only dev-ubuntu-26.04:10.1.0-full for this ROCm —
 # there is no -runtime or -base variant — so this image used to take
@@ -21,10 +20,9 @@ ARG RUNTIME_BASE_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/rocm-ru
 FROM ${RUNTIME_BASE_IMAGE} AS base
 
 # Re-declared inside the stage. ARGs before the first FROM live in the
-# global scope only, so without these every ${PYTHON_VERSION} below
+# global scope only, so without this every ${PYTHON_VERSION} below
 # expands to the empty string and apt is asked for `python`.
 ARG PYTHON_VERSION
-ARG ROCM_VERSION
 
 LABEL org.opencontainers.image.source="https://github.com/sbates130272/rocm-pytorch-build"
 LABEL org.opencontainers.image.description="Minimal PyTorch ROCm runtime for gfx950"

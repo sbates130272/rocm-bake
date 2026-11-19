@@ -45,6 +45,10 @@
 # The result is a thin image whose payload is /wheels/*.whl plus the
 # atomesh binary — the same shape as aiter-wheel and torchvision-wheel.
 
+# No default: rocm-bake.hcl is the only source. The second ARG fails a
+# build that was not passed one at parse time, instead of going empty.
+ARG ROCM_VERSION
+ARG ROCM_VERSION_REQUIRED="${ROCM_VERSION:?must be passed as a build arg - rocm-bake.hcl is the source of truth}"
 ARG PYTORCH_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/pytorch:latest
 
 FROM ${PYTORCH_IMAGE} AS builder
@@ -52,7 +56,7 @@ FROM ${PYTORCH_IMAGE} AS builder
 ARG ATOM_REF=v0.1.10
 ARG ATOM_REPO=https://github.com/ROCm/ATOM.git
 ARG PYTORCH_ROCM_ARCH=gfx950
-ARG ROCM_VERSION=10.1.0-full
+ARG ROCM_VERSION
 # The channel ATOM's Cargo.toml needs: edition 2021, axum 0.8, rand 0.9.
 # Shared with Dockerfile.vllm, which builds vllm/vllm-rs on the same pin.
 ARG RUST_VERSION=1.95

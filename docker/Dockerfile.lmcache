@@ -38,6 +38,10 @@ ARG PYTORCH_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/pytorch:late
 ARG TRITON_WHEEL_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/triton-wheel:latest
 ARG NIXL_WHEEL_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/nixl-wheel:latest
 ARG CUPY_WHEEL_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/cupy-wheel:latest
+# No default: rocm-bake.hcl is the only source. The second ARG fails a
+# build that was not passed one at parse time, instead of going empty.
+ARG ROCM_VERSION
+ARG ROCM_VERSION_REQUIRED="${ROCM_VERSION:?must be passed as a build arg - rocm-bake.hcl is the source of truth}"
 
 FROM ${TRITON_WHEEL_IMAGE} AS tritonwheels
 FROM ${NIXL_WHEEL_IMAGE} AS nixlwheels
@@ -47,7 +51,7 @@ FROM ${CUPY_WHEEL_IMAGE} AS cupywheels
 FROM ${PYTORCH_IMAGE} AS deps
 
 ARG PYTORCH_ROCM_ARCH=gfx950
-ARG ROCM_VERSION=10.1.0-full
+ARG ROCM_VERSION
 
 ENV ROCM_PATH=/opt/rocm \
     PYTORCH_ROCM_ARCH=${PYTORCH_ROCM_ARCH}
@@ -102,7 +106,7 @@ ARG LMCACHE_REF=v0.5.8rc1
 # declaring it does nothing for this stage. Without this the LABEL below
 # reads "for ROCm ," and the wheel's version suffix comes out "+rocm"
 # with no version in it -- both silent.
-ARG ROCM_VERSION=10.1.0-full
+ARG ROCM_VERSION
 ARG SCCACHE_WEBDAV_ENDPOINT=http://snoc-strix.fold-leaffish.ts.net:8081
 # Key namespace within the shared store, and a unix socket rather than a
 # TCP port — the builders run with --driver-opt network=host, so a fixed

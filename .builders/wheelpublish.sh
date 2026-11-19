@@ -3,9 +3,11 @@
 # PEP 503 index to gh-pages.
 #
 # Usage:  wheelpublish.sh --arch gfx950 [--wheels DIR] [--index DIR]
-#                         [--rocm 10.1.0-full] [--repo owner/name]
+#                         [--rocm VERSION] [--repo owner/name]
 #                         [--title TEXT] [--notes-file FILE]
 #                         [--dry-run] [--no-push]
+#
+# --rocm defaults to $ROCM_VERSION, then to rocm-bake.hcl's default.
 #
 # WHY TWO PLACES. The wheels are 300-500MB each -- amd_aiter for gfx950
 # is 494MB -- and GitHub refuses a file over 100MB in git. gh-pages can
@@ -41,7 +43,17 @@ cd "${ROOT}" || exit 1
 ARCH=""
 WHEELS=""
 INDEX=""
-ROCM="${ROCM_VERSION:-10.1.0-full}"
+# Same awk as the Makefile's BAKE_DEFAULTS and bench.sh's bake_default:
+# rocm-bake.hcl is the single source, so no copy of the version here.
+bake_default() {
+    awk -v want="$1" '
+        /^variable[ \t]*"/ {
+            n = $0; sub(/^variable[ \t]*"/, "", n); sub(/".*/, "", n) }
+        n == want && /default[ \t]*=[ \t]*"/ {
+            v = $0; sub(/^.*default[ \t]*=[ \t]*"/, "", v); sub(/".*/, "", v)
+            print v; exit }' rocm-bake.hcl
+}
+ROCM="${ROCM_VERSION:-$(bake_default ROCM_VERSION)}"
 PYVER="${PYTHON_VERSION:-3.14}"
 REPO=""
 TITLE=""
@@ -74,6 +86,7 @@ while [ $# -gt 0 ]; do
 done
 
 [ -n "${ARCH}" ] || { echo "wheelpublish: --arch is required" >&2; exit 2; }
+[ -n "${ROCM}" ] || { echo "wheelpublish: no ROCm version; pass --rocm or set ROCM_VERSION" >&2; exit 2; }
 WHEELS="${WHEELS:-dist/wheels/${ARCH}}"
 INDEX="${INDEX:-dist/index/${ARCH}}"
 
