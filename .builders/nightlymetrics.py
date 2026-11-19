@@ -62,17 +62,48 @@ from pathlib import Path
 # built once and fed in.
 #
 # So ownership is reassigned on every header rather than fixed on the
-# first, and a DONE is credited to whoever last claimed that id. That
-# reconciles exactly -- summed per-target seconds equal vertex_seconds to
-# the decimal, with no unowned DONE lines, on every log tested.
+# first, and a DONE is credited to whoever last claimed that id.
+#
+# A DONE LINE IS NOT A VERTEX. BuildKit re-emits DONE for a vertex each
+# time another build request resolves against it, with the elapsed figure
+# rising each time, so summing the lines counts the same work repeatedly.
+# The 2026-11-18 warm log has 169 DONE lines over 79 distinct ids; #240
+# `[vllm-wheel builder 14/14]` alone appears 19 times, 31.7s through
+# 59.4s. Summed, that log reports 1215.2 vertex-seconds inside a 404.0s
+# build and puts vllm-wheel at 880.9s inside its own 203s.
+#
+# So durations are reduced per vertex before anything is summed, keyed on
+# (id, label) and taking the maximum. An earlier note here said the label
+# was not available on a duration line; it is -- `owner` carries it, and
+# the key is only needed at fold time.
+#
+# (id, label) rather than id alone, because the two shapes of repetition
+# are not the same thing and only the label separates them:
+#
+#   #240  one vertex, 19 DONE lines, one label        -> collapse to 1
+#   #9    13 different targets' .dockerignore loads,
+#         one DONE line each, 13 distinct labels      -> keep all 13
+#
+# Keying on id alone -- as `.aws-analysis/aws-analysis.md` §4 proposed --
+# fixes the first and destroys the second, turning thirteen real vertices
+# into one. The label carries the target prefix, which is exactly the
+# distinction.
+#
+# What that key cannot collapse is a vertex genuinely shared between two
+# targets, reported under both prefixes: it is credited to each
+# requester. That is a convention, not an oversight -- plain progress
+# gives no way to tell it from the #9 case -- and it is the one
+# `build_steps` already uses, which is why a shared stage counts twice
+# there too. The consequence is that in a build with shared stages the
+# per-target column sums to MORE than wall vertex time: it is a
+# share-of-attention figure, not a partition of the clock. On the
+# 2026-11-18 log the two coincide at 452.6s, because no vertex there had
+# DONE lines under more than one prefix.
 #
 # It is still not provably exact: an id re-headed by another target while
 # a long vertex of the same number is in flight would be misattributed.
 # BuildKit re-prints the header before each chunk of a vertex's output, so
-# that window is small, but it is not zero. Keying on the header label
-# including its target prefix, as bench.sh does, is the stronger fix and
-# needs the full label carried through the duration lines, which the plain
-# progress format does not give us.
+# that window is small, but it is not zero.
 VERTEX = re.compile(r"^#(\d+) \[([a-z0-9][a-z0-9 ./-]*)\]\s*(.*)")
 DONE = re.compile(r"^#(\d+) DONE ([0-9.]+)s")
 CACHED = re.compile(r"^#(\d+) CACHED")
@@ -102,6 +133,13 @@ def parse(paths: list[Path]) -> dict:
     seconds: Counter[str] = Counter()
     steps: Counter[str] = Counter()
     cached_by_target: Counter[str] = Counter()
+    # (id, label) -> longest elapsed seen, and -> owning target. One entry
+    # per real vertex; see the note above VERTEX for why the pair is the
+    # key. Folded into seconds/steps after the scan.
+    vertex_max: dict[tuple[str, str], float] = {}
+    vertex_target: dict[tuple[str, str], str | None] = {}
+    # The same reduction for CACHED, which repeats for the same reason.
+    cached_vertices: dict[tuple[str, str], str | None] = {}
     sccache_by_vertex: dict[tuple[str, str | None], dict[str, int]] = {}
     done = cached = import_misses = 0
     step_labels: set[str] = set()
@@ -137,17 +175,16 @@ def parse(paths: list[Path]) -> dict:
                     target, is_step, label = owner.get(
                         m.group(1), (None, False, "")
                     )
-                    if target:
-                        seconds[target] += float(m.group(2))
-                        steps[target] += 1
-                    else:
-                        # A bare "[internal]" or "[auth]" label, which a
-                        # single-target build emits and a bake rarely does.
-                        # Held separately rather than dropped, so
-                        # vertex_seconds keeps meaning "all vertex time" and
-                        # stays comparable with the runs already in
-                        # runs.json -- 1150s of the 2026-11-13 log, 8.6%.
-                        unattributed += float(m.group(2))
+                    # Reduced, not accumulated. A target with no label is
+                    # a bare "[internal]" or "[auth]" vertex, which a
+                    # single-target build emits and a bake rarely does; it
+                    # is held separately at fold time rather than dropped,
+                    # so vertex_seconds keeps meaning "all vertex time".
+                    key = (m.group(1), label)
+                    elapsed = float(m.group(2))
+                    if elapsed > vertex_max.get(key, -1.0):
+                        vertex_max[key] = elapsed
+                    vertex_target[key] = target
                     if is_step:
                         # By LABEL, not by line. A vertex shared between
                         # build requests is re-reported once per requester,
@@ -162,8 +199,7 @@ def parse(paths: list[Path]) -> dict:
                     target, is_step, label = owner.get(
                         m.group(1), (None, False, "")
                     )
-                    if target:
-                        cached_by_target[target] += 1
+                    cached_vertices[(m.group(1), label)] = target
                     if is_step:
                         step_labels.add(label)
                         cached_labels.add(label)
@@ -184,6 +220,20 @@ def parse(paths: list[Path]) -> dict:
                     sccache_by_vertex.setdefault(key, {})[m.group(2)] = int(
                         m.group(3)
                     )
+
+    # Fold the per-vertex maxima into the per-target table. Each vertex
+    # contributes once, however many times BuildKit re-reported it.
+    for key, elapsed in vertex_max.items():
+        target = vertex_target[key]
+        if target:
+            seconds[target] += elapsed
+            steps[target] += 1
+        else:
+            unattributed += elapsed
+
+    for target in cached_vertices.values():
+        if target:
+            cached_by_target[target] += 1
 
     # Sum sccache across vertices. Keyed by vertex because each compiling
     # target prints its own block and they interleave in a parallel build.
@@ -231,8 +281,14 @@ def parse(paths: list[Path]) -> dict:
             }
             for t in sorted(seconds, key=lambda k: -seconds[k])
         },
-        # All vertex time, attributed or not, so the series in
-        # runs.json stays comparable across this change.
+        # All vertex time, attributed or not. Deliberately redefined in
+        # 2026-11: it used to sum DONE lines and so over-reported by the
+        # re-emission factor -- 1215.2 against a true 404.0 on 11-18.
+        # Nothing consumed the old figure (neither this key nor `targets`
+        # appears in dist/gh-pages/data/nightly/runs.json, and
+        # nightlysite.py plots phases[].seconds, which is wall clock), so
+        # there is no series to break. `done`/`cached` above are still
+        # raw line counts, and those do have four months of history.
         "vertex_seconds": round(sum(seconds.values()) + unattributed, 1),
         "unattributed_seconds": round(unattributed, 1),
     }
