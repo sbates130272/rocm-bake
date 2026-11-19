@@ -206,11 +206,35 @@ ARG MAX_JOBS=
 # for ~140s — a job count derived too low re-serializes into waves and
 # gives back most of what the split returned.
 #
-# 1GB is what these compiles actually take: a 32-job gfx1201 run peaked
-# at 24GB across ~46 processes, about 0.75GB each. One outlier did reach
-# 7GB resident on its own, which is the reason this is 1 and not lower —
-# the cap at nproc and the single-outlier headroom both still apply.
+# 1GB is what the marginal compile takes: a 32-job gfx1201 run peaked
+# at 24GB across ~46 processes, about 0.75GB each, and one process
+# reached 7GB resident on its own. It prices a job. It does not price
+# the build, which is what MEM_RESERVE_GB below is for.
 ARG MEM_PER_JOB_GB=1
+# Memory the derivation does not hand out.
+#
+# Most of what this compile needs does not scale with the job count.
+# Cold builds on snoc-strix (30GB, 32 cores) dropped available memory
+# by 11-14GB at 8 jobs and by 16-18GB at 23: about 10GB is there
+# whatever is chosen, and it arrives in one burst some thirty seconds
+# into the HIP compile, at 1GB a second. Dividing all of MemAvailable
+# by a per-job figure budgets none of it.
+#
+# On 2026-11-19 that node read 16.6GB available, chose 16 jobs, and
+# went from 16GB free to 2GB in forty seconds and under 1GB two
+# minutes in. The kernel never OOM-killed anything: the node thrashed
+# for seven minutes, took the registry and the sccache store with it,
+# and had to be reset. Two days earlier the same build at 23 jobs
+# bottomed out at 6GB free, so it had been passing on how much memory
+# happened to be free when it started.
+#
+# 12 is that burst and a floor under it. The job count comes from what
+# is left: 26GB available is 14 jobs, 16.6GB is 4, and snoc-think at
+# 118GB is still capped at nproc and unaffected. Nothing colder than 8
+# jobs has been measured, so the low end is arithmetic, not evidence —
+# below about 20GB available this build wants a bigger node, not a
+# smaller number.
+ARG MEM_RESERVE_GB=12
 # vLLM builds a Rust extension (vllm/vllm-rs) as part of setup.py.
 # The channel tracks the repo's rust-toolchain.toml.
 ARG RUST_VERSION=1.95
@@ -390,11 +414,10 @@ RUN --mount=type=secret,id=aws,required=false \
     njobs="${MAX_JOBS}"; \
     if [ -z "${njobs}" ]; then \
         cores=$(nproc); \
-        njobs=$(awk -v per="${MEM_PER_JOB_GB}" '/^MemAvailable:/ {print int($2/1024/1024/per)}' /proc/meminfo); \
-        [ -n "${njobs}" ] || njobs=${cores}; \
-        [ "${njobs}" -ge 1 ] || njobs=1; \
+        njobs=$(awk -v per="${MEM_PER_JOB_GB}" -v reserve="${MEM_RESERVE_GB}" '/^MemAvailable:/ {n = (per > 0) ? int(($2/1024/1024 - reserve)/per) : 1; print (n < 1 ? 1 : n)}' /proc/meminfo); \
+        [ -n "${njobs}" ] || njobs=1; \
         [ "${njobs}" -le "${cores}" ] || njobs=${cores}; \
-        echo "MAX_JOBS=${njobs} (from ${cores} cores, $(awk '/^MemAvailable:/ {printf "%.0fGB", $2/1048576}' /proc/meminfo) available)"; \
+        echo "MAX_JOBS=${njobs} (from ${cores} cores, $(awk '/^MemAvailable:/ {printf "%.0fGB", $2/1048576}' /proc/meminfo) available, ${MEM_RESERVE_GB}GB held back)"; \
     else \
         echo "MAX_JOBS=${njobs} (pinned via build arg)"; \
     fi; \

@@ -224,6 +224,44 @@ find /opt/rocm/ \
       done
 rm -f "${keep_list}"
 
+# ─── 3b. LLVM's libgomp.so alias, where g++ can find it ──────────
+# LLVM ships libgomp.so as a symlink to libomp.so, so that a GNU link
+# line can be pointed at LLVM's OpenMP runtime on purpose. ROCm 10.2
+# made it happen by accident. It moved the runtime libraries into a
+# per-target directory, llvm/lib/x86_64-unknown-linux-gnu, and clang
+# searches that directory implicitly — 10.1's clang did not search
+# llvm/lib, where the alias used to be the only copy.
+#
+# libtorch_hip.so is C++ and HIP objects linked by g++. CMake adds the
+# HIP compiler's implicit link directories to that line, ahead of
+# GCC's own, so `-fopenmp` resolved -lgomp to the alias and the library
+# came out needing libomp.so where it had needed libgomp.so.1:
+#
+#   ImportError: libomp.so: cannot open shared object file
+#
+# on the first `import torch`, twelve minutes after a clean compile.
+# Nothing puts llvm/lib on the loader path, and nothing should: the
+# rest of torch still links libgomp, and two OpenMP runtimes in one
+# process is its own problem.
+#
+# Measured in the 10.2 base, with a program that uses OpenMP:
+#   g++ -fopenmp                       -> libgomp.so.1
+#   g++ -fopenmp -L<per-target dir>    -> libomp.so
+#   the same, with this alias removed  -> libgomp.so.1
+#   clang++ -fopenmp, afterwards       -> libomp.so, unchanged
+#
+# Only the unversioned name, which is the one a linker looks for, and
+# only in the per-target directories. libgomp.so.1 stays: it is a
+# run-time name that no linker searches for, and ROCm's own libraries
+# have a RUNPATH into this directory. The alias in llvm/lib stays too;
+# it is on nobody's search path, which is the state 10.1 was in.
+aliases=$(find "${ROCM_REAL}/lib/llvm/lib" -mindepth 2 -maxdepth 2 \
+    -name libgomp.so -type l 2>/dev/null || true)
+if [ -n "${aliases}" ]; then
+    echo "rocm-prune: removing LLVM's libgomp.so alias from clang's search path:"
+    for f in ${aliases}; do echo "  ${f}"; rm -f "${f}"; done
+fi
+
 # ─── 4. Things only a build needs ────────────────────────────────
 # Docs go in both profiles. `make docs` is not this.
 rm -rf /opt/rocm/share/doc /opt/rocm/share/man \

@@ -110,6 +110,15 @@ RUN set -eu; \
 #
 # keep-toolchain only. `minimal` deliberately has no compiler, so
 # there is nothing to test and its absence is not a defect.
+#
+# The archive scan skips cmake comment lines. ROCm 10.2's
+# rocdecode-config.cmake mentions librocdecode.dll.a in a comment about
+# Windows import libraries; no such file ever existed in the image, and
+# the scan reported it as an archive the prune had removed.
+#
+# The libgomp.so loop asks clang where it searches rather than naming
+# the directory, so a later ROCm that moves its runtime libraries again
+# is caught here and not at `import torch`.
 RUN set -eu; \
     if [ "${ROCM_PRUNE_PROFILE}" != "keep-toolchain" ]; then \
         echo "prune profile ${ROCM_PRUNE_PROFILE}: no toolchain to test"; \
@@ -127,6 +136,23 @@ RUN set -eu; \
              echo "  docker/rocm-prune.sh, which is what removes from it." >&2; \
              exit 1; }; \
     rm -f t.hip t.out; \
+    dirs=$(/opt/rocm/lib/llvm/bin/clang++ -print-search-dirs \
+               | sed -n 's/^libraries: =//p' | tr ':' ' '); \
+    [ -n "${dirs}" ] \
+        || { echo "rocm-runtime: clang++ reported no library search" >&2; \
+             echo "  directories, so the libgomp.so check has nothing" >&2; \
+             echo "  to look at and would pass without looking." >&2; \
+             exit 1; }; \
+    for d in ${dirs}; do \
+        case "$(readlink -f "${d}/libgomp.so" 2>/dev/null)" in \
+            */libomp.so*) \
+                echo "rocm-runtime: ${d}/libgomp.so is LLVM's libomp." >&2; \
+                echo "  clang searches that directory, so a g++ -fopenmp" >&2; \
+                echo "  link with HIP objects in it needs libomp.so at" >&2; \
+                echo "  run time — see section 3b of docker/rocm-prune.sh." >&2; \
+                exit 1 ;; \
+        esac; \
+    done; \
     test -f /opt/rocm/lib/cmake/hip-lang/hip-lang-config.cmake \
         || { echo "rocm-runtime: the HIP cmake package is missing." >&2; \
              echo "  cmake's HIP language detection needs it, so every" >&2; \
@@ -134,8 +160,8 @@ RUN set -eu; \
              exit 1; }; \
     root=$(dirname "$(readlink -f /opt/rocm/lib)"); \
     missing=0; \
-    for n in $(grep -rhoE '[A-Za-z0-9_.+-]+\.a\b' /opt/rocm/lib/cmake \
-                   2>/dev/null | sort -u); do \
+    for n in $(grep -rhv '^[[:space:]]*#' /opt/rocm/lib/cmake 2>/dev/null \
+                   | grep -oE '[A-Za-z0-9_.+-]+\.a\b' | sort -u); do \
         find "${root}" -name "${n}" -print -quit 2>/dev/null | grep -q . \
             || { echo "  dangling: ${n}" >&2; missing=$((missing+1)); }; \
     done; \
