@@ -207,8 +207,57 @@ RUN cp requirements/common.txt /tmp/common.txt.orig && \
         requirements/common.txt && \
     grep -q '^prometheus_client >= 0.18.0$' requirements/common.txt && \
     echo "--- patched requirements ---" && \
-    diff /tmp/common.txt.orig requirements/common.txt || true && \
+    { diff /tmp/common.txt.orig requirements/common.txt || true; } && \
     cat requirements/rocm_core.txt
+
+# Two more caps come off, but off the wheel only.
+#
+#   opentelemetry-api <=1.40.0
+#   opentelemetry-exporter-prometheus <=0.61b0
+#
+# vLLM v0.34.0 requires opentelemetry-api, -sdk and -exporter-otlp
+# >=1.45.1, so the lmcache and vllm wheels could not be installed into
+# one environment, and rocm-torch[device-<arch>] pins both. The second
+# cap is the same conflict one step removed: each exporter-prometheus
+# release pins the sdk it was cut with. Measured from the gfx1201
+# wheels:
+#
+#   lmcache: Requires-Dist: opentelemetry-api<=1.40.0,>=1.20.0
+#   vllm:    Requires-Dist: opentelemetry-api>=1.45.1
+#   opentelemetry-exporter-prometheus 0.61b0 depends on opentelemetry-sdk~=1.40.0
+#   vllm:    Requires-Dist: opentelemetry-sdk>=1.45.1
+#   ERROR: ResolutionImpossible
+#
+# With both lifted the metapackage resolves, to opentelemetry 1.45.2
+# and exporter-prometheus 0.66b2.
+#
+# Unlike prometheus_client, the images do not follow. LMCache loads its
+# observability on every server start, and exporter-prometheus is a
+# beta bound to one sdk minor, so the cap is closer to a compatibility
+# statement than the others here. Nothing built in this repo needs the
+# newer set: every image takes the wheel --no-deps, so none reads its
+# metadata. The copy taken first is what the server image installs
+# from, caps intact, so it keeps running the opentelemetry upstream
+# tested. Only an install resolved from the index gets the uncapped
+# one. As vLLM's connector that is safe as far as it has been traced:
+# the module-level import closure does not reach opentelemetry. As a
+# server it is not covered — the same wheel ships the `lmcache` console
+# script, and `lmcache server` from an index install sets up its
+# providers on an opentelemetry upstream caps out and nothing here has
+# run.
+#
+# The greps are the assertion: a later LMCACHE_REF that moves either
+# cap makes the sed a no-op, and this must say so rather than pass.
+RUN cp -r requirements /opt/lmcache-image-requirements && \
+    sed -i -E \
+        -e 's/^opentelemetry-api >= 1\.20\.0, <= 1\.40\.0$/opentelemetry-api >= 1.20.0/' \
+        -e 's/^opentelemetry-exporter-prometheus >= 0\.50b0, <= 0\.61b0$/opentelemetry-exporter-prometheus >= 0.50b0/' \
+        requirements/common.txt && \
+    grep -q '^opentelemetry-api >= 1.20.0$' requirements/common.txt && \
+    grep -q '^opentelemetry-exporter-prometheus >= 0.50b0$' requirements/common.txt && \
+    ! grep -E '^opentelemetry.*<' requirements/common.txt && \
+    echo "--- wheel only ---" && \
+    { diff /opt/lmcache-image-requirements/common.txt requirements/common.txt || true; }
 
 # grpcio-tools is what generates the multiprocess transport's stubs; the
 # build_py override in setup.py runs the generator, so it is a hard build
@@ -298,11 +347,12 @@ LABEL org.opencontainers.image.source="https://github.com/LMCache/LMCache"
 LABEL org.opencontainers.image.description="LMCache ${LMCACHE_REF} multi-process runtime for ROCm ${ROCM_VERSION}, ${PYTORCH_ROCM_ARCH}"
 
 COPY --from=builder /wheels-build.log /wheels-arch.txt /var/log/lmcache-build/
-COPY --from=builder /opt/lmcache/requirements/ /opt/lmcache-requirements/
+COPY --from=builder /opt/lmcache-image-requirements/ /opt/lmcache-requirements/
 
 # --no-deps on the wheel itself, with the patched requirements installed
 # first: pip would otherwise re-resolve install_requires and reintroduce
-# the CUDA-only entries stripped during the build.
+# the CUDA-only entries stripped during the build. It would also lose
+# the opentelemetry caps, which these files keep and the wheel does not.
 # The wheel is mounted rather than copied: lmcache-wheel publishes it,
 # so a copy here only weighed down every pull of the runtime image.
 RUN --mount=type=bind,from=builder,source=/wheels,target=/w/lmcache \
@@ -365,10 +415,10 @@ LABEL org.opencontainers.image.description="LMCache ${LMCACHE_REF} wheel for ${P
 COPY --from=builder /wheels/ /wheels/
 COPY --from=builder /wheels-build.log /wheels-arch.txt /
 
-# The patched requirements travel with the wheel. A consumer that
-# installs this wheel needs them: the wheel is built with the CUDA-only
-# entries stripped from install_requires, so pip alone cannot reproduce
-# the dependency set, and resolving install_requires instead would pull
-# the entries this build deliberately removed. Dockerfile.vllm installs
-# lmcache from here and uses exactly these files.
-COPY --from=builder /opt/lmcache/requirements/ /requirements/
+# The patched requirements travel with the wheel, as the record of what
+# the server image installs. Dockerfile.vllm used to install them too;
+# it now takes the wheel alone — see its "LMCache client" section.
+#
+# They are the image set, so they still carry upstream's opentelemetry
+# caps; the wheel's own metadata does not. See the builder stage.
+COPY --from=builder /opt/lmcache-image-requirements/ /requirements/

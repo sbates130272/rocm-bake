@@ -29,12 +29,13 @@ ARG NIXL_WHEEL_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/nixl-whee
 # Dockerfile.torchvision builds the ROCm one; this is where it lands.
 ARG TORCHVISION_WHEEL_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/torchvision-wheel:latest
 # LMCache is a dependency of vLLM, not an optional companion. vLLM ships
-# its own connector, vllm/distributed/kv_transfer/kv_connector/v1/
-# lmcache_mp_connector.py, and that module imports lmcache.utils and
-# lmcache.integration.vllm.utils at top level — so `--kv-transfer-config
-# '{"kv_connector":"LMCacheMPConnector"}'` fails at import without the
-# package present. The cache engine still runs in its own container;
-# only this client-side shim lives here.
+# a connector module, vllm/distributed/kv_transfer/kv_connector/v1/
+# lmcache_mp_connector.py, which imports lmcache at top level and then
+# hands the name LMCacheMPConnector to LMCache's own class — so
+# `--kv-transfer-config '{"kv_connector":"LMCacheMPConnector"}'` fails
+# at import without the package present, and runs LMCache's code with
+# it. The cache engine still runs in its own container; only the client
+# lives here, without LMCache's requirements — see "LMCache client".
 ARG LMCACHE_WHEEL_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/lmcache-wheel:latest
 # No default: rocm-bake.hcl is the only source. The second ARG fails a
 # build that was not passed one at parse time, instead of going empty.
@@ -500,58 +501,75 @@ RUN --mount=type=bind,from=builder,source=/wheels,target=/w/vllm \
 # --kv-offloading-backend lmcache fails at import without the package.
 # Upstream's own example says as much: "Requires lmcache to be installed".
 # The cache engine still runs in its own container; this is the client.
-COPY --from=lmcachewheels /requirements/ /opt/lmcache-requirements/
-
-# Pin grpcio to what vLLM already resolved, before LMCache's
-# requirements are installed. The two dependency sets overlap, and left
-# alone pip moves it:
 #
-#     vllm 0.32.0 requires grpcio==1.78.0, but you have grpcio 1.85.0
+# What serves is LMCache's class, not vLLM's. The module ends by
+# rebinding LMCacheMPConnector to
+# lmcache.integration.vllm.lmcache_mp_connector.LMCacheMPConnector, and
+# keeps its own LMCacheMPConnectorUpstream only on ImportError or when
+# LMCACHE_USE_UPSTREAM_MP is set. So the client's dependencies are those
+# of LMCache's module, and they were measured rather than taken from
+# LMCache's requirements: a static trace of module-level imports from it
+# reaches 107 of the wheel's 718 modules, which need cachetools, msgspec,
+# numpy, prometheus_client, requests, zmq, torch and vllm (and nvtx, in
+# a try/except with a no-op fallback). The first six are requirements
+# of vLLM itself and the last two are this image. transformers and
+# huggingface_hub are not reached, and opentelemetry is not reached at
+# module scope.
 #
-# LMCache asks for grpcio>=1.78.0, a floor rather than a conflict, so
-# holding the installed version satisfies both and pip's upward
-# resolution was gratuitous.
+# So LMCache's requirements are not installed here. They were, and it
+# cost vLLM its own opentelemetry: LMCache caps opentelemetry-api at
+# <=1.40.0, vLLM requires >=1.45.1, no version satisfies both, and
+# installing LMCache's set second downgraded the one vLLM had resolved.
+# The cap belongs to LMCache's server, which sets up its OTel providers
+# at startup and runs in its own image. The client sets up none, but it
+# is not untouched by the SDK: lmcache.logging attaches
+# opentelemetry.sdk._logs.LoggingHandler to every LMCache logger when
+# that import succeeds, so the client now does this on vLLM's 1.45.x
+# where it used to do it on 1.40. It works there and is deprecated
+# there, and only ImportError is caught around it.
 #
-# opentelemetry is deliberately NOT pinned, and the first version of
-# this pinned it and broke the build. vLLM resolves
-# opentelemetry-api 1.45.1; LMCache requires ">=1.20.0, <=1.40.0".
-# Pinning vLLM's version contradicts LMCache's cap and turns a
-# resolvable conflict into an unresolvable one:
+# The limit of that trace: it is static and module-level. An import
+# inside a function, on a path only serving takes, does not show in it,
+# and the serving test is what covers those. One is known, and that
+# test does not reach it in its default mode: engine_driven transfer
+# calls scatter_cpu_to_paged_kv, which imports
+# lmcache.v1.multiprocess.object_group_transfer on first use, and that
+# needs sortedcontainers and cryptography at module scope. vLLM's
+# closure carries cryptography only transitively and sortedcontainers
+# not at all, so both are named here. Neither carries a cap that could
+# move anything vLLM resolved.
 #
-#     ERROR: Cannot install opentelemetry-api<=1.40.0 and >=1.20.0
-#            because these package versions have conflicting dependencies
-#     ERROR: ResolutionImpossible
+# Others are on the default path. Building the request client imports
+# lmcache.security.http, which needs starlette and typing_extensions,
+# and on a GPU the device registry resolves the ROCm spec, which needs
+# numba and the HIP-linked lmcache.cuda_ops extension. All three
+# packages are vLLM's own requirements; the checks below import those
+# modules so that stays proven here and is not left to the first
+# request.
 #
-# Pinning only fixes a floor-vs-exact mismatch. A real version
-# disagreement it cannot, so LMCache's cap wins and opentelemetry is
-# downgraded. That costs vLLM's OTLP exporter, which wants
-# sdk~=1.45.1 — but vLLM tracing is opt-in (--otlp-traces-endpoint) and
-# unused here, while LMCache loads its observability on every start.
-# This breaks the path nobody exercises rather than the one that always
-# runs.
-RUN python -c "\
-import importlib.metadata as md;\
-print(f'grpcio=={md.version(\"grpcio\")}')" \
-    >> /etc/pip-constraints.txt && \
-    sort -u /etc/pip-constraints.txt -o /etc/pip-constraints.txt && \
-    cat /etc/pip-constraints.txt
-
-# --no-deps on the wheel with the patched requirements installed first,
-# so pip cannot re-resolve install_requires and reintroduce the
-# CUDA-only entries that build stripped.
+# One thing this image cannot do as a result: `lmcache.mp.autostart`
+# has the connector spawn LMCache's server inside this container, and
+# the server's requirements are what was left out.
+#
+# --no-deps on the wheel, as before, so pip does not put LMCache's
+# server requirement set on top of vLLM's.
 RUN --mount=type=bind,from=lmcachewheels,source=/wheels,target=/w/lmcache \
-    pip install --no-cache-dir -r /opt/lmcache-requirements/common.txt && \
+    pip install --no-cache-dir sortedcontainers cryptography && \
     pip install --no-cache-dir --no-deps \
         /w/lmcache/*.whl && \
     python -c "import lmcache; print('LMCache', lmcache.__version__)" && \
     python -c "import torch; assert torch.version.hip, 'torch lost its HIP build'"
 
-# The connector module itself, not just the two lmcache modules it
-# imports. This is the assertion that matters — it is the exact import
+# What the section above relies on, asserted. The first is the one that
+# matters — it is the exact import
 # `--kv-transfer-config '{"kv_connector":"LMCacheMPConnector"}'`
-# performs at startup, so a failure here is a failure to serve.
+# performs at startup, so a failure here is a failure to serve — and it
+# has to be LMCache's class that comes back. The fallback to vLLM's
+# built-in is silent, and it is the built-in that was not traced.
+# LMCache's module has the same fallback one level down, for its
+# adapters, and is as quiet about it, so their module is checked too.
 #
-# It was weakened to the two leaf imports for a long time because this
+# It was weakened to two leaf imports for a long time because this
 # import pulls in transformers, transformers' image_utils does
 #
 #     from torchvision.io import ImageReadMode, decode_image
@@ -560,9 +578,44 @@ RUN --mount=type=bind,from=lmcachewheels,source=/wheels,target=/w/lmcache \
 # build, which cannot load on ROCm. torchvision-wheel is what fixed
 # that; this is the check that proves it, and it will fail loudly if
 # the ROCm torchvision is ever lost to a PyPI resolution.
+#
+# The opentelemetry check reads vLLM's own metadata rather than a
+# version written here, so it follows VLLM_REF. Nothing above can move
+# opentelemetry today; this is for whoever next installs something
+# after vLLM in this stage.
 RUN python -c "\
-from vllm.distributed.kv_transfer.kv_connector.v1 import lmcache_mp_connector;\
-print('vllm LMCacheMPConnector imports OK')"
+from lmcache.integration.vllm.lmcache_mp_connector import LMCacheMPConnector as theirs;\
+from vllm.distributed.kv_transfer.kv_connector.v1 import lmcache_mp_connector as m;\
+got = m.LMCacheMPConnector;\
+assert got is not m.LMCacheMPConnectorUpstream, 'vLLM fell back to its built-in LMCacheMPConnectorUpstream';\
+assert got is theirs, f'vLLM resolved LMCacheMPConnector to {got.__module__}.{got.__qualname__}';\
+import lmcache.integration.vllm.lmcache_mp_connector as c;\
+want = 'lmcache.integration.vllm.vllm_multi_process_adapter';\
+bad = [a.__module__ for a in (c.LMCacheMPSchedulerAdapter, c.LMCacheMPWorkerAdapter) if a.__module__ != want];\
+assert not bad, f'LMCache fell back to adapters from {bad}';\
+print('vllm LMCacheMPConnector ->', got.__module__)" && \
+    python -c "\
+import lmcache.v1.client.transport.zmq_impl.client;\
+import lmcache.v1.client.transport.zmq_impl.mq_client;\
+import lmcache.v1.transport.auth;\
+import lmcache.v1.platform.devices.rocm;\
+import lmcache.v1.platform.devices.cuda.device_ops;\
+import lmcache.v1.platform.devices.cuda.ipc_wrapper;\
+import lmcache.cuda_ops;\
+print('LMCache lmcache_driven transport and ROCm device ops import OK')" && \
+    python -c "\
+import lmcache.v1.multiprocess.object_group_transfer;\
+print('LMCache engine_driven transfer imports OK')" && \
+    python -c "\
+from importlib.metadata import requires, version;\
+from packaging.requirements import Requirement;\
+reqs = [Requirement(r) for r in requires('vllm')];\
+otel = [r for r in reqs if r.name.startswith('opentelemetry-') and (r.marker is None or r.marker.evaluate({'extra': ''}))];\
+assert otel, 'vllm declares no opentelemetry requirement to check against';\
+bad = [f'{r} but {version(r.name)} is installed' for r in otel if not r.specifier.contains(version(r.name), prereleases=True)];\
+assert not bad, f'opentelemetry no longer satisfies vLLM: {bad}';\
+print('opentelemetry still satisfies vLLM:', ', '.join(f'{r.name} {version(r.name)}' for r in otel))" && \
+    python -c "import torch; assert torch.version.hip, 'torch lost its HIP build'"
 
 # ─── Wheel-only image ────────────────────────────────────────────
 FROM scratch AS wheel

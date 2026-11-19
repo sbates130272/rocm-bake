@@ -72,7 +72,7 @@ COPY --from=atomwheels /wheels/ /tmp/atom-wheels/
 COPY --from=atomwheels /atomesh /usr/local/bin/atomesh
 
 # PIP_CONSTRAINT, for the reason Dockerfile.atom and Dockerfile.vllm both
-# give: ATOM declares `transformers==5.16.1` and a dozen other runtime
+# give: ATOM declares a transformers range and a dozen other runtime
 # dependencies, and its closure must not be allowed to replace the ROCm torch
 # — or the vLLM — this pipeline exists to produce with something off PyPI.
 RUN pip list --format=freeze > /tmp/pip-freeze.txt && \
