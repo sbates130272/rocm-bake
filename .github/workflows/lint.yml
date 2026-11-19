@@ -143,6 +143,14 @@ jobs:
       - name: capture attribution
         run: python3 -I docker/vllm-emu-shim/tests/test_capture_attribution.py
 
+      # The nightly's per-target table was wrong by 3x for four months
+      # because a DONE line was read as a vertex, and two editions of
+      # the AWS analysis were written on those numbers before anyone
+      # checked them against the wall clock. Synthetic logs, no build,
+      # so it belongs in this cheap job.
+      - name: nightly metrics attribution
+        run: python3 -I .builders/tests/test_nightlymetrics.py
+
   versions:
     name: Version tables
     runs-on: ubuntu-latest
