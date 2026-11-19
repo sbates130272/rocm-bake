@@ -103,7 +103,7 @@ volumes:
 
 services:
   lmcache:
-    image: ${REGISTRY:-snoc-strix.fold-leaffish.ts.net:8080}/rocm-pytorch/lmcache:${LMCACHE_TAG:-v0.5.7-10.1.0-full-gfx1201}
+    image: ${REGISTRY:-snoc-strix.fold-leaffish.ts.net:8080}/rocm-pytorch/lmcache:${LMCACHE_TAG:-v0.5.8rc1-10.1.0-full-gfx1201}
     # These tags move: every build of this ref overwrites them. Docker
     # will not re-pull a tag it already has locally, so without this the
     # GPU host serves whatever it happened to pull first and no amount
@@ -197,7 +197,7 @@ services:
     shm_size: ${SHM_SIZE:-16g}
 
   vllm:
-    image: ${REGISTRY:-snoc-strix.fold-leaffish.ts.net:8080}/rocm-pytorch/vllm:${VLLM_TAG:-v0.33.0-10.1.0-full-gfx1201}
+    image: ${REGISTRY:-snoc-strix.fold-leaffish.ts.net:8080}/rocm-pytorch/vllm:${VLLM_TAG:-v0.34.0-10.1.0-full-gfx1201}
     # Same moving tag, same reason — see lmcache above.
     pull_policy: always
     <<: *rocm
@@ -255,7 +255,33 @@ services:
         # lmcache service still starts and sits idle, which costs a
         # little RAM and is worth it for a comparable baseline.
         if [ "$${KV_OFFLOAD}" = "1" ]; then
-          KV_ARGS='--disable-hybrid-kv-cache-manager --kv-transfer-config {"kv_connector":"LMCacheMPConnector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://lmcache","lmcache.mp.port":5555}}'
+          # lmcache.mp.use_vmm_api=false is required from LMCache
+          # v0.5.8rc1 on vLLM v0.34.0, and without it the engine does
+          # not start at all.
+          #
+          # LMCache #6499 made fd-exported (VMM) KV memory the default,
+          # so the connector now answers EXPORTS_FD when vLLM asks how
+          # it reaches device memory. v0.34.0 refuses that on ROCm —
+          # _resolve_extensible_kv_cache, `is_rocm() and
+          # kv_cache_access.needs_single_chunk()` — and raises a
+          # ValidationError on VllmConfig before serving anything:
+          #
+          #   enable_extensible_kv_cache: a KV connector ... imports the
+          #   KV cache through POSIX file descriptors, which needs it,
+          #   but on ROCm, UCX and RDMA cannot yet register
+          #   driver-mapped memory
+          #
+          # False makes it answer LEGACY_IPC instead, which is what this
+          # stack already does: HSA_ENABLE_IPC_MODE_LEGACY=1 above is
+          # the only mode that works cross-container here. Tracked as
+          # LMCache #6620; the ROCm VMM path (LMCache #6626, vLLM
+          # #67577) is in neither pinned tag.
+          #
+          # Caching works with it: `make serve-test` on snoc-think,
+          # gfx1201, is 5/5 — "LMCache stored (1) and served (2)", tiers
+          # (5 L1, 0 L2). Any hand-written --kv-transfer-config needs
+          # the key too.
+          KV_ARGS='--disable-hybrid-kv-cache-manager --kv-transfer-config {"kv_connector":"LMCacheMPConnector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://lmcache","lmcache.mp.port":5555,"lmcache.mp.use_vmm_api":false}}'
         else
           KV_ARGS=''
         fi

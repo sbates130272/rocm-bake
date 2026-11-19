@@ -1508,12 +1508,14 @@ fetch-atom-wheel: ## Fetch the ATOM wheel (and atomesh) from Zot into ./dist
 	@ls -la dist/wheels/ dist/atomesh
 
 # ─── vLLM + the ATOM plugin ──────────────────────────────────────
-# ATOM v0.1.9's plugin targets vLLM 0.31.0; this repo pins v0.33.0.
-# These targets exist so that pairing is buildable, gated and measured
-# rather than assumed. See docs/architecture/atom-vllm-skew.md and
-# docker/Dockerfile.atom-vllm.
+# ATOM v0.1.10's plugin still targets vLLM 0.31.0; this repo pins
+# v0.34.0. These targets exist so that pairing is buildable, gated and
+# measured rather than assumed. See docs/architecture/atom-vllm-skew.md
+# and docker/Dockerfile.atom-vllm.
 #
-# To build against the fork that carries the 0.33 compat layer:
+# To build against the fork that carries the compat layer. Note the
+# tag below was written against 0.33 and has not been re-checked
+# against 0.34:
 #
 #   make build-atom-vllm \
 #        ATOM_REPO=https://github.com/sbates130272/ATOM.git \

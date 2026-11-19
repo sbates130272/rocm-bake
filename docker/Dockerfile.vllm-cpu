@@ -24,7 +24,7 @@ FROM ${LMCACHE_WHEEL_IMAGE} AS lmcachewheels
 FROM ${MANYLINUX_IMAGE} AS builder
 
 ARG PYTHON_VERSION
-ARG VLLM_REF=v0.33.0
+ARG VLLM_REF=v0.34.0
 ARG PYTORCH_VERSION
 ARG MAX_JOBS=
 # The largest single cc1plus measured was 2.7GB (csrc/cpu/cpu_attn.cpp,
@@ -214,34 +214,109 @@ COPY --from=builder /wheels-build.log /wheels-tag.txt /wheels-arch.txt \
     /var/log/vllm-cpu-build/
 
 # ─── vLLM and the LMCache client ─────────────────────────────────
-# WITH dependencies, unlike Dockerfile.vllm: neither wheel's metadata
-# names anything unresolvable, so installing through it is the test
-# that the published wheels resolve. The CPU index is an extra because
-# vLLM's metadata pins torch==<version>+cpu, which PyPI does not carry.
-# LMCache is not optional — vLLM's MP connector imports it at module
-# scope.
+# vLLM WITH dependencies: its metadata names nothing unresolvable, so
+# installing through it is the test that the published wheel resolves.
+# The CPU index is an extra because vLLM's metadata pins
+# torch==<version>+cpu, which PyPI does not carry. LMCache is not
+# optional — vLLM's MP connector imports it at module scope.
 #
-# ONE resolve for both. LMCache caps opentelemetry-api at 1.40; vLLM
-# alone resolves 1.45, whose exporter spans two more distributions.
-# Installed in sequence, the downgrade strands those two and `pip
-# check` fails:
+# LMCache --no-deps, which Dockerfile.vllm has always done and this
+# lane now has to. The two wheels stopped being co-resolvable at vLLM
+# v0.34.0:
 #
-#     opentelemetry-exporter-otlp-common 0.66b2 has requirement
-#     opentelemetry-sdk~=1.45.2, but you have opentelemetry-sdk 1.40.0
+#     vllm 0.34.0+cpu         depends on opentelemetry-api>=1.45.1
+#     lmcache 0.5.7.post1+cpu depends on opentelemetry-api<=1.40.0,>=1.20.0
+#     ERROR: ResolutionImpossible
+#
+# v0.33.0 floored it at 1.27.0, which left a window under LMCache's cap;
+# v0.34.0 raised the floor past it. LMCache's cap is its own — the
+# grpcio-observability pin that reads like its cause asks only for
+# >=1.21.0 — and their dev branch still carries it, so there is no
+# LMCache to bump to.
+#
+# Breaking LMCache's ceiling rather than vLLM's floor, because of what
+# each side does with opentelemetry here. LMCache's is its
+# mp_observability subsystem, which runs in the LMCache SERVER — a
+# separate image and a separate process. What this image holds is the
+# client shim behind LMCacheMPConnector, and the one otel import on that
+# path, in lmcache/logging.py, is already inside a try/except ImportError
+# that upstream documents as "no-op if opentelemetry is not installed".
+# vLLM's floor, by contrast, is load-bearing for the server that runs
+# here. Same reasoning as Dockerfile.vllm, reached from the other side.
+#
+# The requirements file is LMCache's own, patched at wheel-build time and
+# shipped beside the wheel; the sed lifts the ceilings and fails loudly
+# if there are none left to lift, so an LMCache that fixes this upstream
+# becomes an error here rather than a silent edit.
+#
+# CEILINGS, plural, and that is the whole trick. LMCache caps two:
+#
+#     opentelemetry-api                 >= 1.20.0, <= 1.40.0
+#     opentelemetry-exporter-prometheus >= 0.50b0, <= 0.61b0
+#
+# The second is the binding one. OpenTelemetry's exporters version as
+# 0.xxbN against the 1.xx core — 0.61b0 belongs to 1.40.0 — so capping
+# the exporter caps opentelemetry-sdk no matter what the api line says.
+# Lifting only the api line leaves the resolve legal and silently
+# DOWNGRADES the whole stack to 1.40 under a vLLM that asked for 1.45.1,
+# which `pip check` then reports against vllm rather than lmcache. Every
+# upper bound on an `opentelemetry-*` line goes, which also covers a
+# third if LMCache adds one.
 #
 # triton joins the constraints afterwards: it arrived by direct URL as
 # the +cpu build, and xgrammar's bare `triton` must not be answered
 # with PyPI's by a later install.
+COPY --from=lmcachewheels /requirements/common.txt \
+    /opt/lmcache-requirements/common.txt
+
+RUN set -eu; \
+    f=/opt/lmcache-requirements/common.txt; \
+    grep -qE '^opentelemetry-[a-z-]+ *>=.*<=' "$f" || { \
+        echo "no capped opentelemetry pin left in LMCache's requirements;" >&2; \
+        echo "upstream may have fixed this — drop the lift below:" >&2; \
+        grep -n opentelemetry "$f" >&2; exit 1; }; \
+    sed -i -E 's/^(opentelemetry-[a-z-]+ *>= *[0-9a-z.]+) *, *<= *[0-9a-z.]+$/\1/' "$f"; \
+    ! grep -qE '^opentelemetry-[a-z-]+ *>=.*<=' "$f" || { \
+        echo "an opentelemetry cap survived the lift:" >&2; \
+        grep -n opentelemetry "$f" >&2; exit 1; }; \
+    grep -n opentelemetry "$f"
+
 RUN --mount=type=bind,from=builder,source=/wheels,target=/w/vllm \
     --mount=type=bind,from=lmcachewheels,source=/wheels,target=/w/lmcache \
     pip install --no-cache-dir \
         --extra-index-url https://download.pytorch.org/whl/cpu \
-        /w/vllm/*.whl /w/lmcache/*.whl && \
-    pip check && \
+        /w/vllm/*.whl && \
+    pip install --no-cache-dir \
+        --extra-index-url https://download.pytorch.org/whl/cpu \
+        -r /opt/lmcache-requirements/common.txt && \
+    pip install --no-cache-dir --no-deps /w/lmcache/*.whl && \
     pip list --format=freeze > /tmp/pip-freeze.txt && \
     grep -E '^triton==.*\+cpu$' /tmp/pip-freeze.txt >> /etc/pip-constraints.txt && \
     rm /tmp/pip-freeze.txt && \
     cat /etc/pip-constraints.txt
+
+# `pip check` still runs, and still fails the build on anything real.
+# The tolerated lines are the ceilings deliberately broken above: the
+# INSTALLED wheel's metadata still carries both, because only the
+# requirements file was patched and the wheel is the published artifact.
+#
+# Matched on lmcache AND an opentelemetry name together, so a complaint
+# about any other distribution — notably vllm, which is what a
+# downgraded otel stack reads as — is still a failure, and so is a
+# missing LMCache dependency.
+RUN set -eu; \
+    if pip check > /tmp/pip-check.txt 2>&1; then \
+        cat /tmp/pip-check.txt; \
+    else \
+        cat /tmp/pip-check.txt; \
+        if grep -v -E '^lmcache [^ ]+ has requirement opentelemetry-' \
+            /tmp/pip-check.txt | grep -qE '[^[:space:]]'; then \
+            echo "pip check reported more than the broken otel ceilings" >&2; \
+            exit 1; \
+        fi; \
+        echo "pip check: only the deliberately broken otel ceilings"; \
+    fi; \
+    rm /tmp/pip-check.txt
 
 # CpuPlatform is selected by the `+cpu` in the version. The variable
 # makes that hold if the suffix is ever renamed: every other platform

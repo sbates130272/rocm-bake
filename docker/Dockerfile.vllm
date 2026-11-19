@@ -182,7 +182,7 @@ RUN set -eu; \
 # ─── Builder ─────────────────────────────────────────────────────
 FROM deps AS builder
 
-ARG VLLM_REF=v0.33.0
+ARG VLLM_REF=v0.34.0
 ARG SCCACHE_WEBDAV_ENDPOINT=http://snoc-strix.fold-leaffish.ts.net:8081
 # Key namespace within the shared store, and a unix socket rather than a
 # TCP port — the builders run with --driver-opt network=host, so a fixed
@@ -439,7 +439,7 @@ RUN ls -la /wheels/
 # the wheel by an order of magnitude.
 FROM deps AS final
 
-ARG VLLM_REF=v0.33.0
+ARG VLLM_REF=v0.34.0
 ARG PYTORCH_ROCM_ARCH
 ARG ROCM_VERSION
 

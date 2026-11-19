@@ -211,6 +211,51 @@ def _check_platform() -> None:
         _check("torch.accelerator.get_memory_info returns (free, total)",
                ok, repr(info))
 
+    # The other half of the same memory probe, and the one that broke
+    # on v0.33.0 -> v0.34.0. vLLM made CacheConfig.gpu_memory_utilization
+    # Optional[float] defaulting to None, resolved through a property;
+    # llm-emu's cuda_mock reads the raw field and float(None) raises
+    # inside _initialize_kv_caches. Measured as a contract on vLLM's own
+    # class, so a vLLM that changes it again fails here rather than at
+    # the first served request.
+    try:
+        from vllm.config import CacheConfig
+
+        field = getattr(CacheConfig, "__dataclass_fields__", {}).get(
+            "gpu_memory_utilization")
+        default = getattr(field, "default", object())
+        # pydantic wraps it: the dataclass default is a FieldInfo whose
+        # own .default carries the None.
+        optional = default is None or getattr(default, "default", object()) is None
+        resolver = hasattr(CacheConfig, "resolved_gpu_memory_utilization")
+        _check("CacheConfig.gpu_memory_utilization is settleable",
+               (not optional) or resolver,
+               "defaults to None and vLLM ships no "
+               "resolved_gpu_memory_utilization to copy")
+    except ImportError as exc:  # noqa: BLE001
+        _check("CacheConfig.gpu_memory_utilization is settleable",
+               False, f"could not import: {exc}")
+
+    # The shape llm-emu's executor hook builds for every emulated step.
+    # v0.34.0 deleted req_id_to_index, which the hook still passes, and
+    # the TypeError lands on the first request rather than at startup.
+    try:
+        from vllm.v1.outputs import ModelRunnerOutput
+
+        got = ModelRunnerOutput(
+            req_ids=["r0"],
+            req_id_to_index={"r0": 0},
+            sampled_token_ids=[[1]],
+            logprobs=None,
+            prompt_logprobs_dict={},
+            pooler_output=[None],
+        )
+        _check("ModelRunnerOutput takes what llm-emu's hook passes",
+               got.req_ids == ["r0"], repr(got))
+    except Exception as exc:  # noqa: BLE001
+        _check("ModelRunnerOutput takes what llm-emu's hook passes",
+               False, f"{type(exc).__name__}: {exc}")
+
     # The return type the executor destructures across every worker.
     try:
         from vllm.v1.worker.gpu_worker import Worker

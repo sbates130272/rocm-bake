@@ -115,8 +115,27 @@ services:
     command:
       - |
         set -e
+        # lmcache.mp.use_vmm_api=false is required from LMCache
+        # v0.5.8rc1, here for the mirror image of the reason the ROCm
+        # file needs it.
+        #
+        # LMCache #6499 made fd-exported (VMM) KV memory the default, so
+        # the connector answers EXPORTS_FD when vLLM asks how it reaches
+        # device memory. vLLM v0.34.0 then refuses it — there, because
+        # ROCm cannot register driver-mapped memory; here, because the
+        # extensible KV cache does not exist off CUDA and ROCm at all:
+        #
+        #   enable_extensible_kv_cache: a KV connector ... imports the
+        #   KV cache through POSIX file descriptors, which needs it,
+        #   but it is only supported on CUDA and ROCm
+        #
+        # a ValidationError on VllmConfig, and the container exits
+        # during startup. False makes the connector answer LEGACY_IPC,
+        # which vLLM accepts: the KV cache stays a plain allocation,
+        # which on this lane is the /dev/shm segment lmcache_driven
+        # already moves it into.
         if [ "$${KV_OFFLOAD}" = "1" ]; then
-          KV_ARGS='--kv-transfer-config {"kv_connector":"LMCacheMPConnector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://lmcache","lmcache.mp.port":5555}}'
+          KV_ARGS='--kv-transfer-config {"kv_connector":"LMCacheMPConnector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://lmcache","lmcache.mp.port":5555,"lmcache.mp.use_vmm_api":false}}'
         else
           KV_ARGS=''
         fi
@@ -150,6 +169,14 @@ services:
       # Exposes /reset_prefix_cache, which cpu-test.sh uses to tell
       # LMCache's cache apart from vLLM's own. Off unless asked for.
       VLLM_SERVER_DEV_MODE: ${VLLM_DEV_MODE:-0}
+      # Turns SIGABRT into a traceback for every thread of the process,
+      # on stderr and so into the container log. Inherited by the engine
+      # and worker children, which is the point: a startup HANG leaves
+      # no exception for cpu-test.sh to print, and the last log line is
+      # whatever happened to run before the thread stopped. This is what
+      # lets it ask a stuck worker where it is. Costs nothing until
+      # something sends the signal — see startup_failure in cpu-test.sh.
+      PYTHONFAULTHANDLER: 1
     # The start period covers a cold model download; a container that
     # exits fails `up --wait` at once regardless.
     healthcheck:

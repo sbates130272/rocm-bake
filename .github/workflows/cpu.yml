@@ -157,7 +157,29 @@ jobs:
       # minute sooner: eager skips the warmup compile of the backbone
       # outright, and the pull requests that run this workflow are the
       # ones that can break it.
+      # STARTUP_TIMEOUT, because 900s is not enough on four cores at
+      # v0.34.0. The worker spends it inside ONE Triton compile:
+      #
+      #   gpu_worker.py sample_tokens -> model_runner sample
+      #     -> sampler __call__ -> logprob.py compute_topk_scores
+      #       -> triton/runtime/jit.py _do_compile
+      #         -> triton/backends/cpu/compiler.py make_asm
+      #
+      # read off the SIGABRT stack dump startup_failure now takes. The
+      # engine is not deadlocked, it is blocked on the worker's reply to
+      # compile_or_warm_up_model while that kernel builds, which is why
+      # the only symptom is shm_broadcast logging every 60s. v0.34.0's
+      # sampler reaches Triton on this lane where v0.33.0 did not; the
+      # cache is cold on a fresh runner, and it ran past 12 minutes here
+      # before the old budget cut it off.
+      #
+      # 2400 to find the ceiling rather than to hide it: the job is 60
+      # minutes and the rest of it fits in about six, so an honest
+      # number costs nothing and the run prints the real "startup Ns".
+      # Bring this down to just above whatever that turns out to be.
       - name: Serve a model and read it back from LMCache
+        env:
+          STARTUP_TIMEOUT: 2400
         run: .builders/cpu-test.sh --keep
 
       - name: Container logs

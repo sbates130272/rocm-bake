@@ -4,7 +4,7 @@ Wires [LLM-Emu](https://github.com/AKafakA/llm-emu) into vLLM without
 patching vLLM.
 
 LLM-Emu ships its vLLM wiring as a unified diff against v0.18.1. This
-repo pins v0.33.0, where most of that diff no longer applies, and
+repo pins v0.34.0, where most of that diff no longer applies, and
 regenerating it on every `VLLM_REF` bump is exactly the maintenance
 this package exists to avoid. Instead the ~25 lines that emulation
 actually needs are applied to vLLM's classes at plugin-load time, via

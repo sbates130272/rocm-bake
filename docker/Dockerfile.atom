@@ -49,7 +49,7 @@ ARG PYTORCH_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/pytorch:late
 
 FROM ${PYTORCH_IMAGE} AS builder
 
-ARG ATOM_REF=v0.1.9
+ARG ATOM_REF=v0.1.10
 ARG ATOM_REPO=https://github.com/ROCm/ATOM.git
 ARG PYTORCH_ROCM_ARCH=gfx950
 ARG ROCM_VERSION=10.1.0-full
@@ -259,7 +259,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # setuptools_scm, overridden. The same local-version trick
 # Dockerfile.torchvision plays with BUILD_VERSION, for the same reason:
-# `0.1.9+rocm10.1.0` is a version PyPI cannot offer, so a constraint
+# `0.1.10+rocm10.1.0` is a version PyPI cannot offer, so a constraint
 # naming it is unsatisfiable from anywhere but this pipeline. `atom` is
 # a generic enough name on PyPI that this matters more here than it did
 # there.

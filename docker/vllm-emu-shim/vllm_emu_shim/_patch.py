@@ -440,6 +440,79 @@ def _patch_gpu_worker(module) -> None:
           "CompilationTimes(0.0, 0.0)")
 
 
+def _patch_model_runner_output(module) -> None:
+    """Let ModelRunnerOutput take the field v0.34.0 deleted.
+
+    LLM-Emu builds the fake step result in
+    hooks/executor_hook.py:_create_fake_output:
+
+        return ModelRunnerOutput(
+            req_ids=req_ids,
+            req_id_to_index=req_id_to_index,
+            ...
+
+    v0.33.0 declared that field; v0.34.0 removed it outright, along with
+    its use in EMPTY_MODEL_RUNNER_OUTPUT. So the first request served
+    dies with
+
+        TypeError: ModelRunnerOutput.__init__() got an unexpected
+                   keyword argument 'req_id_to_index'
+
+    inside the hook, which is upstream code we do not own.
+
+    Dropped rather than translated, because vLLM dropped it: the field
+    was an index built by enumerating req_ids, and nothing downstream
+    asks for it any more. There is no value to carry forward.
+
+    Patched on the dataclass rather than on the hook, because the hook
+    imports ModelRunnerOutput INSIDE the function (executor_hook.py:218)
+    — rebinding the name on that module would be read once and then
+    ignored. Rewriting _create_fake_output instead would mean carrying a
+    copy of its prefill-chunk and logprobs logic, which is the kind of
+    duplication this package exists to avoid.
+
+    Installed only when the field is actually gone, so on a vLLM that
+    still declares it nothing is wrapped. Unknown keywords are dropped
+    rather than matched by name: a caller written against an older vLLM
+    is exactly what this handles, and each dropped name is reported once
+    so the lane never drops one silently. A field this vLLM ADDS as
+    required still raises, loudly, which is correct — that is a value
+    nobody computed.
+    """
+    cls = getattr(module, "ModelRunnerOutput", None)
+    if cls is None or getattr(cls, _MARK, False):
+        return
+
+    import dataclasses
+
+    try:
+        names = {f.name for f in dataclasses.fields(cls)}
+    except TypeError:
+        return
+    if "req_id_to_index" in names:
+        return
+
+    orig_init = cls.__init__
+    reported: set[str] = set()
+
+    @functools.wraps(orig_init)
+    def __init__(self, *args, **kwargs):  # noqa: N807
+        extra = [k for k in kwargs if k not in names]
+        if extra:
+            for key in extra:
+                kwargs.pop(key)
+            fresh = [k for k in extra if k not in reported]
+            if fresh:
+                reported.update(fresh)
+                print("[vllm-emu-shim] ModelRunnerOutput: dropped "
+                      f"{', '.join(sorted(fresh))} — not a field of this vLLM")
+        orig_init(self, *args, **kwargs)
+
+    cls.__init__ = __init__
+    setattr(cls, _MARK, True)
+    print("[vllm-emu-shim] ModelRunnerOutput accepts removed fields")
+
+
 def _patch_accelerator_memory_info() -> None:
     """Make torch.accelerator.get_memory_info answer with a 2-tuple.
 
@@ -502,7 +575,63 @@ def _patch_accelerator_memory_info() -> None:
     print("[vllm-emu-shim] torch.accelerator.get_memory_info supplied")
 
 
-def _wrap_check_and_update_config(cls) -> None:
+def _settle_gpu_memory_utilization(vllm_config) -> None:
+    """Give cache_config.gpu_memory_utilization a number, not None.
+
+    v0.34.0 made the field optional and resolved it lazily:
+
+        gpu_memory_utilization: float | None = Field(default=None, ...)
+
+        @property
+        def resolved_gpu_memory_utilization(self) -> float:
+            if self.gpu_memory_utilization is not None:
+                return self.gpu_memory_utilization
+            if self.enable_extensible_kv_cache:
+                return 1.0
+            return self.DEFAULT_GPU_MEMORY_UTILIZATION   # 0.92
+
+    vLLM's own code goes through that property. LLM-Emu's does not:
+    cuda_mock._stub_determine_available_memory reads the raw field,
+
+        util = float(getattr(self.cache_config, "gpu_memory_utilization", 0.9))
+
+    and the getattr default never fires, because at v0.34.0 the
+    attribute exists and holds None. float(None) raises TypeError and
+    takes the engine core down inside _initialize_kv_caches, which is
+    what the emu lane failed with on the v0.33.0 -> v0.34.0 bump.
+
+    Resolving it here rather than patching that stub: the stub is one
+    reader of a field llm-emu reads raw in several places, and the
+    property is vLLM's own answer to what the value should be, so
+    settling the field once leaves every reader — theirs and ours —
+    agreeing with vLLM.
+
+    Inert on a vLLM that does not do this. v0.33.0's field is a plain
+    float and never None, so the second guard returns before anything
+    is written.
+    """
+    cache_config = getattr(vllm_config, "cache_config", None)
+    if cache_config is None:
+        return
+    # Absent entirely is not our problem to fix; present-and-None is.
+    if not hasattr(cache_config, "gpu_memory_utilization"):
+        return
+    if cache_config.gpu_memory_utilization is not None:
+        return
+
+    resolved = getattr(cache_config, "resolved_gpu_memory_utilization", None)
+    if resolved is None:
+        # A vLLM that made the field optional without shipping the
+        # resolver. Nothing to copy, so fall back to its own constant
+        # rather than inventing one.
+        resolved = getattr(cache_config, "DEFAULT_GPU_MEMORY_UTILIZATION", 0.92)
+
+    cache_config.gpu_memory_utilization = float(resolved)
+    print(f"[vllm-emu-shim] cache_config.gpu_memory_utilization None -> "
+          f"{cache_config.gpu_memory_utilization} (llm-emu reads it raw)")
+
+
+def _settle_compilation(vllm_config) -> None:
     """Turn torch.compile off in the way v0.33.0 understands.
 
     EmulatorPlatform's check_and_update_config does:
@@ -527,6 +656,30 @@ def _wrap_check_and_update_config(cls) -> None:
     user-facing knob resolved earlier into this same field, and writing
     the field is both narrower and the thing actually read.
     """
+    cc = getattr(vllm_config, "compilation_config", None)
+    if cc is None or not hasattr(cc, "mode"):
+        return
+    try:
+        from vllm.config import CompilationMode
+    except ImportError:
+        return
+    if cc.mode != CompilationMode.NONE:
+        print(f"[vllm-emu-shim] compilation {cc.mode!r} -> NONE "
+              f"(no model is loaded to compile)")
+        cc.mode = CompilationMode.NONE
+
+
+def _wrap_check_and_update_config(cls) -> None:
+    """Settle what EmulatorPlatform leaves wrong for this vLLM.
+
+    Two independent fixes, both applied after upstream's own method
+    runs so everything else it decides — device, worker_cls — is
+    untouched. Each is documented on the function that does it.
+
+    Kept in one wrapper rather than two: both edit the same config
+    object at the same moment, and wrapping a classmethod twice makes
+    the order they run in depend on the order they were installed.
+    """
     orig = cls.__dict__.get("check_and_update_config")
     if orig is None:
         return
@@ -534,17 +687,8 @@ def _wrap_check_and_update_config(cls) -> None:
 
     def check_and_update_config(_cls, vllm_config) -> None:
         orig_func(_cls, vllm_config)
-        cc = getattr(vllm_config, "compilation_config", None)
-        if cc is None or not hasattr(cc, "mode"):
-            return
-        try:
-            from vllm.config import CompilationMode
-        except ImportError:
-            return
-        if cc.mode != CompilationMode.NONE:
-            print(f"[vllm-emu-shim] compilation {cc.mode!r} -> NONE "
-                  f"(no model is loaded to compile)")
-            cc.mode = CompilationMode.NONE
+        _settle_compilation(vllm_config)
+        _settle_gpu_memory_utilization(vllm_config)
 
     cls.check_and_update_config = classmethod(check_and_update_config)
 
@@ -582,6 +726,9 @@ def apply() -> bool:
     _step("accelerator memory", _patch_accelerator_memory_info)
     _step("gpu_worker", _module_patcher, "vllm.v1.worker.gpu_worker",
           _patch_gpu_worker, "gpu_worker")
+    # Before the executor, which is what reaches the hook that builds one.
+    _step("model runner output", _module_patcher, "vllm.v1.outputs",
+          _patch_model_runner_output, "model_runner_output")
     _step("executor", _module_patcher, "vllm.v1.executor.uniproc_executor",
           _patch_uniproc_executor, "uniproc_executor")
     _step("engine core", _module_patcher, "vllm.v1.engine.core",

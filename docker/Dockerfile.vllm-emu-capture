@@ -32,7 +32,7 @@ ARG VLLM_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/vllm:latest
 
 FROM ${VLLM_IMAGE} AS final
 
-ARG VLLM_REF=v0.33.0
+ARG VLLM_REF=v0.34.0
 ARG PYTORCH_ROCM_ARCH
 ARG ROCM_VERSION
 
