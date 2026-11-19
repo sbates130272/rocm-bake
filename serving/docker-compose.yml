@@ -35,10 +35,12 @@
 # Both are LMCache-side; none of it is configured in vLLM.
 #
 # Usage:
-#   KV_TIER=cpu  docker compose up
-#   KV_TIER=file docker compose up
+#   make serve-stack KV_TIER=cpu
+#   make serve-stack KV_TIER=file
 #
-# Set REGISTRY/VLLM_TAG/LMCACHE_TAG to match the images you built.
+# VLLM_TAG and LMCACHE_TAG have no default: each is three bake pins
+# joined, and a copy here went stale on every bump. make derives them
+# from rocm-bake.hcl; a bare `docker compose` must be given them.
 
 name: rocm-serving
 
@@ -103,7 +105,7 @@ volumes:
 
 services:
   lmcache:
-    image: ${REGISTRY:-snoc-strix.fold-leaffish.ts.net:8080}/rocm-pytorch/lmcache:${LMCACHE_TAG:-v0.5.8rc1-10.1.0-full-gfx1201}
+    image: ${REGISTRY:-snoc-strix.fold-leaffish.ts.net:8080}/rocm-pytorch/lmcache:${LMCACHE_TAG:?set LMCACHE_TAG, or use make serve-stack}
     # These tags move: every build of this ref overwrites them. Docker
     # will not re-pull a tag it already has locally, so without this the
     # GPU host serves whatever it happened to pull first and no amount
@@ -197,7 +199,7 @@ services:
     shm_size: ${SHM_SIZE:-16g}
 
   vllm:
-    image: ${REGISTRY:-snoc-strix.fold-leaffish.ts.net:8080}/rocm-pytorch/vllm:${VLLM_TAG:-v0.34.0-10.1.0-full-gfx1201}
+    image: ${REGISTRY:-snoc-strix.fold-leaffish.ts.net:8080}/rocm-pytorch/vllm:${VLLM_TAG:?set VLLM_TAG, or use make serve-stack}
     # Same moving tag, same reason — see lmcache above.
     pull_policy: always
     <<: *rocm
