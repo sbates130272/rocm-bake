@@ -16,8 +16,49 @@ pip install \
   "rocm-torch[device-gfx950]"
 ```
 
-Substitute `gfx1201`, `gfx1151` or `gfx1250` for another card. That is
-the whole interface.
+Substitute `gfx1201`, `gfx1151` or `gfx1250` for another card. That
+installs the newest build on the newest ROCm, which is what most people
+want.
+
+## Choosing A ROCm Version, Or A Build
+
+Nothing that has been published is ever removed or replaced, so an
+install can be held still at either level.
+
+**A ROCm version.** `data/wheels/<arch>/` follows the newest ROCm
+published for that card. Each ROCm version also has an index of its
+own, which a newer ROCm never changes. Use it on a host whose ROCm is
+not the newest:
+
+```bash
+pip install \
+  --index-url https://sbates130272.github.io/rocm-bake/data/wheels/rocm10.1/gfx950/ \
+  --extra-index-url https://pypi.org/simple \
+  "rocm-torch[device-gfx950]"
+```
+
+**A build.** Wheels are rebuilt weekly, and whenever a pin moves. Each
+build is a version of `rocm-torch`, and every build stays in its
+index, so pinning the metapackage pins the whole set:
+
+```bash
+pip install \
+  --index-url https://sbates130272.github.io/rocm-bake/data/wheels/rocm10.2/gfx950/ \
+  --extra-index-url https://pypi.org/simple \
+  "rocm-torch[device-gfx950]==10.2.0.20261127"
+```
+
+The [index pages][wheels] list every build each index holds. Pin
+against the versioned path rather than the bare one: after the next
+ROCm release the bare path is a different index, and the build you
+named is not in it.
+
+Builds published before 2026-11-20 have no build number. Their
+`rocm-torch` is `10.1.0+gfx950.6b049405`, which `==10.1.0` selects.
+
+A week in which nothing changed publishes nothing. The build number is
+the date a set of wheels first differed from the one before it, not
+the date of a run.
 
 !!! note "No GPU? There is an `emu` index"
     One index is not a card: `emu` carries a vLLM built with no device
@@ -67,11 +108,17 @@ Installing it is how you get a set that was built together rather than
 a set pip assembled. The exact pins are also the defence against
 name collisions — see below.
 
-Its own version looks like `10.1.0+gfx950.424e84fe`: the ROCm version,
-the architecture, and a digest of the pin set. The digest moves
-whenever the pinned versions do, so a rebuild is a new version rather
-than the same version with different contents, which a pip cache is
-entitled to assume.
+Its own version looks like `10.2.0.20261127+gfx950.424e84fe`: the ROCm
+version, the build number, the architecture, and a digest of the pin
+set. The digest moves whenever the pinned versions do, so a rebuild is
+a new version rather than the same version with different contents,
+which a pip cache is entitled to assume. The build number is what
+orders them: a digest says two builds differ and not which is newer,
+so without it "the latest `rocm-torch`" in an index holding several
+would be whichever digest sorted last.
+
+Everything after the `+` is ignored by a pin that does not mention it,
+which is why `==10.2.0.20261127` is enough to name a build.
 
 ## Reading A Version
 
@@ -153,6 +200,28 @@ A scheduled workflow re-resolves every published index weekly and fails
 if any of our distributions comes from PyPI or any CUDA package appears,
 because this class of breakage arrives without a commit of ours: it
 starts the day somebody else publishes a colliding name.
+
+## What The Index Promises
+
+- **A published file never changes.** Each build is its own GitHub
+  release, tagged `wheels-<rocm>-<arch>-<build>`, and nothing is
+  uploaded over an existing asset or deleted from one. A URL and the
+  `sha256` beside it mean the same bytes for as long as they exist, so
+  a lockfile that recorded them keeps working.
+- **A filename appears once.** Most of a build is usually unchanged
+  from the one before. A wheel two builds share is listed once, at the
+  URL it was first published under.
+- **Dependencies resolve without downloading wheels.** Each wheel's
+  metadata is served beside it ([PEP 658][pep658]), so an installer
+  reads a few KB to plan an install instead of fetching `torch` to
+  find out what it requires. Each link also carries the wheel's
+  `Requires-Python`.
+- **The index can be rebuilt from the releases.** Every release
+  carries a `manifest.json` describing its build, and
+  `make wheels-reindex` regenerates every index page from those. The
+  pages on `gh-pages` are a rendering, not a record.
+
+[pep658]: https://peps.python.org/pep-0658/
 
 ## Python Version
 

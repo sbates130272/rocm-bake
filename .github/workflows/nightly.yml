@@ -21,12 +21,36 @@ name: Nightly — cold and warm build
 # work in .builders/target-costs — the graph is a near-serial chain, so
 # splitting targets across machines buys almost nothing and turns local
 # layer reuse into registry pulls. Architectures share no edges.
+#
+# TWO SCHEDULES, ONE WORKFLOW. Monday to Saturday is the nightly: one
+# architecture (NIGHTLY_ARCHES), skipped when main has not moved,
+# nothing published. It exists to say that main still builds. Sunday
+# is the weekly: every architecture, whether or not main moved, and
+# the wheels are published when all of them build.
+#
+# The weekly ignores the "has main moved" gate on purpose. A build has
+# inputs that no commit of ours records -- the base image behind a
+# tag, the Ubuntu archive -- and a week is long enough for them to
+# shift. With a warm cache an unchanged architecture costs minutes,
+# and a build whose wheels come out identical publishes nothing.
+#
+# One workflow rather than two because the build job is the same job:
+# same machine, same caches, same forty lines of environment that
+# record why each value is what it is. A copy would drift. Sharing the
+# concurrency group also keeps a weekly and a nightly from running at
+# once against the same registry cache.
 on:
   schedule:
     # 02:17 UTC. Not 02:00: every scheduled workflow on GitHub is
     # written for the top of an hour, and the queue there is long
     # enough to delay a job by many minutes.
-    - cron: '17 2 * * *'
+    - cron: '17 2 * * 1-6'
+    # The weekly. Sunday, so the published indexes are a day old when
+    # wheels-probe.yml resolves them on Monday morning, and so a pin
+    # bump merged during the week is what gets built. The `changed`
+    # job compares github.event.schedule against this exact string;
+    # change both together.
+    - cron: '17 2 * * 0'
   workflow_dispatch:
     inputs:
       arches:
@@ -63,6 +87,14 @@ on:
         description: 'Space-separated bake targets (default: the whole default group)'
         required: false
         default: ''
+      # Run Sunday's shape now: every architecture, then publish. The
+      # publish is skipped if `push` is off or `targets` is set, since
+      # either means ECR does not hold a complete set from this run.
+      weekly:
+        description: 'Weekly run: all architectures, then publish the wheels'
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -91,11 +123,24 @@ jobs:
     if: vars.NIGHTLY_ENABLED == 'true'
     outputs:
       run: ${{ steps.check.outputs.run }}
+      weekly: ${{ steps.check.outputs.weekly }}
     steps:
       - id: check
         env:
           GH_TOKEN: ${{ github.token }}
+          # Decided here, once, and read by every later job as
+          # needs.changed.outputs.weekly. `inputs.weekly` is null on a
+          # schedule and `github.event.schedule` is null on a
+          # dispatch, so each half is false exactly when the other
+          # applies.
+          WEEKLY: ${{ github.event.schedule == '17 2 * * 0' || inputs.weekly == true }}
         run: |
+          echo "weekly=$WEEKLY" >> "$GITHUB_OUTPUT"
+          if [ "$WEEKLY" = "true" ]; then
+            echo "weekly run — every architecture, regardless of main"
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "dispatched by hand — running regardless"
             echo "run=true" >> "$GITHUB_OUTPUT"
@@ -142,13 +187,23 @@ jobs:
       # should not require a commit — nor should it be re-made by hand
       # on every dispatch, which is how a "temporary" single-arch
       # nightly silently becomes a three-arch bill.
+      #
+      # The weekly reads WEEKLY_ARCHES instead and never
+      # NIGHTLY_ARCHES: that variable is what keeps the nightly to one
+      # architecture, which is the opposite of what the weekly is for.
+      # Unset, it is every architecture the Makefile lists.
       - id: pick
         env:
           NIGHTLY_ARCHES: ${{ vars.NIGHTLY_ARCHES }}
+          WEEKLY_ARCHES: ${{ vars.WEEKLY_ARCHES }}
+          WEEKLY: ${{ needs.changed.outputs.weekly }}
         run: |
           arches="${{ inputs.arches }}"
           source="workflow_dispatch input"
-          if [ -z "$arches" ]; then
+          if [ -z "$arches" ] && [ "$WEEKLY" = "true" ]; then
+            arches="$WEEKLY_ARCHES"
+            source="WEEKLY_ARCHES repository variable"
+          elif [ -z "$arches" ]; then
             arches="$NIGHTLY_ARCHES"
             source="NIGHTLY_ARCHES repository variable"
           fi
@@ -281,7 +336,7 @@ jobs:
 
   report:
     name: Report
-    needs: [arches, build]
+    needs: [changed, arches, build]
     # always(): a nightly that reports only on success cannot be told
     # apart from one that never ran. The issue is the signal, so it
     # has to survive the failure it exists to describe.
@@ -305,7 +360,9 @@ jobs:
       - name: Assemble the night's summary
         run: |
           {
-            printf '## Nightly %s\n\n' "$(date -u +%Y-%m-%d)"
+            printf '## %s %s\n\n' \
+              "${{ needs.changed.outputs.weekly == 'true' && 'Weekly' || 'Nightly' }}" \
+              "$(date -u +%Y-%m-%d)"
             printf 'Build result: **%s**\n\n' "${{ needs.build.result }}"
             found=0
             for d in /tmp/reports/nightly-*/; do
@@ -387,3 +444,40 @@ jobs:
               --label nightly --label automated \
               --body "$body"
           fi
+
+  # The weekly's second half: put what was just built where people
+  # install it from.
+  #
+  # All or nothing across architectures. `needs.build.result` is
+  # success only when every matrix leg was, so one architecture failing
+  # holds back the other three -- a set of indexes that are not all on
+  # the same pins is harder to reason about than a week-old set that
+  # is.
+  #
+  # After `report`, not beside it: both push to gh-pages, and the
+  # loser of that race fails on a non-fast-forward. `always()` because
+  # a report that failed is no reason to withhold wheels that built.
+  #
+  # One architecture at a time, for the same branch. Each leg is the
+  # whole of wheels-publish.yml, which is where the reasons for its
+  # machine size and its permissions are written down.
+  publish:
+    name: Publish
+    needs: [changed, arches, build, report]
+    if: >-
+      always()
+      && needs.changed.outputs.weekly == 'true'
+      && needs.build.result == 'success'
+      && !(github.event_name == 'workflow_dispatch'
+           && (!inputs.push || inputs.targets != ''))
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        arch: ${{ fromJson(needs.arches.outputs.list) }}
+    permissions:
+      contents: write
+    uses: ./.github/workflows/wheels-publish.yml
+    with:
+      arch: ${{ matrix.arch }}
+      dry_run: false

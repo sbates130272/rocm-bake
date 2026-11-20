@@ -2,23 +2,26 @@
 # Publish one architecture's wheels publicly: binaries to a GitHub
 # release, the PEP 503 index to gh-pages.
 #
-# Manual dispatch, not a schedule and not a hook on the nightly. Three
-# reasons, in order of how much they matter.
+# Two ways in. By hand, for one architecture, with dry_run defaulting
+# to true. And called by nightly.yml's weekly run, once per
+# architecture, after every architecture has built.
 #
-# The nightly deliberately splits its jobs: the one that runs the build
-# holds registry credentials and third-party build code, and is not the
-# one that writes to this repository. Hooking publishing onto it would
-# have to break that, by giving either the build job permission to cut
-# public releases or the publishing job credentials to a registry.
+# Its own workflow, and not steps in the build job, for one reason
+# that has not changed: the job that runs the build holds registry
+# credentials and third-party build code, and must not be the one that
+# writes to this repository. This workflow holds both, and that is
+# defensible where the build job is not: it compiles nothing. It pulls
+# finished wheels out of ECR and uploads them. No third-party source is
+# built here, so "holds credentials and runs build code" does not
+# apply.
 #
-# This workflow does hold both, and that is defensible where the
-# nightly's build job is not: it compiles nothing. It pulls finished
-# wheels out of ECR and uploads them. No third-party source is built
-# here, so "holds credentials and runs build code" does not apply.
-#
-# And publishing is a decision. Every green night republishing a 1.2GB
-# release is not obviously wanted, especially on a lane whose
-# NIGHTLY_ARCHES is pinned to one architecture.
+# It used to be manual only, on the grounds that every green night
+# republishing a 1.2GB release was not obviously wanted. That was an
+# argument against the publisher of the day, which replaced a release
+# in place. Now a build whose wheels match the last one publishes
+# nothing, and one that differs goes out beside it, so running this on
+# a schedule costs a download when nothing moved and never disturbs
+# what is already public. See .builders/wheelpublish.sh.
 #
 # Runs on CodeBuild rather than a GitHub runner because that is where
 # ECR access is: the build's identity is the project's service role,
@@ -40,6 +43,19 @@ on:
         description: 'Show what would happen, touch nothing'
         required: false
         default: true
+        type: boolean
+  # The same two inputs for nightly.yml's weekly run. `choice` is not
+  # a type workflow_call has, so the architecture is a string here and
+  # the caller's matrix is what bounds it. dry_run defaults the other
+  # way: a caller that wants a rehearsal says so.
+  workflow_call:
+    inputs:
+      arch:
+        required: true
+        type: string
+      dry_run:
+        required: false
+        default: false
         type: boolean
 
 permissions:
@@ -146,6 +162,7 @@ jobs:
           owner='${{ github.repository_owner }}'
           name="${GITHUB_REPOSITORY##*/}"
           arch='${{ inputs.arch }}'
+          rocm=$(sed -n '/^variable "ROCM_VERSION"/,/^}/s/.*default *= *"\([0-9]*\.[0-9]*\).*/\1/p' rocm-bake.hcl)
           # One redirect, not seven: actionlint runs shellcheck over
           # this block and SC2129 objects to the repeated form.
           cat >> "$GITHUB_STEP_SUMMARY" <<SUMMARY
@@ -157,4 +174,7 @@ jobs:
             --extra-index-url https://pypi.org/simple \\
             "rocm-torch[device-${arch}]"
           \`\`\`
+
+          That URL follows the newest ROCm. This ROCm's own index, which
+          keeps every build: \`data/wheels/rocm${rocm}/${arch}/\`
           SUMMARY

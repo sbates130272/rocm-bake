@@ -9,7 +9,7 @@ did watch it compared wrong: it reduced the ROCm tag to "10.1" and
 compared that against the bake default "10.1.0-full", so it reported
 drift every single week regardless of the truth.
 
-Two jobs, deliberately not entangled:
+Three jobs, deliberately not entangled:
 
   report   (default, --markdown)
       Per component: the latest upstream release, the versions we have
@@ -23,6 +23,13 @@ Two jobs, deliberately not entangled:
       network at all, which is what lets it gate every pull request
       in lint.yml - where the report could not run.
 
+  bump     (--bump)
+      Writes what the report found into rocm-bake.hcl: every pin that
+      is behind its upstream is moved to it, then the tables are
+      scrubbed. The weekly workflow turns the result into a pull
+      request. It proposes; nothing here knows whether the new set
+      builds, which is what the review and the next build are for.
+
 A lookup that fails is a "?" in its row, never a crash. The ROCm org
 rejects classic personal access tokens, hub.docker.com fails TLS
 through the corporate proxy, and the registry is a tailnet name a
@@ -34,10 +41,12 @@ Exit codes: 0 ok, 1 scrub drift (--scrub-check), 2 usage error.
 Usage: .builders/versioncheck.py [--markdown] [--no-zot]
                                  [--registry HOST] [--namespace NS]
        .builders/versioncheck.py --scrub | --scrub-check
+       .builders/versioncheck.py --bump
 """
 
 import argparse
 import base64
+import contextlib
 import json
 import os
 import re
@@ -259,6 +268,22 @@ PINNED = {
     # so the list keeps meaning what it says. Bumping it means reading
     # AKafakA/llm-emu's commit log and choosing a SHA.
     "LLM_EMU_REF": "upstream publishes no tags",
+}
+
+# Pins --bump reports and does not move, with the reason. Everything
+# else that is behind gets written.
+#
+# The test for belonging here is whether moving the pin is a decision
+# rather than an edit. A new vLLM tag is an edit: one line, and the
+# build says whether it worked. These are not.
+BUMP_HOLD = {
+    "ROCM_VERSION": "a new ROCm changes the base image and every "
+                    "wheel's ABI, and may drop an architecture; it also "
+                    "starts a new wheel index",
+    "UCX_REF": "moved by hand together with NIXL_REF, to the UCX that "
+               "NIXL release was tested against",
+    "BUILDKIT_VERSION": "pinned by digest in builder-create.sh and "
+                        "nightly.sh, which a version alone cannot rewrite",
 }
 
 # Pins that do not live in rocm-bake.hcl.
@@ -981,6 +1006,116 @@ def report_drift(relpath, marker, current, wanted):
           file=sys.stderr)
 
 
+# ─── bump ─────────────────────────────────────────────────────────
+
+def derived(comp):
+    """True for a pin that another of our pins decides.
+
+    TRITON_VERSION, TRITON_REF and RUST_VERSION are read out of the
+    pytorch and vllm trees at the refs we pin. There is no "behind"
+    for these, only "matches what that tree says" or not, and a
+    mismatch in either direction builds a stack whose parts disagree.
+    """
+    return comp["source"][0] == "pin"
+
+
+def bump_plan(rows):
+    """(moves, held): what --bump would write, and what it leaves.
+
+    A move is a row that is behind its upstream, or a derived pin that
+    differs from what its parent says. "ahead" and "differs" are never
+    moved: LMCACHE_REF sits on an rc past upstream's latest release on
+    purpose, and a comparison this file cannot order is not one to act
+    on unattended.
+    """
+    moves, held = [], []
+    for r in rows:
+        var, new, old = r["comp"]["var"], r["upstream"], r["default"]
+        if new is None or new == old:
+            continue
+        # A held pin is usually also in PINNED, whose status hides
+        # which way it differs, so the order is checked here.
+        newer = (r["status"] == "behind"
+                 or (var in BUMP_HOLD and vkey(new) > vkey(old)))
+        if not (newer or derived(r["comp"])):
+            continue
+        if var in BUMP_HOLD:
+            held.append((var, old, new, BUMP_HOLD[var]))
+        elif var in SHELL_PINS:
+            held.append((var, old, new, "not a rocm-bake.hcl variable"))
+        else:
+            moves.append((var, old, new))
+    return moves, held
+
+
+def set_default(text, var, value):
+    """rocm-bake.hcl with one variable's default replaced, or None."""
+    for pattern in (VAR_ONELINE_RE, VAR_RE):
+        for m in pattern.finditer(text):
+            if m.group("name") != var:
+                continue
+            d = DEF_RE.search(m.group("body"))
+            if not d:
+                return None
+            at = m.start("body") + d.start("value")
+            return text[:at] + value + text[at + len(d.group("value")):]
+    return None
+
+
+def bump():
+    """Move every movable pin, then scrub. Prints the PR body.
+
+    In passes, because the pins are not independent: TRITON_* is read
+    from pytorch at PYTORCH_VERSION and RUST_VERSION from vllm at
+    VLLM_REF, so what they should be is only knowable after their
+    parent has moved. Three passes is one more than the deepest chain
+    here needs; the bound is so a lookup that flaps cannot loop.
+    """
+    path = ROOT / "rocm-bake.hcl"
+    moved, held, unknown = {}, [], []
+    for _ in range(3):
+        defaults = bake_defaults()
+        defaults.update(shell_pins())
+        rows, _err = collect(defaults, "", "", use_zot=False)
+        moves, held = bump_plan(rows)
+        unknown = [r["comp"]["var"] for r in rows if r["status"] == "?"]
+        if not moves:
+            break
+        text = path.read_text()
+        for var, old, new in moves:
+            updated = set_default(text, var, new)
+            if updated is None:
+                held.append((var, old, new, "no default found to rewrite"))
+                continue
+            text = updated
+            # First old value, last new one, across passes.
+            moved[var] = (moved.get(var, (old,))[0], new)
+        path.write_text(text)
+
+    if moved:
+        defaults = bake_defaults()
+        defaults.update(shell_pins())
+        # stdout is the pull request body; scrub narrates on it.
+        with contextlib.redirect_stdout(sys.stderr):
+            scrub(defaults, write=True)
+
+    out = []
+    if moved:
+        out += ["| Variable | Was | Now |", "| --- | --- | --- |"]
+        out += ["| `%s` | `%s` | `%s` |" % (v, a, b)
+                for v, (a, b) in moved.items()]
+    else:
+        out.append("Nothing to move.")
+    if held:
+        out += ["", "Behind upstream and **not** moved here:", ""]
+        out += ["- `%s` `%s` → `%s`: %s." % h for h in held]
+    if unknown:
+        out += ["", "Lookups that failed, so these were not compared: %s."
+                % ", ".join("`%s`" % u for u in unknown)]
+    print("\n".join(out))
+    return 0
+
+
 # ─── entry ────────────────────────────────────────────────────────
 
 def main():
@@ -998,6 +1133,9 @@ def main():
                       help="rewrite the generated tables in place")
     mode.add_argument("--scrub-check", action="store_true",
                       help="report drift in those tables, write nothing")
+    mode.add_argument("--bump", action="store_true",
+                      help="move every pin that is behind upstream, in "
+                           "rocm-bake.hcl, then scrub")
     args = ap.parse_args()
 
     defaults = bake_defaults()
@@ -1028,6 +1166,9 @@ def main():
         print("gh not found: version-check needs the GitHub CLI.",
               file=sys.stderr)
         return 0
+
+    if args.bump:
+        return bump()
 
     registry = args.registry or os.environ.get("REGISTRY") \
         or defaults.get("REGISTRY", "")

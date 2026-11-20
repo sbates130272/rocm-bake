@@ -151,10 +151,32 @@ In one release the second upload would collide with the first. That is
 the same problem the per-architecture index path exists to solve, so it
 gets the same answer.
 
+**And one release per build**, tagged `wheels-<rocm>-<arch>-<YYYYMMDD>`.
+A published asset is never replaced or deleted. Publishing compares the
+wheels in hand against the newest release for that ROCm and
+architecture: if they are the same bytes it uploads nothing, and if
+they differ it creates a new release beside the old one. The index is
+then regenerated from every build's `manifest.json`, so it lists all of
+them — `data/wheels/rocm10.2/gfx950/` for each ROCm version, and
+`data/wheels/gfx950/` as a copy of the newest.
+
+It was not always so. Until 2026-11-20 there was one release per ROCm
+and architecture, overwritten in place, and each publish replaced the
+architecture's index directory. Publishing ROCm 10.2 therefore removed
+10.1 from the index while every 10.1 wheel was still public, and a
+republish changed the bytes behind a URL people had already installed
+from. Those older releases are untouched and back in the index;
+`make wheels-reindex` is what restored them, from the releases alone.
+
+Publishing no longer has to be done by hand from a build node. The
+weekly run on AWS builds every architecture on Sunday and publishes
+whatever changed — see [Building on AWS](../operations/aws.md#the-weekly-build).
+
 ```bash
 make wheel-index                       # fetch and build the indexes
 make wheels-publish-dry ARCH=gfx950    # show what would happen
 make wheels-publish ARCH=gfx950        # release + gh-pages
+make wheels-reindex-dry                # what a rebuild of every index would change
 ```
 
 ```bash

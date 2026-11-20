@@ -101,17 +101,30 @@ def sha256_of(path):
     return h.hexdigest()
 
 
+def core_metadata(whl):
+    """The wheel's METADATA file, as bytes, or None if it has none.
+
+    The same bytes PEP 658 serves at <wheel-url>.metadata. An installer
+    that finds them resolves a wheel's dependencies from a few KB
+    rather than by downloading the wheel, which for torch and triton is
+    most of a gigabyte spent to read forty lines.
+    """
+    with zipfile.ZipFile(whl) as z:
+        meta = [n for n in z.namelist()
+                if n.count("/") == 1 and n.endswith(".dist-info/METADATA")]
+        return z.read(meta[0]) if meta else None
+
+
 def requires_python(whl):
     """The wheel's Requires-Python, or None if it declares none."""
-    with zipfile.ZipFile(whl) as z:
-        meta = [n for n in z.namelist() if n.endswith(".dist-info/METADATA")]
-        if not meta:
-            return None
-        for line in z.read(meta[0]).decode(errors="replace").splitlines():
-            if line.startswith("Requires-Python:"):
-                return line.split(":", 1)[1].strip()
-            if not line.strip():
-                break
+    raw = core_metadata(whl)
+    if raw is None:
+        return None
+    for line in raw.decode(errors="replace").splitlines():
+        if line.startswith("Requires-Python:"):
+            return line.split(":", 1)[1].strip()
+        if not line.strip():
+            break
     return None
 
 
@@ -265,20 +278,64 @@ def metapackage_wheel(arch, version, pins, out_dir, python):
     for stale in out.parent.glob("*.whl"):
         if stale != out:
             stale.unlink()
+    # A fixed timestamp, so the same pins give the same bytes. writestr
+    # with a bare name stamps the wall clock into every member, which
+    # made each regeneration a different file under an identical name:
+    # resuming a publish that died after its upload would then write an
+    # index whose sha256 does not match the asset already public.
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
         for name, body in files.items():
-            z.writestr(name, body)
+            info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = 0o644 << 16
+            z.writestr(info, body)
     return out
 
 
+# PEP 629. Declares which revision of the simple API these pages speak,
+# so an installer can tell a page it understands from one it does not.
+REPOSITORY_VERSION = '<meta name="pypi:repository-version" content="1.0">'
+
+
+def file_entry(url, filename, sha256=None, requires_python=None,
+               metadata_sha256=None):
+    """One file on a project page, as write_project wants it."""
+    return dict(url=url, filename=filename, sha256=sha256,
+                requires_python=requires_python,
+                metadata_sha256=metadata_sha256)
+
+
 def write_project(index_root, project, entries):
-    """One PEP 503 project page: <a> per file, hash in the fragment."""
+    """One PEP 503 project page: <a> per file, hash in the fragment.
+
+    data-requires-python (PEP 503) lets an installer skip a file its
+    interpreter cannot use instead of downloading it to find out.
+    data-core-metadata (PEP 658, renamed by PEP 714) says the wheel's
+    METADATA is also served at <url>.metadata, with that hash; the
+    older data-dist-info-metadata spelling is emitted beside it because
+    pip before 23.2 reads only that one. Both are left off a file whose
+    sidecar was never published -- claiming one that 404s fails the
+    install, where saying nothing merely costs a download.
+    """
     page = Path(index_root) / project
     page.mkdir(parents=True, exist_ok=True)
-    lines = ["<!DOCTYPE html><html><body>",
+    lines = ["<!DOCTYPE html><html><head>", REPOSITORY_VERSION,
+             "</head><body>",
              f"<h1>Links for {html.escape(project)}</h1>"]
-    for href, text in entries:
-        lines.append(f'<a href="{html.escape(href)}">{html.escape(text)}</a><br/>')
+    for e in entries:
+        href = e["url"]
+        if e.get("sha256"):
+            href += f"#sha256={e['sha256']}"
+        attrs = ""
+        if e.get("requires_python"):
+            attrs += (' data-requires-python="'
+                      f'{html.escape(e["requires_python"])}"')
+        if e.get("metadata_sha256"):
+            digest = f'sha256={e["metadata_sha256"]}'
+            attrs += (f' data-core-metadata="{digest}"'
+                      f' data-dist-info-metadata="{digest}"')
+        lines.append(f'<a href="{html.escape(href)}"{attrs}>'
+                     f'{html.escape(e["filename"])}</a><br/>')
     lines.append("</body></html>")
     (page / "index.html").write_text("\n".join(lines) + "\n")
 
@@ -349,7 +406,17 @@ def main():
     ap.add_argument("--wheel-url", default=None,
                     help="URL prefix the wheels are served under "
                          "(default: a relative path back to wheel_dir)")
+    ap.add_argument("--build", default=None,
+                    help="build number for a published set, YYYYMMDD or "
+                         "YYYYMMDD.N; becomes the fourth component of "
+                         "the metapackage version")
+    ap.add_argument("--release-dir", default=None,
+                    help="write the extra release assets here: one "
+                         "<wheel>.metadata per wheel (PEP 658) and the "
+                         "build's manifest.json")
     args = ap.parse_args()
+    if args.build and not re.fullmatch(r"\d{8}(\.\d+)?", args.build):
+        sys.exit(f"error: --build {args.build!r} is not YYYYMMDD[.N]")
 
     recorded = check_arch(args.wheel_dir, args.arch)
 
@@ -366,15 +433,46 @@ def main():
         prefix = f"../{rel}"
     prefix = prefix.rstrip("/") + "/"
 
+    # The sidecars and the manifest are release assets, not index
+    # pages: their names carry the wheel's "+", which GitHub Pages
+    # cannot serve (see the metapackage note below). Emptied first, so
+    # what is uploaded is this run's set and not an accumulation.
+    release = Path(args.release_dir) if args.release_dir else None
+    if release:
+        release.mkdir(parents=True, exist_ok=True)
+        for old in release.iterdir():
+            if old.is_file():
+                old.unlink()
+
+    def sidecar(path):
+        """Write <wheel>.metadata for release; return its sha256."""
+        raw = core_metadata(path)
+        if release is None or raw is None:
+            return None
+        (release / f"{path.name}.metadata").write_bytes(raw)
+        return hashlib.sha256(raw).hexdigest()
+
     projects = {}
     pins = []
     capped = []
     verdicts = []
-    for project, version, path in found:
-        projects.setdefault(project, []).append(
-            (f"{prefix}{path.name}#sha256={sha256_of(path)}", path.name))
-        pins.append((project, version))
+    manifest_files = []
+
+    def add(project, version, path, url):
         spec = requires_python(path)
+        entry = file_entry(url, path.name, sha256_of(path), spec,
+                           sidecar(path))
+        projects.setdefault(project, []).append(entry)
+        manifest_files.append(dict(
+            project=project, version=version, filename=path.name,
+            sha256=entry["sha256"], size=path.stat().st_size,
+            requires_python=spec,
+            metadata_sha256=entry["metadata_sha256"]))
+        return spec
+
+    for project, version, path in found:
+        spec = add(project, version, path, f"{prefix}{path.name}")
+        pins.append((project, version))
         if capped_below(spec, args.python):
             capped.append((project, spec))
         # Measured here rather than taken from the Dockerfiles, because
@@ -415,8 +513,20 @@ def main():
     # normalises "-", "_" and "." in a local segment to "." anyway, so
     # writing the "." directly changes no version that already exists.
     arch_in_version = args.arch.replace("-", ".").replace("_", ".")
-    meta_version = (f"{args.version.split('-')[0]}"
-                    f"+{arch_in_version}.{pin_digest}")
+    # The build number, when this is a published set. The digest says
+    # WHETHER two metapackages differ and nothing about which is newer:
+    # a local segment orders lexically, so with every build kept in the
+    # index "the latest rocm-torch" would be whichever digest happened
+    # to sort last. A date in the public version is what makes an
+    # unpinned install take the newest build, and
+    # `rocm-torch==10.2.0.20261127` name one exactly.
+    #
+    # Absent for a local `make wheel-index`, which has one build and
+    # nothing to order it against.
+    public = args.version.split("-")[0]
+    if args.build:
+        public += f".{args.build}"
+    meta_version = f"{public}+{arch_in_version}.{pin_digest}"
 
     meta_whl = metapackage_wheel(args.arch, meta_version, pins,
                                 out / METAPACKAGE, args.python)
@@ -437,8 +547,7 @@ def main():
     # local `make wheel-index` + http.server path wants.
     meta_href = (f"{prefix}{meta_whl.name}" if args.wheel_url
                  else meta_whl.name)
-    projects[METAPACKAGE] = [
-        (f"{meta_href}#sha256={sha256_of(meta_whl)}", meta_whl.name)]
+    add(METAPACKAGE, meta_version, meta_whl, meta_href)
     # Measured like the rest, not assumed pure. It is generated three
     # lines above and is obviously py3-none-any today, but a table that
     # silently omits one of the twelve projects invites the reader to
@@ -461,7 +570,8 @@ def main():
     for project, entries in projects.items():
         write_project(out, project, entries)
 
-    root = ["<!DOCTYPE html><html><body>", f"<h1>{html.escape(args.arch)}</h1>"]
+    root = ["<!DOCTYPE html><html><head>", REPOSITORY_VERSION,
+            "</head><body>", f"<h1>{html.escape(args.arch)}</h1>"]
     for project in sorted(projects):
         root.append(f'<a href="{project}/">{html.escape(project)}</a><br/>')
     root.append(render_verdicts(verdicts))
@@ -475,6 +585,23 @@ def main():
         json.dumps({"arch": args.arch, "rocm": args.version,
                     "wheels": sorted(verdicts, key=lambda v: v["project"])},
                    indent=1, sort_keys=True) + "\n")
+
+    # Everything a published index page is made from, in one file.
+    # wheelsite.py builds the public tree out of these and nothing
+    # else, one per build, so an index listing every build ever
+    # published can be regenerated without a single wheel on disk --
+    # and, because a copy rides along as a release asset, without
+    # gh-pages either. That matters: docs.yml replaces that branch with
+    # an orphan commit on every deploy, so its history is not a backup.
+    if release:
+        (release / "manifest.json").write_text(json.dumps(dict(
+            schema=1, arch=args.arch, rocm=args.version,
+            build=args.build, python=args.python,
+            metapackage=meta_version,
+            base_url=prefix if args.wheel_url else None,
+            files=sorted(manifest_files, key=lambda f: f["filename"]),
+            verdicts=sorted(verdicts, key=lambda v: v["project"]),
+        ), indent=1, sort_keys=True) + "\n")
 
     print(f"index: {out}  arch={args.arch}  projects={len(projects)}")
     if recorded:

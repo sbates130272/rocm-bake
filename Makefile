@@ -285,7 +285,7 @@ BAKE_PRINT = docker buildx bake -f rocm-bake.hcl
         push-torchvision-wheel build-torchvision-wheel fetch-torchvision-wheel \
         push-atom-wheel build-atom-wheel fetch-atom-wheel \
         build-atom-vllm push-atom-vllm atom-vllm-doctor atom-vllm-check \
-        wheels-publish wheels-publish-dry \
+        wheels-publish wheels-publish-dry wheels-reindex wheels-reindex-dry \
         build-vllm push-vllm push-vllm-wheel build-vllm-wheel fetch-vllm-wheel \
         build-lmcache push-lmcache push-lmcache-wheel build-lmcache-wheel \
         fetch-lmcache-wheel \
@@ -313,7 +313,7 @@ BAKE_PRINT = docker buildx bake -f rocm-bake.hcl
         clean clean-cache test \
         bench bench-report bench-data bench-publish \
         docs-deps docs-build docs-serve \
-        version-check version-scrub version-scrub-check \
+        version-check version-scrub version-scrub-check version-bump \
         validate bake-plan setup \
         arches-list arches-push-all arches-push-wheels \
         arches-perf-warm arches-perf-cold
@@ -1213,6 +1213,12 @@ wheel-index: ## Fetch each arch's wheels and build a pip index (ARCHES=)
 # assets in one release. That is the same problem the per-arch index
 # path exists to solve.
 #
+# And one release per build, tagged wheels-<rocm>-<arch>-<YYYYMMDD>. A
+# published asset is never replaced: wheels that differ from the last
+# build go out as a new release beside it and the index lists both,
+# while wheels that do not differ publish nothing. WHEELS_PUBLISH_ARGS=
+# "--build 20261127.1" names a second build on one day.
+#
 # Not in push-all and not in any group: publishing is a decision, not a
 # side effect of a build. Run wheel-index first — this publishes what
 # that fetched rather than fetching again, so what goes public is
@@ -1226,6 +1232,18 @@ wheels-publish-dry: ## Show what wheels-publish would do (ARCH=gfx950)
 	@[ -n "$(ARCH)" ] || { echo "set ARCH=<gfx...>"; exit 2; }
 	@.builders/wheelpublish.sh --arch "$(ARCH)" \
 		--rocm "$(ROCM_VERSION)" --dry-run $(WHEELS_PUBLISH_ARGS)
+
+# Rebuild every public index from the releases, publishing no build.
+# Each publish already does this for whatever is missing; run it by
+# hand after changing wheelsite.py, or if gh-pages has lost data/wheels.
+# It is also what put the builds published before manifests existed
+# back into the index: their releases never went away, only the pages
+# that pointed at them.
+wheels-reindex: ## * Rebuild the public wheel indexes from the releases
+	@.builders/wheelpublish.sh --reindex $(WHEELS_PUBLISH_ARGS)
+
+wheels-reindex-dry: ## Show what wheels-reindex would change on gh-pages
+	@.builders/wheelpublish.sh --reindex --dry-run $(WHEELS_PUBLISH_ARGS)
 
 wheel-index-check: ## Install each generated index into a throwaway venv
 	@set -e; \
@@ -2610,6 +2628,15 @@ version-scrub: ## Regenerate the version tables from rocm-bake.hcl
 
 version-scrub-check: ## Fail if those generated tables are stale
 	@python3 .builders/versioncheck.py --scrub-check
+
+# The edit version-check tells you to make, made: every pin that is
+# behind upstream is moved in rocm-bake.hcl and the tables are
+# scrubbed. It changes the working tree and nothing else. The weekly
+# workflow runs the same thing and opens a pull request with the
+# result; ROCM_VERSION and the other pins named in BUMP_HOLD are
+# reported and left alone.
+version-bump: ## Move every pin that is behind upstream, then scrub
+	@python3 .builders/versioncheck.py --bump
 
 # Over ARCHES, not the single build arch: these tags are per-arch, and
 # the gfx950 here used to be hardcoded — so on a gfx1201 build `clean`

@@ -34,16 +34,63 @@ on:
 permissions:
   contents: read
 
+env:
+  SITE: https://sbates130272.github.io/rocm-bake
+
 jobs:
+  # Which indexes exist, from the list the site publishes about itself.
+  #
+  # This was a fixed list of four architectures, each resolved at
+  # data/wheels/<arch>/. That path follows the newest ROCm, so once the
+  # site kept older ROCm versions the list covered only the newest and
+  # the rest were public and unwatched -- and they are the ones nobody
+  # is looking at. wheelsite.py writes index.json for exactly this.
+  #
+  # Each ROCm version is probed at its own path except the newest,
+  # which is probed at the bare <arch>/ path instead. The two are the
+  # same bytes, and the bare one is the URL people were actually given.
+  #
+  # Only the gfx indexes. The emulator and CPU indexes pin no torch and
+  # cannot resolve from a single `rocm-torch[device-…]`; their own
+  # checks are emu-index-check and cpu-index-check.
+  discover:
+    name: Which indexes are published
+    runs-on: ubuntu-latest
+    outputs:
+      indexes: ${{ steps.list.outputs.indexes }}
+    steps:
+      - id: list
+        run: |
+          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
+          import json, os, urllib.error, urllib.request
+
+          url = os.environ["SITE"] + "/data/wheels/index.json"
+          try:
+              with urllib.request.urlopen(url, timeout=30) as r:
+                  found = json.load(r)["indexes"]
+          except urllib.error.HTTPError as e:
+              if e.code != 404:
+                  raise
+              # A site last published before index.json existed.
+              found = [{"arch": a, "path": f"{a}/", "alias": None,
+                        "rocm": "newest"}
+                       for a in ("gfx950", "gfx1201", "gfx1151", "gfx1250")]
+          out = [{"arch": i["arch"], "rocm": i["rocm"],
+                  "path": i["alias"] or i["path"]}
+                 for i in found if i["arch"].startswith("gfx")]
+          print("indexes=" + json.dumps(out))
+          EOF
+
   probe:
-    name: ${{ matrix.arch }}
+    name: ${{ matrix.index.arch }} · ROCm ${{ matrix.index.rocm }}
+    needs: discover
     runs-on: ubuntu-latest
     strategy:
       # Keep going: one architecture resolving wrongly says nothing
       # about the others, and the point is to learn which.
       fail-fast: false
       matrix:
-        arch: [gfx950, gfx1201, gfx1151, gfx1250]
+        index: ${{ fromJson(needs.discover.outputs.indexes) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -73,17 +120,17 @@ jobs:
       # outlast any publish window without hiding a real outage: an
       # index that is genuinely broken is still broken three minutes
       # later.
-      - name: Resolve rocm-torch[device-${{ matrix.arch }}]
+      - name: Resolve rocm-torch[device-${{ matrix.index.arch }}]
         env:
-          ARCH: ${{ matrix.arch }}
-          SITE: https://sbates130272.github.io/rocm-bake
+          ARCH: ${{ matrix.index.arch }}
+          INDEX: ${{ matrix.index.path }}
         run: |
           set -e
           python -m venv v
           for attempt in 1 2 3; do
             if v/bin/pip install --dry-run --no-cache-dir \
                  --report report.json \
-                 --index-url "${SITE}/data/wheels/${ARCH}/" \
+                 --index-url "${SITE}/data/wheels/${INDEX}" \
                  --extra-index-url https://pypi.org/simple \
                  "rocm-torch[device-${ARCH}]" > pip.log 2>&1; then
               [ "${attempt}" = 1 ] || echo "resolved on attempt ${attempt}"
@@ -103,7 +150,7 @@ jobs:
 
       - name: Nothing of ours came from PyPI, and no CUDA came at all
         env:
-          ARCH: ${{ matrix.arch }}
+          ARCH: ${{ matrix.index.arch }}
         run: |
           python - <<'EOF'
           import json, os, sys
@@ -188,27 +235,30 @@ jobs:
       # already measured.
       - name: Published tags match their published verdicts
         env:
-          ARCH: ${{ matrix.arch }}
-          SITE: https://sbates130272.github.io/rocm-bake
+          ARCH: ${{ matrix.index.arch }}
+          INDEX: ${{ matrix.index.path }}
         run: |
           python - <<'EOF'
           import json, os, re, sys, urllib.error, urllib.request
 
           arch = os.environ["ARCH"]
-          url = f"{os.environ['SITE']}/data/wheels/{arch}/verdicts.json"
+          url = (f"{os.environ['SITE']}/data/wheels/"
+                 f"{os.environ['INDEX']}verdicts.json")
 
           try:
               with urllib.request.urlopen(url, timeout=30) as r:
                   published = json.load(r)
           except urllib.error.HTTPError as e:
               if e.code == 404:
-                  # Expected until this arch is next published. Not a
-                  # failure: the index predates the measurement, and
+                  # Not a failure: the newest build in this index was
+                  # published before platform tags were measured, and
                   # saying so is more useful than inventing a verdict.
-                  print(f"::notice::{arch} has no verdicts.json yet -- it "
-                        "has not been republished since platform-tag "
-                        "measurement landed. Run `make wheels-publish "
-                        f"ARCH={arch}`.")
+                  # For an older ROCm that is permanent -- a published
+                  # build is never altered -- and for the current one
+                  # it lasts until the next build is published.
+                  print(f"::notice::{os.environ['INDEX']} has no "
+                        "verdicts.json -- its newest build predates "
+                        "platform-tag measurement.")
                   sys.exit(0)
               raise
 
