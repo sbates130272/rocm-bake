@@ -396,11 +396,43 @@ RUN pip install --no-cache-dir /wheels/*.whl && \
 
 RUN cat /nixl-build.log > /wheels-build.log && ls -la /wheels/
 
+# The development files, staged for the wheel image beside the wheels.
+#
+# The wheels carry libnixl.so but no headers — meson-python ships only
+# what the Python package needs, and NIXL's own headers are not that.
+# LMCache's nixl_native L2 adapter is a C++ extension that LMCache
+# compiles against NIXL >= 1.3, so without these its build has nothing
+# to include and the adapter is absent from the wheel:
+#
+#   ModuleNotFoundError: No module named 'lmcache.lmcache_nixl'
+#
+# The sibling copies are the ones `ninja install` wrote, not the
+# auditwheel-repaired copies inside the wheel. Dockerfile.lmcache
+# compiles against these and runs against the wheel's; the sonames are
+# the same, which is what makes that work — see the note there.
+#
+# The assertion is the point: a NIXL that installs its headers
+# elsewhere makes the copy silently incomplete, and the first symptom
+# would otherwise be a compile error inside the LMCache build minutes
+# later. `find` runs only on failure, to say what is actually there.
+RUN set -eu; \
+    arch="$(uname -m)-linux-gnu"; \
+    mkdir -p /nixl-dev; \
+    cp -a "${NIXL_HOME}/include" /nixl-dev/include; \
+    cp -a "${NIXL_HOME}/lib/${arch}" /nixl-dev/lib; \
+    [ -f /nixl-dev/include/nixl.h ] && [ -f /nixl-dev/lib/libnixl.so ] || { \
+        echo "nixl: ${NIXL_HOME} does not have the expected dev layout." >&2; \
+        echo "  wanted include/nixl.h and lib/${arch}/libnixl.so; found:" >&2; \
+        find "${NIXL_HOME}" -name 'nixl*.h' -o -name 'libnixl.so' | head -20 >&2; \
+        exit 1; }; \
+    du -sh /nixl-dev/include /nixl-dev/lib
+
 SHELL ["/bin/sh", "-c"]
 
 # ─── Wheel-only image ────────────────────────────────────────────
 # scratch, not the PyTorch image: this exists to be consumed by
-# `COPY --from=`, so it carries the wheel and nothing else.
+# `COPY --from=`, so it carries the wheels and the headers and
+# libraries a consumer needs to compile against them, and nothing else.
 FROM scratch AS wheel
 
 ARG PYTORCH_ROCM_ARCH
@@ -409,4 +441,5 @@ LABEL org.opencontainers.image.source="https://github.com/ai-dynamo/nixl"
 LABEL org.opencontainers.image.description="NIXL ${NIXL_REF} wheel (ROCm UCX) for ${PYTORCH_ROCM_ARCH}"
 
 COPY --from=builder /wheels/ /wheels/
+COPY --from=builder /nixl-dev/ /nixl-dev/
 COPY --from=builder /wheels-build.log /wheels-sccache-stats.txt /

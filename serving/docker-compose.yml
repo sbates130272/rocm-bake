@@ -32,7 +32,12 @@
 # Storage tiers, selected with KV_TIER:
 #   cpu    L1 only      --l1-size-gb        KV in host RAM, LRU evicted
 #   file   L1 + L2      --l2-adapter JSON   spills to local files
-# Both are LMCache-side; none of it is configured in vLLM.
+#   nixl-native, nixl-dynamic, nixl-store
+#          L1 + L2      --l2-adapter JSON   the same files, written by
+#                                           NIXL's POSIX plugin through
+#                                           each of LMCache's three NIXL
+#                                           adapters
+# All are LMCache-side; none of it is configured in vLLM.
 #
 # Usage:
 #   make serve-stack KV_TIER=cpu
@@ -113,7 +118,15 @@ services:
     # host spent a day running an lmcache image from before cupy was
     # added, while the registry had the right one, and the symptom was a
     # KV registration failure that looked like a GPU problem.
-    pull_policy: always
+    # Overridable, and the default is what it was. PULL_POLICY=never
+    # serves an image the host already has, which is what
+    # `make serve-load` puts there: it builds into GPU_HOST's own
+    # daemon rather than through the registry, the way emu-load and
+    # cpu-load already do for their lanes. It is the only way to
+    # serve an image that was never pushed. The hazard the default
+    # exists for is unchanged — never use it on a host you did not
+    # just load, or it serves whatever it happens to be holding.
+    pull_policy: ${PULL_POLICY:-always}
     <<: *rocm
     # Owns the namespace; vllm joins it below.
     ipc: shareable
@@ -128,14 +141,43 @@ services:
     # "Initialized FSL2Adapter with base_path=/kv-store" and writes one
     # .data file per chunk there. `make serve-test-l2` reads blocks back
     # out of it with L1 emptied.
+    #
+    # nixl_store is a fixed pool: pool_size files of file_size bytes,
+    # and file_size defaults to one L1 page. Left at the default, 256
+    # slots hold about 1MB and every store fails with "Insufficient
+    # NIXL storage capacity" while L1 goes on working, so the stack
+    # looks healthy and nothing reaches disk. 256 x 16MiB is 4GiB.
+    #
+    # nixl_native is the C++ one: LMCache's own NIXL client, which
+    # registers the whole L1 arena once and runs num_workers agents off
+    # the Python thread, where the two adapters above register per
+    # operation or out of a fixed pool. It needs the lmcache_nixl
+    # extension, so it works only against a wheel built with
+    # BUILD_WITH_NIXL=1 — see Dockerfile.lmcache. Against one that was
+    # not, the server exits at startup with "No module named
+    # 'lmcache.lmcache_nixl'" rather than falling back.
     command:
       - |
         set -e
-        if [ "$${KV_TIER}" = "file" ]; then
-          L2_ARGS='--l2-store-policy=default --l2-adapter={"type":"fs","base_path":"/kv-store"}'
-        else
-          L2_ARGS=''
-        fi
+        case "$${KV_TIER}" in
+          file)
+            L2='{"type":"fs","base_path":"/kv-store"}' ;;
+          nixl-native)
+            mkdir -p /kv-store/nixl-native
+            L2='{"type":"nixl_native","backend":"POSIX","backend_params":{"file_path":"/kv-store/nixl-native","use_direct_io":"false"},"max_capacity_gb":8}' ;;
+          nixl-dynamic)
+            mkdir -p /kv-store/nixl-dynamic
+            L2='{"type":"nixl_store_dynamic","backend":"POSIX","backend_params":{"file_path":"/kv-store/nixl-dynamic","use_direct_io":"false","max_capacity_gb":"8"}}' ;;
+          nixl-store)
+            mkdir -p /kv-store/nixl-store
+            L2='{"type":"nixl_store","backend":"POSIX","backend_params":{"file_path":"/kv-store/nixl-store","use_direct_io":"false","file_size":"16777216"},"pool_size":256}' ;;
+          cpu)
+            L2='' ;;
+          *)
+            echo "lmcache: unknown KV_TIER '$${KV_TIER}'" >&2; exit 2 ;;
+        esac
+        L2_ARGS=''
+        [ -z "$${L2}" ] || L2_ARGS="--l2-store-policy=default --l2-adapter=$${L2}"
         echo "lmcache: tier=$${KV_TIER} l1=$${L1_SIZE_GB}GB $${L2_ARGS}"
         exec lmcache server \
           --host 0.0.0.0 --port 5555 \
@@ -201,7 +243,15 @@ services:
   vllm:
     image: ${REGISTRY:-snoc-strix.fold-leaffish.ts.net:8080}/rocm-pytorch/vllm:${VLLM_TAG:?set VLLM_TAG, or use make serve-stack}
     # Same moving tag, same reason — see lmcache above.
-    pull_policy: always
+    # Overridable, and the default is what it was. PULL_POLICY=never
+    # serves an image the host already has, which is what
+    # `make serve-load` puts there: it builds into GPU_HOST's own
+    # daemon rather than through the registry, the way emu-load and
+    # cpu-load already do for their lanes. It is the only way to
+    # serve an image that was never pushed. The hazard the default
+    # exists for is unchanged — never use it on a host you did not
+    # just load, or it serves whatever it happens to be holding.
+    pull_policy: ${PULL_POLICY:-always}
     <<: *rocm
     # Join lmcache's private namespace rather than the host's.
     ipc: "service:lmcache"

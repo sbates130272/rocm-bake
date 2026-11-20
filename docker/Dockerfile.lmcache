@@ -285,7 +285,30 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # ARG's value before the shell runs — assigning to it in the shell does
 # not change what the later expansions were replaced with. Compute into
 # a name BuildKit does not know about, then export it once.
-RUN njobs="${MAX_JOBS}"; \
+# BUILD_WITH_NIXL=1 adds the second extension, lmcache.lmcache_nixl,
+# which is what the nixl_native L2 adapter loads. Without it that
+# adapter raises at server startup and the three NIXL tiers reduce to
+# the two the Python adapters provide:
+#
+#   ModuleNotFoundError: No module named 'lmcache.lmcache_nixl'
+#
+# The headers come from the nixl-wheel image, which stages what `ninja
+# install` wrote — the wheels carry none. See Dockerfile.nixl.
+#
+# The library directory is NOT that staging copy, and this is the part
+# worth reading twice: setup_extensions/storage_backend_profiles/nixl.py
+# passes NIXL_LIBRARY_DIR to CppExtension as runtime_library_dirs as
+# well as library_dirs, so whatever is named here becomes the
+# extension's RPATH. A build-time-only path would produce a module that
+# links cleanly and cannot load. The installed nixl-rocm wheel's own
+# library directory is the one path that exists in both this stage and
+# the final image — `deps` installs that wheel and both stages are FROM
+# deps — so the extension links and runs against the same libnixl the
+# `nixl` Python bindings use. docker/auditwheel-rocm.sh keeps it that
+# way by refusing to vendor libnixl into this wheel.
+RUN --mount=type=bind,from=nixlwheels,source=/nixl-dev,target=/nixl-dev \
+    set -eu; \
+    njobs="${MAX_JOBS}"; \
     if [ -z "${njobs}" ]; then \
         cores=$(nproc); \
         njobs=$(awk -v per="${MEM_PER_JOB_GB}" '/^MemAvailable:/ {print int($2/1024/1024/per)}' /proc/meminfo); \
@@ -298,6 +321,19 @@ RUN njobs="${MAX_JOBS}"; \
     offload_flags="$(printf '%s' "${PYTORCH_ROCM_ARCH}" \
         | sed 's/;/ --offload-arch=/g; s/^/--offload-arch=/')"; \
     echo "hipcc offload flags: ${offload_flags}"; \
+    [ -f /nixl-dev/include/nixl.h ] \
+        || { echo "nixl-wheel image carries no /nixl-dev/include/nixl.h;" >&2; \
+             echo "  rebuild nixl-wheel — see Dockerfile.nixl." >&2; exit 1; }; \
+    site="$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"; \
+    nixl_lib="$(find "${site}" -maxdepth 2 -name 'libnixl.so' -printf '%h\n' \
+                | head -1)"; \
+    [ -n "${nixl_lib}" ] \
+        || { echo "no libnixl.so under ${site}: is the nixl-rocm wheel installed?" >&2; \
+             exit 1; }; \
+    echo "nixl headers: /nixl-dev/include   library (and RPATH): ${nixl_lib}"; \
+    export BUILD_WITH_NIXL=1 \
+           NIXL_INCLUDE_DIR=/nixl-dev/include \
+           NIXL_LIBRARY_DIR="${nixl_lib}"; \
     SETUPTOOLS_SCM_PRETEND_VERSION="${LMCACHE_REF#v}+rocm${ROCM_VERSION%%-*}" \
     HIPCC_COMPILE_FLAGS_APPEND="${offload_flags}" \
     BUILD_WITH_HIP=1 CXX=hipcc \
@@ -332,7 +368,20 @@ RUN --mount=type=tmpfs,target=/tmp/lmcache-wheel \
     for arch in $(echo "${PYTORCH_ROCM_ARCH}" | tr ';' ' '); do \
         grep -qx "${arch}" /wheels-arch.txt || { \
             echo "wheel has no code objects for ${arch}" >&2; exit 1; }; \
-    done
+    done; \
+    nixl_so=$(find /tmp/lmcache-wheel -type f -name 'lmcache_nixl*.so' | head -1); \
+    [ -n "${nixl_so}" ] \
+        || { echo "wheel has no lmcache_nixl extension: BUILD_WITH_NIXL" >&2; \
+             echo "  did not take, and nixl_native would fail at startup." >&2; \
+             exit 1; }; \
+    readelf -d "${nixl_so}" | grep -E 'NEEDED.*libnixl|RUNPATH|RPATH'; \
+    readelf -d "${nixl_so}" | grep -q 'NEEDED.*libnixl' \
+        || { echo "lmcache_nixl does not link libnixl" >&2; exit 1; }; \
+    find /tmp/lmcache-wheel -name 'libnixl*.so*' -print -quit | grep -q . \
+        && { echo "libnixl was vendored into the wheel; the consuming" >&2; \
+             echo "  image already has one — see docker/auditwheel-rocm.sh." >&2; \
+             exit 1; }; \
+    echo "lmcache_nixl present, links libnixl, vendors none"
 
 RUN ls -la /wheels/
 
@@ -361,6 +410,9 @@ RUN --mount=type=bind,from=builder,source=/wheels,target=/w/lmcache \
     pip install --no-cache-dir --no-deps \
         /w/lmcache/*.whl && \
     python -c "import lmcache; from lmcache import cuda_ops; print('LMCache', lmcache.__version__)" && \
+    python -c "\
+from lmcache.lmcache_nixl import LMCacheNixlClient;\
+print('lmcache_nixl loaded:', LMCacheNixlClient)" && \
     python -c "import torch; assert torch.version.hip, 'torch lost its HIP build'"
 
 # The server module must import, and the multiprocess transport's gRPC

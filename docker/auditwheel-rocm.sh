@@ -134,11 +134,32 @@ if torch_dir=$(python -c 'import torch,os;print(os.path.dirname(torch.__file__))
     )
 fi
 
+# NIXL's are in site-packages too, for the same reason and with a
+# sharper edge. LMCache's lmcache_nixl extension links libnixl, and the
+# `nixl` package in the consuming image has its own copy loaded by its
+# Python bindings. Vendoring a second one does not just duplicate 3MB:
+# NIXL agents, plugins and their registries are process-global C++
+# state, and two copies of the library means two of each, with the
+# Python side and the C++ side on opposite sides of the split.
+#
+# The directory is found through the module rather than named: it is a
+# dot-prefixed meson-python artefact (.nixl_rocm.mesonpy.libs) whose
+# name is nobody's API.
+NIXL_LIBS=()
+if nixl_dir=$(python -c 'import nixl,os;print(os.path.dirname(os.path.dirname(nixl.__file__)))' \
+                  2>/dev/null); then
+    mapfile -t NIXL_LIBS < <(
+        find "${nixl_dir}" -maxdepth 2 -name 'libnixl*.so*' -printf '%f\n' \
+            2>/dev/null | sort -u
+    )
+fi
+
 # Exact sonames. A trailing glob would reintroduce the libLLVM problem
 # from the other direction: `--exclude libLLVM.so*` matches the system's
 # libLLVM.so.21.1 as readily as ROCm's libLLVM.so.24.0git.
 EXCLUDES=()
-for lib in ${ROCM_LIBS[@]+"${ROCM_LIBS[@]}"} ${TORCH_LIBS[@]+"${TORCH_LIBS[@]}"}; do
+for lib in ${ROCM_LIBS[@]+"${ROCM_LIBS[@]}"} ${TORCH_LIBS[@]+"${TORCH_LIBS[@]}"} \
+           ${NIXL_LIBS[@]+"${NIXL_LIBS[@]}"}; do
     EXCLUDES+=(--exclude "${lib}")
 done
 
@@ -148,6 +169,7 @@ done
     echo "rocm:     ${ROCM} (${#ROCM_LIBS[@]} ROCm-only libraries excluded)"
     echo "shared:   ${#SHARED[@]} bundled libraries left for auditwheel to vendor"
     echo "torch:    ${#TORCH_LIBS[@]} libraries excluded"
+    echo "nixl:     ${#NIXL_LIBS[@]} libraries excluded"
     [ "${#EXTRA[@]}" -gt 0 ] && echo "extra:    ${EXTRA[*]}"
     echo "not excluded (vendored normally): ${SHARED[*]:-none}"
     echo
