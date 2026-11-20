@@ -15,6 +15,17 @@ What is pinned here:
     a publish that died     -> resumed into the same release
     gh is never asked to replace or delete anything
 
+and, of what it does when GitHub does not answer as hoped -- the half
+the first real run found untested, when a 404's body on stdout was read
+as an asset list and a release that did not exist "held different
+wheels":
+
+    a release that is absent    -> a new build, not a conflict
+    a listing that fails        -> stop; never "no build yet"
+    an upload that never ended  -> stop, naming the asset
+    today's tag already taken   -> the next free one, unasked
+    unchanged wheels, new code  -> still nothing to publish
+
 and, of the index built from the result:
 
     every build and every ROCm version is listed
@@ -26,6 +37,7 @@ and, of the index built from the result:
 no Docker, and --no-push, so the gh-pages half is exercised through
 wheelsite.py directly rather than through a git push.
 """
+import datetime
 import json
 import os
 import subprocess
@@ -76,13 +88,13 @@ def main():
     wheel(tmp / "b2", "vllm", "0.35.0+rocm102", requires=["torch"])
     wheel(tmp / "old", "torch", "2.15.0+rocm10.1.0")
 
-    def publish(wheels, rocm="10.2.0-full", *extra):
+    def publish(wheels, rocm="10.2.0-full", *extra, arch="gfx950", **more):
         r = subprocess.run(
-            [str(BUILDERS / "wheelpublish.sh"), "--arch", "gfx950",
+            [str(BUILDERS / "wheelpublish.sh"), "--arch", arch,
              "--rocm", rocm, "--wheels", str(tmp / wheels),
-             "--index", str(tmp / "index" / "gfx950"),
+             "--index", str(tmp / "index" / arch),
              "--repo", "o/r", "--no-push", *extra],
-            env=env, capture_output=True, text=True)
+            env=dict(env, **more), capture_output=True, text=True)
         return r.returncode, r.stdout + r.stderr
 
     def assets(tag):
@@ -141,8 +153,50 @@ def main():
     check(rc != 0 and set(assets(t4)) == {torch},
           "is refused with nothing uploaded")
 
+    # ── when GitHub does not answer as hoped ─────────────────────
+    # A separate architecture, so these releases stay out of the
+    # index assertions below.
+    today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d")
+    g = f"wheels-10.2.0-gfx1201-{today}"
+
+    print("a listing that fails")
+    rc, out = publish("b1", arch="gfx1201", GH_FAIL_LIST="1")
+    check(rc != 0 and "cannot list releases" in out and assets(g) is None,
+          "stops, and creates nothing")
+
+    print("no release yet for today")
+    rc, out = publish("b1", arch="gfx1201")
+    check(rc == 0 and "(new build)" in out and assets(g) is not None,
+          "is a new build, not a conflict")
+    check("--target" in (tmp / "gh" / "gh.log").read_text(),
+          "the release is created at a named commit")
+
+    print("today's tag already taken by other wheels")
+    rc, out = publish("b2", arch="gfx1201")
+    check(rc == 0 and assets(g + ".1") is not None,
+          "takes the next free tag without being told")
+
+    print("the same wheels, after the generator changed")
+    before = assets(g + ".1")
+    rc, out = publish("b2", arch="gfx1201", PYTHON_VERSION="3.99")
+    check(rc == 0 and "nothing new to upload" in out
+          and assets(g + ".1") == before,
+          "is still nothing to publish")
+
+    print("an asset whose upload never finished")
+    u = "wheels-10.2.0-gfx1151-20261204"
+    (state / u).mkdir()
+    (state / u / torch).write_bytes((tmp / "b2" / torch).read_bytes())
+    side = torch + ".metadata"
+    (state / u / side).write_bytes(b"")
+    rc, out = publish("b2", arch="gfx1151", GH_STARTER=side)
+    check(rc != 0 and side in out and "manifest.json" not in assets(u),
+          "stops and names it, rather than completing around it")
+
     log = (tmp / "gh" / "gh.log").read_text()
-    check("--clobber" not in log and "delete" not in log,
+    check("--clobber" not in log
+          and not any(line.startswith("release delete")
+                      for line in log.splitlines()),
           "gh was never asked to replace or delete an asset")
 
     # ── the index ────────────────────────────────────────────────
@@ -172,7 +226,8 @@ def main():
 
     listed = json.loads((site / "index.json").read_text())["indexes"]
     by_path = {i["path"]: i for i in listed}
-    check(set(by_path) == {"rocm10.2/gfx950/", "rocm10.1/gfx950/"},
+    check({p for p in by_path if p.endswith("/gfx950/")}
+          == {"rocm10.2/gfx950/", "rocm10.1/gfx950/"},
           "has one index per ROCm version")
     check(by_path["rocm10.2/gfx950/"]["builds"]
           == ["20261120", "20261127", "20261204"],
