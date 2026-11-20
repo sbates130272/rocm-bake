@@ -1,6 +1,7 @@
 {
  "arch": "gfx1201",
- "rocm": "10.2.0-full",
+ "build": "20261119",
+ "rocm": "10.2.0",
  "wheels": [
   {
    "best": true,

@@ -1,0 +1,132 @@
+{
+ "arch": "gfx1151",
+ "base_url": "https://github.com/sbates130272/rocm-bake/releases/download/wheels-10.1.0-gfx1151/",
+ "build": "20261117",
+ "files": [
+  {
+   "filename": "amd_aiter-0.1.29.post2.dev0+gcfd296392.d20261117.rocm10.1.0-cp314-cp314-linux_x86_64.whl",
+   "metadata_sha256": null,
+   "project": "amd-aiter",
+   "requires_python": null,
+   "sha256": "ea6cb66699b754511cb1bdb2a39a333a9d073978879a457187e53c0f81af6eb1",
+   "size": 147284346,
+   "version": "0.1.29.post2.dev0+gcfd296392.d20261117.rocm10.1.0"
+  },
+  {
+   "filename": "atom-0.1.10+rocm10.1.0-cp314-none-manylinux_2_38_x86_64.whl",
+   "metadata_sha256": null,
+   "project": "atom",
+   "requires_python": null,
+   "sha256": "03f82f868d0a12c1a941eb41abd5f78626fa6666752de3484d4a333c4a986f03",
+   "size": 20147521,
+   "version": "0.1.10+rocm10.1.0"
+  },
+  {
+   "filename": "cupy-14.2.0+rocm10.1.0-cp314-cp314-manylinux_2_39_x86_64.whl",
+   "metadata_sha256": null,
+   "project": "cupy",
+   "requires_python": null,
+   "sha256": "04a47e082c00e3a55eff3b7d4882fedb6527ba23eba0120560be6e76ed982986",
+   "size": 43861817,
+   "version": "14.2.0+rocm10.1.0"
+  },
+  {
+   "filename": "lmcache-0.5.7.post1+rocm10.1.0-cp314-cp314-manylinux_2_39_x86_64.whl",
+   "metadata_sha256": null,
+   "project": "lmcache",
+   "requires_python": null,
+   "sha256": "8b2983ce89b5c93e9f8478541ad5423900ab1f780525fbf5540b797743e1cf60",
+   "size": 9489009,
+   "version": "0.5.7.post1+rocm10.1.0"
+  },
+  {
+   "filename": "nixl-1.5.2+rocm10.1.0-py3-none-any.whl",
+   "metadata_sha256": null,
+   "project": "nixl",
+   "requires_python": null,
+   "sha256": "3cb5b031df4e1302d4bd1da054723bb2850d0d4beba191cf34cdf891b218de0c",
+   "size": 11937,
+   "version": "1.5.2+rocm10.1.0"
+  },
+  {
+   "filename": "nixl_rocm-1.5.2+rocm10.1.0-cp314-cp314-manylinux_2_39_x86_64.whl",
+   "metadata_sha256": null,
+   "project": "nixl-rocm",
+   "requires_python": null,
+   "sha256": "508edcfb7eaefc94b6b9a638c9b05a8b41a87fe83ecc17438ceae54b51bf36ef",
+   "size": 12888925,
+   "version": "1.5.2+rocm10.1.0"
+  },
+  {
+   "filename": "rocm_torch-10.1.0+gfx1151.6b049405-py3-none-any.whl",
+   "metadata_sha256": null,
+   "project": "rocm-torch",
+   "requires_python": null,
+   "sha256": "bd388c1a5a5c919fd8ab29df0286b6e6f477bf39e71f16bcf8d528af24c19855",
+   "size": 1316,
+   "version": "10.1.0+gfx1151.6b049405"
+  },
+  {
+   "filename": "torch-2.15.0a0+git31a77fc.rocm10.1.0-cp314-cp314-linux_x86_64.whl",
+   "metadata_sha256": null,
+   "project": "torch",
+   "requires_python": null,
+   "sha256": "7b21daabffa59621448b5dcf2a24fb762b7fb61a4969a5e2b8dee40905589159",
+   "size": 470753631,
+   "version": "2.15.0a0+git31a77fc.rocm10.1.0"
+  },
+  {
+   "filename": "torchvision-0.29.2+rocm10.1.0-py3-none-manylinux_2_39_x86_64.whl",
+   "metadata_sha256": null,
+   "project": "torchvision",
+   "requires_python": null,
+   "sha256": "858d9151d11940b82a575ae7743ee0c7fdcca9f8265c196d5bb88e535c31643b",
+   "size": 1718648,
+   "version": "0.29.2+rocm10.1.0"
+  },
+  {
+   "filename": "triton-3.9.0+gitaad2a60d.rocm10.1.0-cp314-cp314-linux_x86_64.whl",
+   "metadata_sha256": null,
+   "project": "triton",
+   "requires_python": null,
+   "sha256": "0c2194cad080e805feb830660bcb08359db75c2447171839088be09547fdba4b",
+   "size": 461364743,
+   "version": "3.9.0+gitaad2a60d.rocm10.1.0"
+  },
+  {
+   "filename": "triton_kernels-1.0.0-py3-none-any.whl",
+   "metadata_sha256": null,
+   "project": "triton-kernels",
+   "requires_python": null,
+   "sha256": "309c59ddab1b688067e0e9ece35da2c71177c1c0f4d903292614168899b20631",
+   "size": 149152,
+   "version": "1.0.0"
+  },
+  {
+   "filename": "vllm-0.34.0+rocm101-cp314-cp314-linux_x86_64.whl",
+   "metadata_sha256": null,
+   "project": "vllm",
+   "requires_python": null,
+   "sha256": "d22f1f1c00bd4483dab8075fdcdc5fc0a4fb06e596724008621b6fedb76b373b",
+   "size": 89876815,
+   "version": "0.34.0+rocm101"
+  }
+ ],
+ "metapackage": "10.1.0+gfx1151.6b049405",
+ "python": null,
+ "rocm": "10.1.0",
+ "schema": 1,
+ "synthesised": true,
+ "verdicts": [
+  {
+   "best": true,
+   "elf_members": 0,
+   "kind": "pure",
+   "needs_glibc": null,
+   "newest_policy": "manylinux_2_41_x86_64",
+   "project": "triton-kernels",
+   "tag": "any",
+   "wheel": "triton_kernels-1.0.0-py3-none-any.whl"
+  }
+ ]
+}

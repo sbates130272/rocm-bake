@@ -1,0 +1,17 @@
+{
+ "arch": "gfx1201",
+ "build": "20261117",
+ "rocm": "10.1.0",
+ "wheels": [
+  {
+   "best": true,
+   "elf_members": 0,
+   "kind": "pure",
+   "needs_glibc": null,
+   "newest_policy": "manylinux_2_41_x86_64",
+   "project": "triton-kernels",
+   "tag": "any",
+   "wheel": "triton_kernels-1.0.0-py3-none-any.whl"
+  }
+ ]
+}

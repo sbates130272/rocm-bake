@@ -1,6 +1,7 @@
 {
  "arch": "emu-gfx1151",
- "rocm": "10.1.0-full",
+ "build": "20261116",
+ "rocm": "10.1.0",
  "wheels": [
   {
    "best": true,

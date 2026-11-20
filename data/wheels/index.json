@@ -1,0 +1,114 @@
+{
+ "indexes": [
+  {
+   "alias": "gfx1151/",
+   "arch": "gfx1151",
+   "builds": [
+    "20261119"
+   ],
+   "latest": true,
+   "metapackage": "10.2.0+gfx1151.8a4d39a7",
+   "path": "rocm10.2/gfx1151/",
+   "rocm": "10.2.0"
+  },
+  {
+   "alias": "gfx1201/",
+   "arch": "gfx1201",
+   "builds": [
+    "20261119"
+   ],
+   "latest": true,
+   "metapackage": "10.2.0+gfx1201.8a4d39a7",
+   "path": "rocm10.2/gfx1201/",
+   "rocm": "10.2.0"
+  },
+  {
+   "alias": "gfx1250/",
+   "arch": "gfx1250",
+   "builds": [
+    "20261120"
+   ],
+   "latest": true,
+   "metapackage": "10.2.0+gfx1250.3ffdcc66",
+   "path": "rocm10.2/gfx1250/",
+   "rocm": "10.2.0"
+  },
+  {
+   "alias": "gfx950/",
+   "arch": "gfx950",
+   "builds": [
+    "20261119"
+   ],
+   "latest": true,
+   "metapackage": "10.2.0+gfx950.8a4d39a7",
+   "path": "rocm10.2/gfx950/",
+   "rocm": "10.2.0"
+  },
+  {
+   "alias": "emu-gfx1151/",
+   "arch": "emu-gfx1151",
+   "builds": [
+    "20261116"
+   ],
+   "latest": true,
+   "metapackage": "10.1.0+emu.gfx1151.a11c3b2a",
+   "path": "rocm10.1/emu-gfx1151/",
+   "rocm": "10.1.0"
+  },
+  {
+   "alias": "emu-gfx1250/",
+   "arch": "emu-gfx1250",
+   "builds": [
+    "20261116"
+   ],
+   "latest": true,
+   "metapackage": "10.1.0+emu.gfx1250.92943a3f",
+   "path": "rocm10.1/emu-gfx1250/",
+   "rocm": "10.1.0"
+  },
+  {
+   "alias": null,
+   "arch": "gfx1151",
+   "builds": [
+    "20261117"
+   ],
+   "latest": false,
+   "metapackage": "10.1.0+gfx1151.6b049405",
+   "path": "rocm10.1/gfx1151/",
+   "rocm": "10.1.0"
+  },
+  {
+   "alias": null,
+   "arch": "gfx1201",
+   "builds": [
+    "20261117"
+   ],
+   "latest": false,
+   "metapackage": "10.1.0+gfx1201.6b049405",
+   "path": "rocm10.1/gfx1201/",
+   "rocm": "10.1.0"
+  },
+  {
+   "alias": null,
+   "arch": "gfx1250",
+   "builds": [
+    "20261117"
+   ],
+   "latest": false,
+   "metapackage": "10.1.0+gfx1250.6b049405",
+   "path": "rocm10.1/gfx1250/",
+   "rocm": "10.1.0"
+  },
+  {
+   "alias": null,
+   "arch": "gfx950",
+   "builds": [
+    "20261117"
+   ],
+   "latest": false,
+   "metapackage": "10.1.0+gfx950.6b049405",
+   "path": "rocm10.1/gfx950/",
+   "rocm": "10.1.0"
+  }
+ ]
+}
