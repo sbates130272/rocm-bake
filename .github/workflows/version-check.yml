@@ -166,8 +166,14 @@ jobs:
                    --json number --jq '.[0].number // empty')
 
           if [ -n "$others" ] && [ -n "$open" ]; then
+            # Quoted heredocs for the prose, here and below: it is
+            # Markdown, and shellcheck reads a backtick inside a
+            # single-quoted printf as an expansion that will not happen.
             {
-              printf 'This week against `main`, the check would move:\n\n'
+              cat <<'BODY'
+          This week against `main`, the check would move:
+
+          BODY
               cat /tmp/bump.md
               printf '\n\nThe branch has commits by %s, so it was left as it is.\n' "$others"
             } > /tmp/comment.md
@@ -177,23 +183,31 @@ jobs:
           fi
 
           {
-            printf 'The weekly version check moved these pins in `rocm-bake.hcl` '
-            printf 'and regenerated the version tables.\n\n'
+            cat <<'BODY'
+          The weekly version check moved these pins in `rocm-bake.hcl` and
+          regenerated the version tables.
+
+          BODY
             cat /tmp/bump.md
-            printf '\n\nThis is the edit and nothing more. Nothing has been built '
-            printf 'with these versions: a new upstream release often needs a '
-            printf 'Dockerfile to change with it, and that is what the review '
-            printf 'is for. Push fixes to this branch; once it has a commit '
-            printf 'that is not the bot'"'"'s, later runs comment here and stop '
-            printf 'rebuilding it.\n\n'
-            printf 'Once merged, the Sunday build in `nightly.yml` builds every '
-            printf 'architecture and publishes the wheels.\n'
+            cat <<'BODY'
+
+          This is the edit and nothing more. Nothing has been built with
+          these versions: a new upstream release often needs a Dockerfile
+          to change with it, and that is what the review is for. Push
+          fixes to this branch; once it has a commit that is not the
+          bot's, later runs comment here and stop rebuilding it.
+
+          Once merged, the Sunday build in `nightly.yml` builds every
+          architecture and publishes the wheels.
+          BODY
             if [ "$HAVE_PAT" != "true" ]; then
-              printf '\n> **CI has not run on this pull request.** It was '
-              printf 'opened with the workflow token, and GitHub starts no '
-              printf 'workflow for those. Close and reopen it to run CI, or '
-              printf 'set the `BUMP_PR_TOKEN` secret so the next one starts '
-              printf 'it itself.\n'
+              cat <<'BODY'
+
+          > **CI has not run on this pull request.** It was opened with
+          > the workflow token, and GitHub starts no workflow for those.
+          > Close and reopen it to run CI, or set the `BUMP_PR_TOKEN`
+          > secret so the next one starts it itself.
+          BODY
             fi
           } > /tmp/pr.md
 
