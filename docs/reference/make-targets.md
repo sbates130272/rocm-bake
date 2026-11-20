@@ -134,6 +134,8 @@ layer cache nor compiler-cache hits.
 | `wheel-index-check` | Install each generated index into a throwaway venv |
 | `wheels-publish` | Publish one architecture publicly — release + gh-pages (`ARCH=`) |
 | `wheels-publish-dry` | Show what `wheels-publish` would do, touching nothing |
+| `wheels-reindex` | Rebuild every public wheel index from the releases; publishes no build |
+| `wheels-reindex-dry` | Show what `wheels-reindex` would change on gh-pages |
 
 `arches-%` takes any target name, not only the documented examples.
 
@@ -250,6 +252,7 @@ after the server did. Published runs are frozen and stop polling.
 | `version-check` | Upstream releases vs published wheels vs our pins |
 | `version-scrub` | Regenerate the version tables from `rocm-bake.hcl` |
 | `version-scrub-check` | Fail if those generated tables are stale |
+| `version-bump` | Move every pin that is behind upstream in `rocm-bake.hcl`, then scrub |
 
 `version-check` needs the network. `version-scrub` reads
 `rocm-bake.hcl` and nothing else, which is what lets

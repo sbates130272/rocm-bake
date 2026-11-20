@@ -78,6 +78,28 @@ with the big GPU has the small RAM, and vice versa.
   loads with `PULL_POLICY=never`, or compose's `pull_policy: always`
   pulls the registry's older image over the top and reports nothing.
 
+## Public wheels (GitHub releases + gh-pages)
+
+- **A published release asset is never replaced or deleted.** Each
+  build is its own release, `wheels-<rocm>-<arch>-<YYYYMMDD>`.
+  `wheelpublish.sh` uploads nothing when the wheels match the newest
+  release and refuses a tag that holds different ones; do not reach
+  for `--clobber` or `gh release delete-asset` to get past it. People
+  install from those URLs by hash.
+- **gh-pages has no history.** `docs.yml` force-pushes an orphan
+  commit on every deploy, so nothing can be recovered from that
+  branch, and a deploy racing a publish discards it silently. The
+  releases are the record: each carries a `manifest.json`, and
+  `make wheels-reindex` rebuilds every index page from them.
+- **`wheels-publish`, `wheels-reindex`, `emu-publish` and
+  `cpu-publish` write to the public site.** Same agreement as the
+  fleet commands: propose, or run the `-dry` form.
+- **The weekly is a cron string compared in two places.**
+  `nightly.yml` decides it is Sunday by matching
+  `github.event.schedule` against the literal `'17 2 * * 0'`. Change
+  the schedule and the comparison together, or the weekly silently
+  becomes a nightly: one architecture, nothing published.
+
 ## Make macros
 
 - **The `bake` macro's recipe starts with `@echo … ; \`.** A shell

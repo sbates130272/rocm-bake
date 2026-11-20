@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+"""A stand-in for gh that keeps releases as directories under $GH_STATE.
+
+Only what wheelpublish.sh and wheelsite.py call. It refuses an upload
+over an existing asset unless --clobber is given, as the real one does,
+and logs every invocation to gh.log beside the state directory so a
+test can assert on what was never asked for.
+"""
+import hashlib
+import json
+import os
+import shutil
+import sys
+from pathlib import Path
+
+STATE = Path(os.environ["GH_STATE"])
+ARGS = sys.argv[1:]
+STATE.parent.mkdir(parents=True, exist_ok=True)
+with open(STATE.parent / "gh.log", "a") as log:
+    print(" ".join(ARGS)[:300], file=log)
+
+
+def opt(name):
+    return ARGS[ARGS.index(name) + 1] if name in ARGS else None
+
+
+def tags():
+    return sorted(d.name for d in STATE.iterdir()) if STATE.is_dir() else []
+
+
+def assets(tag):
+    return [{"name": f.name, "size": f.stat().st_size,
+             "updated_at": "2026-11-19T00:00:00Z",
+             "digest": "sha256:" + hashlib.sha256(f.read_bytes()).hexdigest()}
+            for f in sorted((STATE / tag).iterdir())]
+
+
+if ARGS[:2] == ["repo", "view"]:
+    print("o/r")
+elif ARGS[0] == "api":
+    path = next(a for a in ARGS[1:] if a.startswith("repos/"))
+    if "/releases/tags/" in path:
+        tag = path.rsplit("/", 1)[1]
+        if tag not in tags():
+            sys.exit(1)
+        for a in assets(tag):
+            print(a["digest"].removeprefix("sha256:"), a["name"])
+    elif "tag_name" in (opt("--jq") or "") and "tojson" not in opt("--jq"):
+        print("\n".join(tags()))
+    else:
+        for tag in tags():
+            print(json.dumps({"tag_name": tag, "draft": False,
+                              "assets": assets(tag)}))
+elif ARGS[:2] == ["release", "create"]:
+    (STATE / ARGS[2]).mkdir(parents=True)
+elif ARGS[:2] == ["release", "upload"]:
+    files = [a for a in ARGS[3:]
+             if not a.startswith("--") and a != opt("--repo")]
+    for f in files:
+        if (STATE / ARGS[2] / Path(f).name).exists() \
+                and "--clobber" not in ARGS:
+            sys.exit(f"asset already exists: {Path(f).name}")
+    for f in files:
+        shutil.copy(f, STATE / ARGS[2] / Path(f).name)
+elif ARGS[:2] == ["release", "download"]:
+    sys.stdout.write((STATE / ARGS[2] / opt("--pattern")).read_text())
+else:
+    sys.exit(f"fake-gh: not implemented: {ARGS}")

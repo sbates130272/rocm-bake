@@ -466,111 +466,36 @@ jobs:
           sys.exit(fail)
           EOF
 
-  # wheelpublish.sh deletes release assets, which is the only
-  # irreversible thing this repo does to something public, and until
-  # now nothing tested it.
+  # wheelpublish.sh puts files at public URLs that people install from,
+  # and the promise it makes about them is that a published build is
+  # never changed and never dropped from the index.
   #
-  # The bug that actually reached a release was the metapackage glob:
-  # dist/index/<arch>/rocm-torch/ accumulated a wheel per regeneration
-  # once the version gained a pin digest, wheelpublish.sh globs that
-  # directory, and everything in the upload set is spared by the prune.
-  # So four generations were uploaded and all four kept. That is what
-  # the metapackage-count assertion and the regeneration step below
-  # pin down.
+  # This job used to test the opposite. The publisher kept one release
+  # per (ROCm, arch), uploaded over it with --clobber and pruned the
+  # assets the new build had not produced, and what was pinned here was
+  # that the prune named the right files. It did -- and the design was
+  # still wrong: a URL meant different bytes on different days, and
+  # publishing ROCm 10.2 removed 10.1 from the index while every 10.1
+  # wheel was still public. Each build is now its own release, and the
+  # index is rebuilt from all of them.
   #
-  # The prune's first implementation also used `sort -u | comm`, which
-  # under a UTF-8 locale prints "comm: file 1 is not in sorted order"
-  # for these names. Checked against the real gfx950 asset list, it
-  # still produced the correct set -- the warning went to stderr and
-  # the answer was right -- so it was not the cause of anything
-  # observed. It was replaced because comm on unsorted input is
-  # undefined, and the thing it decides is which public files to
-  # delete. The locale is pinned below so the test exercises that
-  # condition rather than the C-locale path where both forms agree.
-  #
-  # No network: `gh` is a stub on PATH that answers `release view` with
-  # a canned asset list, and --dry-run means nothing is uploaded or
-  # deleted. What is under test is which names the script decides are
-  # stale.
+  # No network: `gh` is .builders/tests/fake-gh, which keeps releases
+  # as directories and records every call, so the test can assert that
+  # nothing was ever asked to replace or delete an asset.
   wheelpublish:
-    name: Publish prunes the right assets
+    name: Publishing keeps every build and replaces none
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Stub gh with a release that has two generations in it
-        run: |
-          set -e
-          mkdir -p stub
-          cat > stub/gh <<'STUB'
-          #!/usr/bin/env bash
-          # Only the two subcommands wheelpublish.sh reaches in a dry run.
-          case "$1 $2" in
-            "release view")
-              # Present: one current wheel, one superseded wheel, and
-              # three generations of the metapackage. The names are the
-              # real ones -- "+" and "." in the places that made the
-              # locale-sensitive sort disagree with comm.
-              cat <<'JSON'
-          torch-2.15.0a0+git31a77fc.rocm10.1.0-cp314-cp314-linux_x86_64.whl
-          torch-2.15.0a0+git31a77fc-cp314-cp314-linux_x86_64.whl
-          rocm_torch-10.1.0+gfx950-py3-none-any.whl
-          rocm_torch-10.1.0+gfx950.13b9737a-py3-none-any.whl
-          rocm_torch-10.1.0+gfx950.424e84fe-py3-none-any.whl
-          JSON
-              ;;
-            "repo view") echo "sbates130272/rocm-bake" ;;
-            *) : ;;
-          esac
-          STUB
-          chmod +x stub/gh
+      - name: Builds are immutable, and the index lists all of them
+        run: python3 -I .builders/tests/test_wheelpublish.py
 
-      # A UTF-8 locale on purpose: this is the condition under which
-      # `sort -u` and `comm` disagree about these names. Under LC_ALL=C
-      # the old implementation passed.
-      - name: Prune names exactly the superseded assets
-        env:
-          LC_ALL: en_US.UTF-8
-          LANG: en_US.UTF-8
-        run: |
-          set -e
-          sudo locale-gen en_US.UTF-8 >/dev/null 2>&1 || true
-          mkdir -p w i/rocm-torch
-          : > "w/torch-2.15.0a0+git31a77fc.rocm10.1.0-cp314-cp314-linux_x86_64.whl"
-          : > "i/rocm-torch/rocm_torch-10.1.0+gfx950.424e84fe-py3-none-any.whl"
-
-          out=$(PATH="$PWD/stub:$PATH" .builders/wheelpublish.sh \
-                  --arch gfx950 --wheels w --index i \
-                  --repo sbates130272/rocm-bake --dry-run --no-push 2>&1)
-          echo "$out"
-
-          want_gone='
-          torch-2.15.0a0+git31a77fc-cp314-cp314-linux_x86_64.whl
-          rocm_torch-10.1.0+gfx950-py3-none-any.whl
-          rocm_torch-10.1.0+gfx950.13b9737a-py3-none-any.whl'
-          for a in $want_gone; do
-            echo "$out" | grep -qF "would remove stale asset $a" || {
-              echo "::error::prune did not offer to remove $a"; exit 1; }
-          done
-
-          # The two current names must NOT be offered. This is the
-          # direction that loses data, so it is asserted explicitly
-          # rather than inferred from a count.
-          for a in \
-            "torch-2.15.0a0+git31a77fc.rocm10.1.0-cp314-cp314-linux_x86_64.whl" \
-            "rocm_torch-10.1.0+gfx950.424e84fe-py3-none-any.whl"; do
-            echo "$out" | grep -qF "would remove stale asset $a" && {
-              echo "::error::prune would delete the CURRENT asset $a"; exit 1; }
-          done
-
-          # Exactly one metapackage may be uploaded. Four was the bug.
-          echo "$out" | grep -qE 'upload +[0-9]+ wheel\(s\) \+ 1 metapackage' || {
-            echo "::error::expected exactly one metapackage in the upload set"
-            echo "$out" | grep -E 'upload ' ; exit 1; }
-          echo "  prune decisions correct under a UTF-8 locale"
-
-      # The generator must not leave previous metapackages behind, or
-      # the glob above picks them up again on the next publish.
+      # The generator must not leave previous metapackages behind:
+      # wheelpublish.sh globs that directory to decide what to upload,
+      # and the version carries a pin digest, so a rebuild writes a new
+      # filename rather than overwriting the old one. Four generations
+      # reached a release that way.
       - name: Regenerating an index clears the old metapackage
         run: |
           set -e

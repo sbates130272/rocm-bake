@@ -1,9 +1,11 @@
 # Building On AWS
 
-AWS runs one thing for this repository: the nightly. A CodeBuild
-machine builds every target for one architecture, pushes the images to
-ECR, and shares a compiler cache on S3 with nothing else. There is no
-rented fleet, and no instance to stop.
+AWS runs one workflow for this repository, on two schedules. Monday to
+Saturday is the nightly: a CodeBuild machine builds every target for
+one architecture, pushes the images to ECR, and shares a compiler cache
+on S3 with nothing else. Sunday is [the weekly](#the-weekly-build): the
+same build for every architecture, followed by publishing the wheels.
+There is no rented fleet, and no instance to stop.
 
 [CI runners](runners.md) covers the CodeBuild project itself — the
 `runs-on` label, the webhook, the security boundary. This page is the
@@ -58,6 +60,63 @@ rented machine has no WebDAV endpoint to reach. `SCCACHE_BUCKET`
 outranks `SCCACHE_WEBDAV_ENDPOINT` in the Dockerfiles, and an empty
 bucket name is treated as unset — so the same bake file serves both
 fleets, and the SNOC nodes keep nginx.
+
+## The Weekly Build
+
+`nightly.yml` has a second schedule, Sunday 02:17 UTC, that differs
+from the other six nights in three ways.
+
+- **Every architecture**, from the `WEEKLY_ARCHES` repository variable
+  or, unset, `ARCHES` in the Makefile. `NIGHTLY_ARCHES` is not
+  consulted; it is what keeps the nightly to one.
+- **Whether or not `main` moved.** A build has inputs no commit of ours
+  records — the image behind a base tag, the Ubuntu archive — and the
+  nightly's gate would skip them for ever.
+- **It publishes.** When every architecture has built, each one's
+  wheels are fetched from ECR and published by `wheels-publish.yml`,
+  one architecture at a time. Wheels identical to the last published
+  build upload nothing; wheels that differ become a new release beside
+  it. One architecture failing holds back all of them.
+
+Run the same shape by hand with the `weekly` input of the workflow's
+dispatch form. Turn it off with `NIGHTLY_ENABLED`, which gates both.
+
+The matrix runs one architecture at a time, because the account's
+quota is one concurrent `xlarge` build. Queue time is not billed.
+
+!!! warning "Not yet measured"
+    No weekly run has happened. Each architecture's cost should be a
+    night's, from the table below — a few minutes when nothing moved,
+    about a dollar for a version bump — but three of the four have
+    never been built on this account at the current ROCm, so the first
+    run is three cold builds. The publish step runs on `small` and has
+    also never run; its sizing is an argument, not an observation.
+
+### How A Pin Moves
+
+The weekly is the last step of a loop that is otherwise two clicks.
+
+1. **Monday**, `version-check.yml` compares every pin in
+   `rocm-bake.hcl` with upstream. What is behind goes in the tracking
+   issue, as before, and `versioncheck.py --bump` then makes the edit
+   and opens a pull request on the `chore/version-bump` branch.
+2. **A person** reads CI on it, pushes whatever the new version needs,
+   and merges. Once the branch has a commit that is not the bot's,
+   later runs comment on the pull request and stop rebuilding it.
+3. **Sunday**, the weekly builds `main` and publishes.
+4. **Monday**, `wheels-probe.yml` resolves every published index.
+
+`ROCM_VERSION`, `UCX_REF` and the BuildKit pin are reported and never
+moved automatically; `BUMP_HOLD` in `versioncheck.py` says why for
+each. `make version-bump` makes the same edit in a working tree.
+
+Two settings decide how much of step 1 is automatic. Opening a pull
+request with the workflow's own token needs *Allow GitHub Actions to
+create and approve pull requests* (Settings → Actions → General). And
+GitHub starts no workflow for anything that token does, so CI does not
+run on such a pull request until it is closed and reopened. Setting a
+`BUMP_PR_TOKEN` secret — a fine-grained token with contents and
+pull-requests write on this repository — removes that step.
 
 ## What A Night Costs
 

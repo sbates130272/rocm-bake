@@ -16,21 +16,45 @@ name: Version check — upstream releases
 # All of that now lives in .builders/versioncheck.py, which the fleet
 # runs interactively as `make version-check`. One implementation, so
 # the weekly report and the one an operator runs cannot disagree.
+#
+# THE SECOND HALF: A PULL REQUEST. The issue said "bump the variable,
+# then run make version-scrub", which is a mechanical edit described
+# to a person. `versioncheck.py --bump` makes it, and this opens a
+# pull request with the result. What stays with a person is the part
+# that was never mechanical: reading CI, deciding whether a new vLLM
+# needs a Dockerfile to change with it, and merging. Sunday's weekly
+# build in nightly.yml then builds and publishes whatever was merged.
+#
+# Some pins are reported and deliberately not moved -- a new ROCm
+# above all. BUMP_HOLD in versioncheck.py lists them with reasons, and
+# the pull request body repeats them.
 on:
   schedule:
     - cron: '0 6 * * 1'        # every Monday 06:00 UTC
   workflow_dispatch: {}
 
 permissions:
-  contents: read
+  # write, for the bump branch. Nothing here builds or runs the pins
+  # it moves: the job reads release metadata and edits two text files.
+  contents: write
   issues: write
+  pull-requests: write
 
 jobs:
   check:
     name: Compare pins against upstream
     runs-on: ubuntu-latest
     steps:
+      # BUMP_PR_TOKEN, when it is set, is what the bump branch is
+      # pushed with. It matters because of a GitHub rule: nothing done
+      # with the workflow's own token starts another workflow, so a
+      # pull request opened that way gets no CI at all. A fine-grained
+      # token with contents and pull-requests write on this repository
+      # is enough. Without it the pull request is still opened, and
+      # its body says how to start CI by hand.
       - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.BUMP_PR_TOKEN || github.token }}
 
       - uses: actions/setup-python@v5
         with:
@@ -95,4 +119,123 @@ jobs:
               --title "[update] pins behind upstream" \
               --label version-update --label automated \
               --body "$body"
+          fi
+
+      # After the issue, so a failure here cannot cost the report.
+      - name: Move the pins that are behind
+        id: bump
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 .builders/versioncheck.py --bump | tee /tmp/bump.md
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::nothing to bump"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            git diff --stat
+          fi
+
+      - name: Open or update the bump pull request
+        if: steps.bump.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.BUMP_PR_TOKEN || github.token }}
+          HAVE_PAT: ${{ secrets.BUMP_PR_TOKEN != '' }}
+          BRANCH: chore/version-bump
+        # One branch and one pull request, rebuilt each week from main,
+        # for the reason the issue is one issue: a pin that stays
+        # behind for a month is one conversation.
+        run: |
+          set -euo pipefail
+          bot='github-actions[bot]'
+
+          # Rebuilding means a force-push, and that is only safe while
+          # the branch holds nothing but this job's own commit. The
+          # usual next step after a bump is a person pushing the
+          # Dockerfile fix the new version needs; overwriting that a
+          # week later would be this job destroying the work it asked
+          # for. So a branch anyone else has committed to is left
+          # alone, and the pull request gets a comment instead.
+          if git fetch -q origin "+${BRANCH}:refs/remotes/origin/${BRANCH}" 2>/dev/null; then
+            others=$(git log --format=%an "origin/main..origin/${BRANCH}" \
+                       | grep -vxF "$bot" | sort -u | paste -sd, -)
+          else
+            others=""
+          fi
+          open=$(gh pr list --head "$BRANCH" --state open \
+                   --json number --jq '.[0].number // empty')
+
+          if [ -n "$others" ] && [ -n "$open" ]; then
+            # Quoted heredocs for the prose, here and below: it is
+            # Markdown, and shellcheck reads a backtick inside a
+            # single-quoted printf as an expansion that will not happen.
+            {
+              cat <<'BODY'
+          This week against `main`, the check would move:
+
+          BODY
+              cat /tmp/bump.md
+              printf '\n\nThe branch has commits by %s, so it was left as it is.\n' "$others"
+            } > /tmp/comment.md
+            gh pr comment "$open" --body-file /tmp/comment.md
+            echo "::notice::#$open has commits by $others; commented, branch untouched"
+            exit 0
+          fi
+
+          {
+            cat <<'BODY'
+          The weekly version check moved these pins in `rocm-bake.hcl` and
+          regenerated the version tables.
+
+          BODY
+            cat /tmp/bump.md
+            cat <<'BODY'
+
+          This is the edit and nothing more. Nothing has been built with
+          these versions: a new upstream release often needs a Dockerfile
+          to change with it, and that is what the review is for. Push
+          fixes to this branch; once it has a commit that is not the
+          bot's, later runs comment here and stop rebuilding it.
+
+          Once merged, the Sunday build in `nightly.yml` builds every
+          architecture and publishes the wheels.
+          BODY
+            if [ "$HAVE_PAT" != "true" ]; then
+              cat <<'BODY'
+
+          > **CI has not run on this pull request.** It was opened with
+          > the workflow token, and GitHub starts no workflow for those.
+          > Close and reopen it to run CI, or set the `BUMP_PR_TOKEN`
+          > secret so the next one starts it itself.
+          BODY
+            fi
+          } > /tmp/pr.md
+
+          # The issue step creates these only when a pin is behind, and
+          # a derived pin can move on a week when none is.
+          gh label create version-update --force \
+            --color 0e8a16 --description "A pinned dependency is behind upstream"
+          gh label create automated --force \
+            --color ededed --description "Filed by a workflow, not a human"
+
+          git checkout -q -B "$BRANCH"
+          git -c user.name="$bot" \
+              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit -q -s -a -m "chore(deps): move pins to current upstream" \
+                     -m "$(cat /tmp/bump.md)"
+          git push -q --force origin "$BRANCH"
+
+          if [ -n "$open" ]; then
+            gh pr edit "$open" --body-file /tmp/pr.md
+            echo "::notice::updated #$open"
+          elif ! gh pr create --base main --head "$BRANCH" \
+                   --title "chore(deps): move pins to current upstream" \
+                   --label version-update --label automated \
+                   --body-file /tmp/pr.md; then
+            # The branch is pushed either way, so nothing is lost.
+            echo "::error::could not open the pull request. With the" \
+                 "workflow token this needs Settings -> Actions ->" \
+                 "General -> 'Allow GitHub Actions to create and approve" \
+                 "pull requests'. The branch $BRANCH has been pushed."
+            exit 1
           fi

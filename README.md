@@ -70,6 +70,8 @@ tokens without timing.
 `rocm-bake.hcl` is the single source for every value a build reads.
 `make list-vars` prints what is actually in effect, and `make version-check`
 compares it against what upstream has released and what we have published.
+A weekly workflow runs the same comparison and opens a pull request moving
+whatever is behind; once merged, Sunday's build on AWS publishes the wheels.
 
 [vars]: https://sbates130272.github.io/rocm-bake/reference/bake-variables/
 [emu]: https://sbates130272.github.io/rocm-bake/architecture/emulation/
