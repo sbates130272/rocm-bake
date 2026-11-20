@@ -3,8 +3,17 @@
 
 Only what wheelpublish.sh and wheelsite.py call. It refuses an upload
 over an existing asset unless --clobber is given, as the real one does,
-and logs every invocation to gh.log beside the state directory so a
-test can assert on what was never asked for.
+fails a lookup of a missing release the way the real one does, and
+logs every invocation to gh.log beside the state directory so a test
+can assert on what was never asked for.
+
+Two failures can be switched on, because the real service has them and
+a stub that never fails teaches nothing about what the caller does
+then:
+
+    GH_FAIL_LIST=1       listing releases fails, as on a rate limit
+    GH_STARTER=a,b       those asset names are reported as unfinished
+                         uploads: listed, but with no digest
 """
 import hashlib
 import json
@@ -42,9 +51,21 @@ elif ARGS[0] == "api":
     if "/releases/tags/" in path:
         tag = path.rsplit("/", 1)[1]
         if tag not in tags():
+            # As the real one does: the error body on STDOUT, the
+            # summary on stderr, and a non-zero exit. A stub that
+            # exited quietly here let wheelpublish.sh ship reading
+            # this body as an asset list.
+            print('{"message":"Not Found","status":"404"}')
+            print("gh: Not Found (HTTP 404)", file=sys.stderr)
             sys.exit(1)
+        starter = set(filter(None, os.environ.get("GH_STARTER", "").split(",")))
         for a in assets(tag):
-            print(a["digest"].removeprefix("sha256:"), a["name"])
+            print("-" if a["name"] in starter
+                  else a["digest"].removeprefix("sha256:"), a["name"])
+    elif os.environ.get("GH_FAIL_LIST"):
+        print('{"message":"API rate limit exceeded","status":"403"}')
+        print("gh: API rate limit exceeded (HTTP 403)", file=sys.stderr)
+        sys.exit(1)
     elif "tag_name" in (opt("--jq") or "") and "tojson" not in opt("--jq"):
         print("\n".join(tags()))
     else:

@@ -125,12 +125,29 @@ jobs:
       # local index. wheels-publish then regenerates that index with the
       # release URL as its href prefix -- same script, different
       # --wheel-url -- so what is published is what was just fetched.
+      # The platform-tag verdicts are measured here and written into
+      # the release's manifest.json, which is never replaced. Without
+      # auditwheel each one is recorded as "described but not judged",
+      # for good, and wheels-probe.yml's check that no wheel is tagged
+      # more narrowly than it needs to be has nothing to act on. The
+      # first publish to run on this machine printed exactly that note.
+      #
+      # Installed for the interpreter itself, and then imported the way
+      # the scripts run it: `python3 -I` ignores a --user install.
+      - name: auditwheel, where python3 -I can see it
+        run: |
+          python3 -m pip install --quiet auditwheel \
+            || python3 -m pip install --quiet --break-system-packages auditwheel
+          python3 -I -c 'import auditwheel; print("auditwheel ok")'
+
       - name: Fetch wheels and build the index
         env:
           REGISTRY: ${{ vars.ECR_REGISTRY }}
           REGISTRY_INSECURE: "false"
         run: |
-          make wheel-index ARCHES="${{ inputs.arch }}" BUILDER=rocm-publish
+          # STRICT=1: a wheel that cannot be fetched stops the job. The
+          # count below only catches "fetched nothing at all".
+          make wheel-index ARCHES="${{ inputs.arch }}" BUILDER=rocm-publish STRICT=1
           ls -la "dist/wheels/${{ inputs.arch }}/"
           # Assert here rather than letting wheelpublish.sh discover it.
           # Every repo wheel-index cannot fetch is skipped with a notice

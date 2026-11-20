@@ -1169,6 +1169,13 @@ INDEX_DIR  ?= dist/index
 # here: rocm-bake.hcl owns tag construction (PUB_* and ARCH_TAG), and a
 # second copy in the Makefile is exactly the drift check-defaults.py
 # exists to catch.
+#
+# STRICT=1 makes a wheel that cannot be fetched fatal, and shows why.
+# The default skips it with a notice, which is right when looking at
+# an arch that is only partly built and wrong when the result is about
+# to be published: a pull that fails on a throttle then yields ten
+# wheels of eleven, the metapackage pins the ten, and if the eleventh
+# was torch an install takes PyPI's instead. wheels-publish.yml sets it.
 wheel-index: ## Fetch each arch's wheels and build a pip index (ARCHES=)
 	@set -e; \
 	for a in $(ARCHES); do \
@@ -1181,8 +1188,10 @@ wheel-index: ## Fetch each arch's wheels and build a pip index (ARCHES=)
 			printf '   %-16s %s\n' "$$t" "$$ref"; \
 			printf 'FROM %s\n' "$$ref" \
 				| docker buildx build --builder $(BUILDER) \
-					--output type=local,dest="$$dest" - 2>/dev/null \
-				|| { echo "   (not published for $$a — skipped)"; continue; }; \
+					--output type=local,dest="$$dest" - $(if $(STRICT),,2>/dev/null) \
+				|| { echo "   (not published for $$a — skipped)"; \
+				     [ -z "$(STRICT)" ] || { echo "wheel-index: STRICT=1, and $$t could not be fetched for $$a"; exit 1; }; \
+				     continue; }; \
 		done; \
 		if [ -d "$$dest/wheels" ]; then \
 			mv "$$dest"/wheels/*.whl "$$dest"/ 2>/dev/null || true; \
