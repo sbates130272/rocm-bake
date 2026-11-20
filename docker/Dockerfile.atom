@@ -45,6 +45,10 @@
 # The result is a thin image whose payload is /wheels/*.whl plus the
 # atomesh binary — the same shape as aiter-wheel and torchvision-wheel.
 
+# No default: rocm-bake.hcl is the only source. The second ARG fails a
+# build that was not passed one at parse time, instead of going empty.
+ARG ROCM_VERSION
+ARG ROCM_VERSION_REQUIRED="${ROCM_VERSION:?must be passed as a build arg - rocm-bake.hcl is the source of truth}"
 ARG PYTORCH_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/pytorch:latest
 
 FROM ${PYTORCH_IMAGE} AS builder
@@ -52,7 +56,7 @@ FROM ${PYTORCH_IMAGE} AS builder
 ARG ATOM_REF=v0.1.10
 ARG ATOM_REPO=https://github.com/ROCm/ATOM.git
 ARG PYTORCH_ROCM_ARCH=gfx950
-ARG ROCM_VERSION=10.1.0-full
+ARG ROCM_VERSION
 # The channel ATOM's Cargo.toml needs: edition 2021, axum 0.8, rand 0.9.
 # Shared with Dockerfile.vllm, which builds vllm/vllm-rs on the same pin.
 ARG RUST_VERSION=1.95
@@ -255,6 +259,37 @@ RUN python3 -I /tmp/atom-topk-fallback.py && \
     python3 -c "import ast; ast.parse(open('atom/distributed/nccl_watchdog.py').read())" && \
     echo "atom topk: both samplers parse clean after patch"
 
+# ATOM's exact transformers pin, widened to the range vLLM accepts.
+#
+# ATOM declares `transformers==5.16.1`. That release requires
+# huggingface-hub<2.0, and vLLM v0.34.0 requires huggingface_hub>=2.0.0,
+# so the two wheels cannot be installed into one environment — and the
+# generated rocm-torch[device-<arch>] metapackage pins both. Measured
+# against the gfx1201 index built from these wheels:
+#
+#   transformers 5.16.1 depends on huggingface-hub<2.0 and >=1.5.0
+#   vllm 0.34.0+rocm102 depends on huggingface_hub>=2.0.0
+#   ERROR: ResolutionImpossible
+#
+# It is the same failure as LMCache's prometheus_client cap (see
+# Dockerfile.lmcache) and gets the same treatment: the pin is a support
+# statement from upstream, not an ABI constraint, so it is widened and
+# not replaced by another exact version. transformers 5.18.0 is the
+# first release to accept hub 2.x; the ceiling is vLLM's own, so the
+# pair resolves to whatever vLLM would have chosen alone.
+#
+# What this gives up: ATOM is now run on a transformers upstream did
+# not test it against. The import check below runs against the widened
+# range, which covers the config and tokenizer classes ATOM imports at
+# module scope and nothing that only happens while serving.
+#
+# The grep is the assertion: a later ATOM_REF that changes or drops the
+# pin makes the sed a no-op, and this must say so rather than pass.
+RUN sed -i -E 's/"transformers==5\.16\.1"/"transformers>=5.16.1,<5.23"/' pyproject.toml && \
+    grep -q '"transformers>=5.16.1,<5.23"' pyproject.toml && \
+    ! grep -q '"transformers==' pyproject.toml && \
+    echo "atom: transformers pin widened to >=5.16.1,<5.23"
+
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # setuptools_scm, overridden. The same local-version trick
@@ -329,7 +364,7 @@ RUN strip /opt/atom/atom/mesh/target/release/atomesh && \
 
 # Structural checks on the artifact, before anything is installed.
 #
-# These run first deliberately: ATOM declares `transformers==5.16.1`
+# These run first deliberately: ATOM declares a transformers range
 # and a dozen other runtime dependencies, and resolving those is a
 # separate thing that can fail for reasons having nothing to do with
 # whether this wheel was built correctly. A dependency problem must not

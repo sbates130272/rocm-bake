@@ -953,7 +953,12 @@ jobs:
       # ${VAR:-default} interpolation — without contacting a registry or
       # needing a GPU. Nothing checked this file before, and it carries
       # the settings that decide whether the pair runs at all.
+      # The GPU file has no default for its two image tags; `config`
+      # only needs them non-empty.
       - name: Validate serving compose
+        env:
+          VLLM_TAG: ci
+          LMCACHE_TAG: ci
         run: |
           # Both stacks: the CPU file is standalone, not an override of
           # the GPU one, so validating the first says nothing about it.
@@ -975,6 +980,9 @@ jobs:
       # serve-* and cpu-* targets address. If a service were renamed,
       # those targets would fail against a running host rather than here.
       - name: Check the services the Makefile drives still exist
+        env:
+          VLLM_TAG: ci
+          LMCACHE_TAG: ci
         run: |
           for f in serving/docker-compose.yml serving/docker-compose.cpu.yml; do
             services=$(docker compose -f "$f" config --services | sort | tr '\n' ' ')

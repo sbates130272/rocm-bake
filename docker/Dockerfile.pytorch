@@ -3,12 +3,17 @@
 # Builds PyTorch with HIP support; PYTORCH_ROCM_ARCH selects the target
 # Requires PyTorch 2.15.0+ and ROCm 10.1+
 
+# No default: rocm-bake.hcl is the only source. The second ARG fails a
+# build that was not passed one at parse time, instead of going empty.
+ARG ROCM_VERSION
+ARG ROCM_VERSION_REQUIRED="${ROCM_VERSION:?must be passed as a build arg - rocm-bake.hcl is the source of truth}"
+
 # Both ARGs before the first FROM: an ARG declared after a FROM belongs
 # to that stage, and a later `FROM ${X}` then sees it blank. This file,
 # Dockerfile.base and Dockerfile.runtime have each been broken by that
 # rule before.
 ARG TRITON_WHEEL_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/triton-wheel:latest
-ARG BASE_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/base:10.1.0-full-3.14
+ARG BASE_IMAGE
 ARG TORCH_WHEEL_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/pytorch-wheel:latest
 # Up here with the others, and not beside its own FROM, for the
 # reason the comment above states: an ARG used in a FROM has to be
@@ -29,8 +34,7 @@ FROM ${TRITON_WHEEL_IMAGE} AS tritonwheels
 FROM ${TORCH_WHEEL_IMAGE} AS torchwheels
 
 # Named context, supplied by bake's `pytorch-src` target or by its
-# published ref under PUBLISHED_INPUTS. The default keeps a bare
-# `docker build` on this file working.
+# published ref under PUBLISHED_INPUTS.
 FROM ${PYTORCH_SRC_IMAGE} AS pytorchsrc
 
 FROM ${BASE_IMAGE} AS builder
@@ -40,7 +44,7 @@ FROM ${BASE_IMAGE} AS builder
 # is declared expands to the empty string, and the label silently loses
 # the version it is meant to record.
 ARG PYTORCH_VERSION=2.15.0
-ARG ROCM_VERSION=10.1.0-full
+ARG ROCM_VERSION
 ARG USE_AITER=ON
 ARG USE_FLYDSL=ON
 ARG USE_FLASH_ATTENTION=ON

@@ -43,7 +43,7 @@ default — `PERF_BIND=` narrows it, `make perf-serve-stop` ends it.
 | Component | Upstream | Bake variable | Pinned |
 | --- | --- | --- | --- |
 | PyTorch | [pytorch/pytorch](https://github.com/pytorch/pytorch) | `PYTORCH_VERSION` | `2.15.0` |
-| ROCm | [rocm/dev-ubuntu-26.04](https://hub.docker.com/r/rocm/dev-ubuntu-26.04) | `ROCM_VERSION` | `10.1.0-full` |
+| ROCm | [rocm/dev-ubuntu-26.04](https://hub.docker.com/r/rocm/dev-ubuntu-26.04) | `ROCM_VERSION` | `10.2.0-full` |
 | Python | [python.org](https://www.python.org/) | `PYTHON_VERSION` | `3.14` |
 | Triton | [triton-lang/triton](https://github.com/triton-lang/triton) | `TRITON_VERSION` | `3.9.0` |
 | AITER | [ROCm/aiter](https://github.com/ROCm/aiter) | `AITER_REF` | `v0.1.29.post1` |

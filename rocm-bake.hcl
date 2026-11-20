@@ -45,7 +45,7 @@ variable "PYTORCH_VERSION" {
 }
 
 variable "ROCM_VERSION" {
-  default = "10.1.0-full"
+  default = "10.2.0-full"
 }
 
 variable "PYTORCH_ROCM_ARCH" {
@@ -1032,7 +1032,7 @@ target "pytorch-common" {
   # building x first and feeding its result straight in, so pytorch is
   # buildable in one invocation with its inputs. The same pattern as
   # aiter-wheel below.
-  # base-img is the edge that was missing. Dockerfile.pytorch does
+  # base-img is the edge that was missing. Dockerfile.pytorch did
   # `FROM ${BASE_IMAGE}` with a registry ref as its ARG default, so
   # without this context pytorch silently built on the last *published*
   # base rather than the one built beside it — and with no edge between
@@ -1190,7 +1190,7 @@ target "triton-wheel" {
   ]))
   cache-to   = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/triton-wheel-cache:latest${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=${REGISTRY_INSECURE},ignore-error=true"]
 
-  # Same missing edge pytorch had: Dockerfile.triton does
+  # Same missing edge pytorch had: Dockerfile.triton did
   # `FROM ${BASE_IMAGE}` with a registry ref as its ARG default, so
   # without this it built on the last *published* base and bake saw no
   # reason to order it after pytorch-base.
@@ -1271,8 +1271,7 @@ target "aiter-wheel" {
     TRITON_WHEEL_IMAGE  = USE_PUB ? PUB_TRITON : "triton-wheels"
     AITER_REF           = AITER_REF
     # Dockerfile.aiter puts this in the wheel's +rocm local version
-    # segment. Without it the ARG default silently wins, so a build with
-    # ROCM_VERSION overridden would stamp the wheel with the wrong ROCm.
+    # segment.
     ROCM_VERSION        = ROCM_VERSION
     PREBUILD_KERNELS    = PREBUILD_LEVEL
     SCCACHE_VERSION     = SCCACHE_VERSION

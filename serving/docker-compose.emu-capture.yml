@@ -17,7 +17,7 @@
 # there.
 services:
   vllm:
-    image: ${REGISTRY:-snoc-strix.fold-leaffish.ts.net:8080}/rocm-pytorch/vllm-emu-capture:${VLLM_TAG:-v0.33.0-10.1.0-full-gfx1201}
+    image: ${REGISTRY:-snoc-strix.fold-leaffish.ts.net:8080}/rocm-pytorch/vllm-emu-capture:${VLLM_TAG:?set VLLM_TAG, or use make emu-capture-serve}
     environment:
       VLLM_EMULATOR_TRACE_STEP_CYCLE: "1"
       VLLM_EMULATOR_STEP_TRACE_OUTPUT: /trace/steps.jsonl
