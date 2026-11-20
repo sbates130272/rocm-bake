@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="300" viewBox="0 0 900 300" role="img" aria-label="Cache bytes written (cumulative)">
+<style>
+  .surface{fill:#fcfcfb} .ink{fill:#0b0b0b}
+  .ink2{fill:#52514e} .grid{stroke:#e4e3df;stroke-width:1}
+  text{font-family:ui-sans-serif,-apple-system,Segoe UI,Helvetica,Arial,sans-serif}
+  .t{font-size:13px;font-weight:600} .l{font-size:11px}
+  .v{font-size:11px;font-weight:600}
+  @media (prefers-color-scheme: dark){
+    .surface{fill:#1a1a19} .ink{fill:#f0efec}
+    .ink2{fill:#c3c2b7} .grid{stroke:#2e2e2c}
+    .s-0{stroke:#3987e5} .d-0{fill:#3987e5}
+    .s-1{stroke:#d95926} .d-1{fill:#d95926}
+    .s-2{stroke:#199e70} .d-2{fill:#199e70}
+  }
+  .s-0,.s-1,.s-2{fill:none;stroke-width:2}
+  .d-0,.d-1,.d-2{stroke:none}
+  .s-0{stroke:#2a78d6} .d-0{fill:#2a78d6}
+  .s-1{stroke:#eb6834} .d-1{fill:#eb6834}
+  .s-2{stroke:#1baf7a} .d-2{fill:#1baf7a}
+</style>
+<rect width="900" height="300" class="surface"/>
+<text x="16" y="24" class="t ink">Cache bytes written (cumulative)</text>
+<line x1="54" y1="266.0" x2="788" y2="266.0" class="grid"/>
+<text x="46" y="270.0" text-anchor="end" class="l ink2">0.0</text>
+<line x1="54" y1="209.5" x2="788" y2="209.5" class="grid"/>
+<text x="46" y="213.5" text-anchor="end" class="l ink2">2.1</text>
+<line x1="54" y1="153.0" x2="788" y2="153.0" class="grid"/>
+<text x="46" y="157.0" text-anchor="end" class="l ink2">4.3</text>
+<line x1="54" y1="96.5" x2="788" y2="96.5" class="grid"/>
+<text x="46" y="100.5" text-anchor="end" class="l ink2">6.4</text>
+<line x1="54" y1="40.0" x2="788" y2="40.0" class="grid"/>
+<text x="46" y="44.0" text-anchor="end" class="l ink2">8.6</text>
+<text x="16" y="292" class="l ink2">GB written · elapsed 13m19s</text>
+<path d="M154.1,266.0 L188.9,266.0 L284.4,266.0 L539.6,266.0 L669.9,266.0 L669.9,266.0 L673.6,266.0 L677.3,265.9" class="s-0" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="677.3" cy="265.9" r="4" class="d-0"/>
+<path d="M68.0,266.0 L98.4,266.0 L98.4,266.0 L98.4,266.0 L114.5,255.3 L114.8,244.7 L115.0,233.9 L115.4,223.3 L115.4,223.3 L306.2,223.3 L306.2,223.3 L306.2,223.3 L306.4,223.0 L308.3,223.0 L308.3,223.0 L308.3,223.0 L308.4,219.6 L322.8,208.9 L323.0,198.2 L323.0,198.2 L335.8,191.8 L336.0,181.1 L336.3,170.5 L336.4,152.3 L337.6,152.3 L337.6,152.0 L337.6,152.0 L337.6,152.0 L337.6,151.8 L337.6,151.8 L337.7,148.8 L337.7,145.4 L337.9,134.2 L337.9,134.2 L402.2,134.2 L402.2,134.2 L402.2,134.2 L402.2,134.2 L402.3,134.0 L405.8,133.7 L406.4,133.2 L406.4,133.2 L406.4,133.2 L406.5,133.2 L407.4,132.6 L407.4,132.6 L407.6,131.2 L407.7,131.2 L407.7,131.2 L408.0,131.0 L408.0,131.0 L408.0,130.7 L414.4,120.0 L415.5,109.3 L415.5,109.3 L707.1,109.3 L707.1,109.3 L707.1,109.3 L707.9,107.4 L754.1,107.4 L754.1,107.4 L754.3,107.2 L754.4,107.2 L755.0,106.8 L756.0,106.3 L778.5,101.0 L780.4,94.2 L788.0,60.5 L788.0,60.5" class="s-1" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="788.0" cy="60.5" r="4" class="d-1"/>
+<text x="798" y="64.5" class="v d-1">layer cache (Zot)</text>
+<text x="798" y="269.9" class="v d-0">sccache</text>
+</svg>

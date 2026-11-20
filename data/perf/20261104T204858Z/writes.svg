@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="300" viewBox="0 0 900 300" role="img" aria-label="Cache bytes written (cumulative)">
+<style>
+  .surface{fill:#fcfcfb} .ink{fill:#0b0b0b}
+  .ink2{fill:#52514e} .grid{stroke:#e4e3df;stroke-width:1}
+  text{font-family:ui-sans-serif,-apple-system,Segoe UI,Helvetica,Arial,sans-serif}
+  .t{font-size:13px;font-weight:600} .l{font-size:11px}
+  .v{font-size:11px;font-weight:600}
+  @media (prefers-color-scheme: dark){
+    .surface{fill:#1a1a19} .ink{fill:#f0efec}
+    .ink2{fill:#c3c2b7} .grid{stroke:#2e2e2c}
+    .s-0{stroke:#3987e5} .d-0{fill:#3987e5}
+    .s-1{stroke:#d95926} .d-1{fill:#d95926}
+    .s-2{stroke:#199e70} .d-2{fill:#199e70}
+  }
+  .s-0,.s-1,.s-2{fill:none;stroke-width:2}
+  .d-0,.d-1,.d-2{stroke:none}
+  .s-0{stroke:#2a78d6} .d-0{fill:#2a78d6}
+  .s-1{stroke:#eb6834} .d-1{fill:#eb6834}
+  .s-2{stroke:#1baf7a} .d-2{fill:#1baf7a}
+</style>
+<rect width="900" height="300" class="surface"/>
+<text x="16" y="24" class="t ink">Cache bytes written (cumulative)</text>
+<line x1="54" y1="266.0" x2="788" y2="266.0" class="grid"/>
+<text x="46" y="270.0" text-anchor="end" class="l ink2">0.0</text>
+<line x1="54" y1="209.5" x2="788" y2="209.5" class="grid"/>
+<text x="46" y="213.5" text-anchor="end" class="l ink2">5.7</text>
+<line x1="54" y1="153.0" x2="788" y2="153.0" class="grid"/>
+<text x="46" y="157.0" text-anchor="end" class="l ink2">11.4</text>
+<line x1="54" y1="96.5" x2="788" y2="96.5" class="grid"/>
+<text x="46" y="100.5" text-anchor="end" class="l ink2">17.1</text>
+<line x1="54" y1="40.0" x2="788" y2="40.0" class="grid"/>
+<text x="46" y="44.0" text-anchor="end" class="l ink2">22.8</text>
+<text x="16" y="292" class="l ink2">GB written · elapsed 24m02s</text>
+<path d="M74.3,266.0 L336.3,266.0 L492.5,266.0 L494.0,266.0 L494.0,266.0 L494.5,266.0 L494.5,266.0 L494.5,266.0 L494.5,266.0 L495.0,266.0 L540.8,266.0 L556.6,266.0 L567.8,266.0 L719.4,266.0 L735.2,266.0 L735.2,266.0 L736.7,266.0 L738.7,265.9" class="s-0" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="738.7" cy="265.9" r="4" class="d-0"/>
+<path d="M58.7,266.0 L58.7,266.0 L282.8,265.9 L282.8,265.7 L282.8,265.5 L282.9,265.5 L283.5,265.5 L283.6,265.5 L284.1,265.4 L284.1,265.4 L284.6,261.2 L289.2,212.4 L289.3,212.4 L394.6,212.4 L394.6,212.4 L394.7,209.1 L420.9,209.0 L420.9,209.0 L421.0,209.0 L421.0,209.0 L421.0,208.9 L421.2,205.6 L424.3,201.5 L425.1,190.1 L426.4,171.5 L426.4,171.5 L460.6,171.5 L460.6,171.5 L460.6,171.5 L469.0,167.9 L469.3,163.8 L469.4,160.2 L469.5,156.2 L469.5,156.2 L495.4,156.2 L495.4,156.2 L495.4,156.2 L501.6,156.2 L501.6,156.2 L501.6,156.2 L501.6,156.2 L501.9,156.2 L501.9,156.1 L501.9,156.1 L501.9,156.0 L501.9,156.0 L501.9,155.9 L501.9,155.9 L501.9,155.9 L501.9,155.9 L501.9,155.7 L501.9,155.7 L501.9,155.7 L501.9,154.7 L501.9,154.7 L502.0,154.6 L502.0,154.6 L502.0,153.4 L502.1,149.7 L502.1,145.7 L502.6,133.1 L502.6,133.1 L511.2,133.1 L511.2,133.1 L511.5,133.0 L511.8,132.9 L513.5,131.8 L514.4,130.5 L514.5,130.5 L518.1,128.1 L519.0,124.4 L519.0,124.4 L521.8,120.4 L522.5,116.2 L525.3,109.4 L525.5,109.4 L580.7,109.4 L580.7,109.4 L580.7,109.4 L581.1,109.2 L589.6,109.1 L590.2,109.1 L590.6,108.9 L591.4,108.9 L591.9,108.7 L592.0,108.2 L592.4,108.2 L595.7,107.9 L596.6,107.9 L606.1,106.7 L616.4,103.1 L619.7,99.1 L619.7,99.1 L670.8,99.1 L670.8,99.1 L670.8,99.1 L670.8,99.1 L670.8,99.0 L672.7,99.0 L672.8,98.9 L672.8,98.8 L672.8,98.8 L672.8,98.8 L672.8,98.6 L672.8,98.5 L672.8,98.5 L672.8,98.5 L672.8,98.5 L672.8,98.5 L672.8,97.9 L672.8,97.8 L673.1,94.1 L673.1,90.1 L673.1,90.1 L756.4,90.1 L756.4,90.1 L756.4,90.1 L756.5,89.5 L783.5,89.5 L783.5,89.5 L783.5,89.3 L783.5,89.3 L783.5,88.4 L783.6,86.2 L783.6,84.2 L783.6,81.6 L783.7,81.0 L783.7,81.0 L783.7,80.6 L783.7,80.6 L783.7,77.0 L783.7,77.0 L783.7,77.0 L783.7,76.9 L783.8,76.8 L783.8,76.8 L787.4,72.7 L787.7,60.5 L788.0,60.5" class="s-1" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="788.0" cy="60.5" r="4" class="d-1"/>
+<text x="798" y="64.5" class="v d-1">layer cache (Zot)</text>
+<text x="798" y="269.9" class="v d-0">sccache</text>
+</svg>

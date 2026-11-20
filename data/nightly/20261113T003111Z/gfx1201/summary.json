@@ -1,0 +1,103 @@
+{
+  "arch": "gfx1201",
+  "registry": "472426151104.dkr.ecr.us-west-2.amazonaws.com",
+  "phases": {
+    "warm": {
+      "seconds": 1955,
+      "rc": 0,
+      "cache_errors": 0
+    }
+  },
+  "cost": {
+    "instance": "xlarge",
+    "usd_per_min": 0.0798,
+    "rate_verified": false,
+    "billed_seconds": 1955,
+    "usd": 2.6
+  },
+  "metrics": {
+    "sccache": {
+      "requests": 4496,
+      "executed": 4277,
+      "hits": 4246,
+      "misses": 0,
+      "hit_rate": 100.0
+    },
+    "layer_cache": {
+      "done": 581,
+      "cached": 61,
+      "import_misses": 40
+    },
+    "targets": {
+      "triton-wheel": {
+        "seconds": 1301.1,
+        "steps": 93
+      },
+      "lmcache": {
+        "seconds": 1270.1,
+        "steps": 22
+      },
+      "pytorch-wheel": {
+        "seconds": 1255.1,
+        "steps": 82
+      },
+      "atom-wheel": {
+        "seconds": 1232.0,
+        "steps": 27
+      },
+      "vllm": {
+        "seconds": 1129.2,
+        "steps": 23
+      },
+      "cupy-wheel": {
+        "seconds": 1051.2,
+        "steps": 52
+      },
+      "nixl-wheel": {
+        "seconds": 1041.3,
+        "steps": 61
+      },
+      "pytorch-base": {
+        "seconds": 959.3,
+        "steps": 40
+      },
+      "vllm-wheel": {
+        "seconds": 919.5,
+        "steps": 11
+      },
+      "aiter-wheel": {
+        "seconds": 817.0,
+        "steps": 37
+      },
+      "lmcache-wheel": {
+        "seconds": 771.9,
+        "steps": 21
+      },
+      "pytorch": {
+        "seconds": 746.4,
+        "steps": 14
+      },
+      "torchvision-wheel": {
+        "seconds": 714.8,
+        "steps": 32
+      },
+      "pytorch-src": {
+        "seconds": 232.6,
+        "steps": 30
+      },
+      "rocm-runtime": {
+        "seconds": 26.8,
+        "steps": 34
+      }
+    },
+    "vertex_seconds": 13468.3
+  },
+  "footprint": {
+    "docker_root": "/var/lib/docker",
+    "disk_used_bytes": 252331642880,
+    "disk_avail_bytes": 225470865408,
+    "buildkit_store_bytes": 82640000000,
+    "mem_anon_bytes": 200593408,
+    "mem_file_bytes": 1636200448
+  }
+}
