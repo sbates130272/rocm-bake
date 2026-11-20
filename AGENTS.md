@@ -1,0 +1,149 @@
+# Notes for agents working in this repo
+
+Hard-won things that are not obvious from the code, and that have each
+cost a wrong build, a wrong answer, or a wrong claim. Written for an
+agent picking this repo up cold. Add to it when something bites.
+
+The repo's own prose is the better reference for *why* a thing is the
+way it is: the Dockerfiles, `rocm-bake.hcl` and `serving/*.yml` carry
+long comments that record measurements, not intentions. Read the
+comment next to the line before changing the line.
+
+## Working agreements
+
+- **Propose fleet commands, don't run them unasked.** `make push-*`,
+  `make perf-*` and `make serve-*` occupy the whole fleet for minutes
+  to hours and push to the registry. Print the command and stop, unless
+  the user has asked for that specific run. Read-only inspection (curl
+  against Zot, `--print`, `--call=check`, reading logs) needs no
+  ceremony.
+- **Never commit.** Write the message to
+  `/tmp/<repo>-commit-msg.txt` and show the `git commit -s -S -F …`
+  command. Commits are GPG-signed; never pass `--no-gpg-sign` or
+  `--no-verify`.
+- **Report what happened, not what was supposed to happen.** A build
+  that exits 0 having exported to the wrong daemon is a failure; say
+  so.
+
+## The fleet
+
+| Node | GPU | Role |
+| --- | --- | --- |
+| `snoc-strix` | gfx1151, Radeon 8060S, 96 GB VRAM | registry (Zot), sccache, builder, 30 GB RAM |
+| `snoc-think` (ssh: `snoc-thinkstation`) | gfx1201, RX 9070 XT, 16 GB VRAM | builder, 122 GB RAM |
+| `snoc-gaming` | gfx1201 | builder |
+
+`manifests/snoc.yml` is the source; `make list-nodes` prints it.
+
+Note the asymmetry, because it decides where things can run: the node
+with the big GPU has the small RAM, and vice versa.
+
+## Builds
+
+- **`rocm-bake.hcl` is the only source of versions.** No Dockerfile may
+  default `ROCM_VERSION`; each asserts it was passed. `make
+  version-scrub` regenerates the tables in `README.md` and
+  `docs/reference/bake-variables.md`, and lint fails on drift.
+- **`PUBLISHED_INPUTS=1` changes what a build reads.** Targets then
+  take their inputs as registry refs by tag rather than as bake
+  targets, so a changed Dockerfile upstream is *not* rebuilt — the tag
+  is the same and the old image is pulled. `make perf-*` runs this way.
+  After changing a base image, rebuild and push it explicitly
+  (`make push-rocm-runtime`, `push-base`) or the measured run will
+  silently use the old one.
+- **Memory, not cores, bounds the compiles.** Each Dockerfile derives
+  `MAX_JOBS` from `MemAvailable`. `Dockerfile.vllm` additionally holds
+  back `MEM_RESERVE_GB` because about 10 GB of its HIP compile arrives
+  in one burst whatever the job count. A 30 GB node has hung on this;
+  there was no OOM kill, the node thrashed and had to be reset.
+- **Wheel images are `FROM scratch`.** They carry `/wheels` and, for
+  `nixl-wheel`, `/nixl-dev`. They have no shell: inspect them by
+  `COPY --from=` or by bind-mounting into another stage.
+
+## The registry (Zot, on snoc-strix)
+
+- **Anonymous read, authenticated write.** `GET /v2/_catalog` works
+  from anywhere on the tailnet; a push needs the `ci` credential.
+- **That credential is in `pass`, encrypted to a smartcard GPG key.**
+  When the card is absent, `docker-credential-pass get` fails and every
+  push is a 401 — see `docs/operations/troubleshooting.md`. Nothing an
+  agent can fix; say so and stop.
+- **With a remote builder, the *client* supplies push credentials.**
+  snoc-think can reach the registry perfectly well and still cannot
+  push, because buildx forwards auth from the machine driving the
+  build.
+- **`make serve-load` is the way round it.** It builds `vllm` and
+  `lmcache` straight into `GPU_HOST`'s docker daemon with `--load`, as
+  `emu-load` and `cpu-load` already do for their lanes. Serve what it
+  loads with `PULL_POLICY=never`, or compose's `pull_policy: always`
+  pulls the registry's older image over the top and reports nothing.
+
+## Make macros
+
+- **The `bake` macro's recipe starts with `@echo … ; \`.** A shell
+  variable written *before* `$(call bake,…)` therefore attaches to that
+  first command and never reaches `docker buildx bake`. This produced a
+  `--load` that exported to the local daemon while claiming to target a
+  remote host, and exited 0. Pass environment through the macro's
+  fourth argument instead:
+
+      $(call bake,vllm lmcache,--load,,DOCKER_HOST=ssh://$(GPU_HOST))
+
+- **Recipes that end in `rm -rf` hide the exit status of what came
+  before.** `wheel-index-check` cannot fail for this reason, which is
+  how a wheel index that could not be installed shipped unnoticed.
+  Check such a target by hand before trusting a green run.
+
+## Serving
+
+- **Two containers, one IPC namespace.** `lmcache` owns it, `vllm`
+  joins with `ipc: service:lmcache`. `HSA_ENABLE_IPC_MODE_LEGACY=1` is
+  what makes cross-container KV transfer work on this fleet; the
+  compose file records what each value breaks.
+- **`make serve-test` is the check that the cache is live**, not
+  `/health`. LMCache can serve every request correctly and cache
+  nothing, with no error anywhere. The test reads LMCache's own store
+  and retrieve counts.
+- **`VLLM_DEV_MODE=1` is required for an honest cache test.** Without
+  it `/reset_prefix_cache` is absent, vLLM answers the second request
+  from VRAM, and LMCache is never asked — which reads as "stored but
+  served none".
+- **A 16 GB card cannot fit the defaults.** vLLM's 0.90 utilisation
+  plus 4 GB of graph capture leaves nothing for the KV cache with
+  Qwen2.5-3B. Use `GPU_UTIL=0.70 VLLM_EXTRA_ARGS=--enforce-eager`.
+  About 4 GB is also missing from vLLM's view of free memory at startup
+  on both ROCm 10.1 and 10.2 — unexplained, and not from the LMCache
+  container, the runtime, imports or the IPC setting.
+- **`KV_TIER` selects the L2 adapter**: `cpu` (L1 only), `file`
+  (LMCache's own filesystem adapter), and `nixl-native`,
+  `nixl-dynamic`, `nixl-store` (NIXL's POSIX plugin through each of
+  LMCache's three NIXL adapters). `nixl_store` is a fixed pool whose
+  `file_size` defaults to one L1 page: sized wrong it fails every store
+  with "Insufficient NIXL storage capacity" while L1 keeps working, so
+  the stack looks healthy.
+
+## Things that look like bugs and are not
+
+- **`import_utils.py:417` tracebacks in the vLLM log.** vLLM probes for
+  `nixl_ep` (a CUDA module), fails, warns and continues.
+- **Images dated "3 years ago".** `SOURCE_DATE_EPOCH` pins the created
+  timestamp for reproducibility.
+- **`base-cache:latest-<arch>-ref: not found`.** The frozen cache tier
+  does not exist for that arch yet; the build carries on.
+- **`no lookup ipc key` in the LMCache log.** Normal for the first
+  lookup of a session. It is only the LMCache#4419 signature when it is
+  *all* you ever see, with no stores.
+
+## ROCm 10.2 specifics
+
+- **LLVM's `libgomp.so` alias is on clang's search path.** 10.2 moved
+  the runtime libraries into `llvm/lib/x86_64-unknown-linux-gnu`, which
+  clang searches implicitly, and that directory has a `libgomp.so` that
+  is really `libomp`. A GCC link that includes HIP objects picks it up,
+  and the result needs `libomp.so` at run time. `rocm-prune.sh` removes
+  the alias; the toolchain check in `Dockerfile.rocm-runtime` fails the
+  build if it returns.
+- **Package names carry the version**: `amdrocm-core-sdk10.2-gfx1201`.
+  `rocm-prune.sh` matches on the `-gfxNNNN` suffix, so it is
+  version-agnostic — but check that a new ROCm still ships packages for
+  an architecture before assuming it builds.

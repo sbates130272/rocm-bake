@@ -899,7 +899,7 @@ fi; \
 $(if $(3),PUBLISHED_INPUTS=1 PYTORCH_ROCM_ARCH=$(PYTORCH_ROCM_ARCH) \
 	python3 -I .builders/depgraph.py --preflight $(1) || exit 1; \
 	PUBLISHED_INPUTS=1) \
-$(BAKE) \
+$(4) $(BAKE) \
 	--builder "$$b" \
 	--set "*.args.REGISTRY=$(REGISTRY)" \
 	--set "*.args.REGISTRY_NAME=$(REGISTRY_NAME)" \
@@ -2168,7 +2168,7 @@ compose_default = $(shell sed -n 's/.*$${$(1):-\([^}]*\)}.*/\1/p' $(COMPOSE_FILE
 COMPOSE_KNOBS_rocm := TRANSFER_MODE KV_TIER VLLM_DEV_MODE HSA_IPC_LEGACY \
                       L1_SIZE_GB CHUNK_SIZE MAX_MODEL_LEN GPU_UTIL \
                       KV_STORE HF_CACHE VLLM_EXTRA_ARGS \
-                      TORCH_BLAS_PREFER_HIPBLASLT
+                      TORCH_BLAS_PREFER_HIPBLASLT PULL_POLICY
 COMPOSE_KNOBS_cpu  := TRANSFER_MODE KV_TIER VLLM_DEV_MODE \
                       L1_SIZE_GB CHUNK_SIZE MAX_MODEL_LEN \
                       KV_STORE HF_CACHE VLLM_EXTRA_ARGS \
@@ -2330,6 +2330,31 @@ serve-stack: ## Serve vLLM + LMCache MP on GPU_HOST (KV_TIER=cpu|file, SERVE_DEV
 	$(serve_fresh)
 	@KV_OFFLOAD=1 $(COMPOSE) up -d
 	@$(MAKE_BIN) --no-print-directory serve-wait
+
+# The serving pair, built into GPU_HOST's own docker daemon.
+#
+# Same idea as emu-load and cpu-load, for the lane that normally goes
+# through the registry: DOCKER_HOST points the --load export at the
+# host that will serve, so the images never have to be pushed. That
+# matters when they cannot be — a `pass`-stored registry credential
+# needs its GPG key, and on a locked smartcard every push is a 401 —
+# and it is the only way to serve an image built from a working tree.
+#
+# Serve what it loads with PULL_POLICY=never, or compose pulls the
+# registry's older copy over the top and reports nothing:
+#
+#   make serve-load && make serve-stack PULL_POLICY=never
+#
+# The wheel images are deliberately not in the list: they are FROM
+# scratch and a daemon has no use for them.
+serve-load: builder-ensure ## Build vllm + lmcache into GPU_HOST's docker daemon
+	$(require_gpu_host)
+	@echo "loading vllm + lmcache into $(GPU_HOST)'s daemon ($(PYTORCH_ROCM_ARCH))"
+	$(call bake,vllm lmcache,--load,,DOCKER_HOST=ssh://$(GPU_HOST))
+	@echo "on $(GPU_HOST):"
+	@DOCKER_HOST=ssh://$(GPU_HOST) docker images \
+		--format '   {{.Repository}}:{{.Tag}}  {{.ID}}' \
+		| grep -E '/(vllm|lmcache):' | grep -F '$(ROCM_VERSION)' | sort -u
 
 # Readiness is /health, not `docker compose up --wait`: the container
 # is up long before the model is loaded and the engine has finished
