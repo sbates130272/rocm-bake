@@ -221,6 +221,30 @@ jobs:
     needs: arches
     strategy:
       fail-fast: false
+      # One architecture at a time, and GitHub is the one that queues
+      # them. Left to itself the matrix queues every leg at once, and
+      # that was assumed to be harmless: the account runs one xlarge
+      # build at a time, so the rest would wait their turn in
+      # CodeBuild's queue, unbilled.
+      #
+      # They do not wait long enough. The first four-architecture run
+      # (2026-11-21) built gfx950 in 65 minutes and then stopped for
+      # good. Each leg's runner is a CodeBuild build started by that
+      # leg's "queued" webhook, sent once, when the leg is queued. Four
+      # webhooks at 18:32 produced two builds: one ran gfx950, one sat
+      # QUEUED until the project's 60-minute queue timeout failed it,
+      # five minutes before gfx950 finished. The other two webhooks
+      # produced no build at all. So three legs were left queued on
+      # GitHub with no runner ever coming, holding this workflow's
+      # concurrency group until GitHub gave up a day later.
+      #
+      # With max-parallel: 1 a leg is not queued, and its webhook not
+      # sent, until the one before it has finished, so the build it
+      # asks for starts at once. Nothing waits in CodeBuild's queue and
+      # the queue timeout never comes into it. This costs no wall
+      # clock while the quota is one. If the quota is raised, raise
+      # this with it.
+      max-parallel: 1
       matrix:
         arch: ${{ fromJson(needs.arches.outputs.list) }}
 
