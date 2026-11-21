@@ -39,7 +39,8 @@ pip install \
 
 **A build.** Wheels are rebuilt weekly, and whenever a pin moves. Each
 build is a version of `rocm-torch`, and every build stays in its
-index, so pinning the metapackage pins the whole set:
+index, so pinning the metapackage pins the version of every wheel in
+the set:
 
 ```bash
 pip install \
@@ -55,6 +56,22 @@ named is not in it.
 
 Builds published before 2026-11-20 have no build number. Their
 `rocm-torch` is `10.1.0+gfx950.6b049405`, which `==10.1.0` selects.
+
+!!! warning "A build pin selects versions, not bytes"
+    Pinning a build fixes which *version* of each wheel is installed.
+    It does not promise the bytes that build shipped. The builds are
+    not bit-reproducible: two builds on the same pins produce a
+    `torch` with the same filename and a different `sha256` — measured
+    on the first two `gfx1201` builds for ROCm 10.2, where all ten
+    wheels whose version was unchanged differed. An index can offer
+    one file per filename, and it offers the newest. So an older
+    build's `rocm-torch` installs today with the newer build's files
+    wherever the version did not move.
+
+    For the exact files, record them: a lockfile or
+    `pip install --require-hashes` holds each URL and hash, and those
+    keep working because a published asset is never replaced. Every
+    build's own files stay on its release page.
 
 A week in which nothing changed publishes nothing. The build number is
 the date a set of wheels first differed from the one before it, not
@@ -208,9 +225,11 @@ starts the day somebody else publishes a colliding name.
   uploaded over an existing asset or deleted from one. A URL and the
   `sha256` beside it mean the same bytes for as long as they exist, so
   a lockfile that recorded them keeps working.
-- **A filename appears once.** Most of a build is usually unchanged
-  from the one before. A wheel two builds share is listed once, at the
-  URL it was first published under.
+- **A filename appears once.** A wheel that two builds share byte for
+  byte is listed at the URL it was first published under. Where two
+  builds have the same filename and different bytes — a rebuild at an
+  unchanged version, which is the usual case — the newest is listed.
+  The older file is still on its release, and no longer in the index.
 - **Dependencies resolve without downloading wheels.** Each wheel's
   metadata is served beside it ([PEP 658][pep658]), so an installer
   reads a few KB to plan an install instead of fetching `torch` to

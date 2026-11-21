@@ -24,12 +24,18 @@ holding a host at an older ROCm points at. <arch>/ is the URL every
 release note and document published so far names; it follows the
 newest ROCm so none of them broke.
 
-A FILENAME IS LISTED ONCE. Two builds usually share most of their
-wheels: only what was rebuilt differs. Same name and same sha256 keeps
-the OLDEST url, so a link that has been handed out never changes.
-Same name and a different sha256 is a rebuild at an unchanged version;
-the newest wins, since one filename cannot be offered twice and the
-later bytes are the ones that were meant.
+A FILENAME IS LISTED ONCE. Same name and same sha256 keeps the OLDEST
+url, so a link that has been handed out never changes. Same name and a
+different sha256 is a rebuild at an unchanged version; the newest wins,
+since one filename cannot be offered twice and the later bytes are the
+ones that were meant.
+
+The second case is the common one, not the exception it was written
+as. The builds are not bit-reproducible: of the first two gfx1201
+builds for ROCm 10.2, on identical pins, all ten wheels whose version
+had not moved differed in sha256. So an older build's metapackage
+installs with the newer build's files wherever a version is unchanged,
+and a build pin selects versions rather than bytes. The pages say so.
 
 RELEASES ARE THE SOURCE OF TRUTH. gh-pages is not a safe place to keep
 the only copy of anything: docs.yml replaces the branch with an orphan
@@ -240,8 +246,8 @@ def write_index(dest: Path, arch: str, builds: list[dict]) -> None:
         root.append(f'<a href="{project}/">{html.escape(project)}</a><br/>')
     # No <a> below this line, for the reason render_verdicts gives.
     root.append(
-        "<h2>Builds</h2><p>Every build stays installable. An unpinned "
-        "install takes the newest; name one with "
+        "<h2>Builds</h2><p>Every build's versions stay installable. An "
+        "unpinned install takes the newest; name one with "
         f"<code>rocm-torch[device-{html.escape(arch)}]==&lt;version "
         "before the +&gt;</code>.</p><table><tr><th>build</th>"
         "<th>rocm-torch</th><th>release</th></tr>" + rows + "</table>")
@@ -448,8 +454,8 @@ ROCm never changes:</p>
   "rocm-torch[device-{html.escape(first)}]"</pre>
 
 <p><strong>A build</strong> is a version of <code>rocm-torch</code>.
-Every build ever published stays in its index and its wheels are never
-replaced, so pinning the metapackage pins the whole set:</p>
+Every build ever published stays in its index, so pinning the
+metapackage pins the version of every wheel in the set:</p>
 
 <pre>pip install \\
   --index-url {site}/data/wheels/{html.escape(first_path)} \\
@@ -457,7 +463,10 @@ replaced, so pinning the metapackage pins the whole set:</p>
   "rocm-torch[device-{html.escape(first)}]=={html.escape(first_meta)}"</pre>
 
 <p class="note">Each index page lists its builds. The part of the
-version after <code>+</code> is not needed to pin one.</p>
+version after <code>+</code> is not needed to pin one. A build pin
+selects versions, not bytes: where two builds share a filename the
+index offers the newer file. Published files are never replaced, so a
+lockfile that records hashes is what holds the exact ones.</p>
 
 <h2>Reading the versions</h2>
 
