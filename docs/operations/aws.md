@@ -81,8 +81,17 @@ from the other six nights in three ways.
 Run the same shape by hand with the `weekly` input of the workflow's
 dispatch form. Turn it off with `NIGHTLY_ENABLED`, which gates both.
 
-The matrix runs one architecture at a time, because the account's
-quota is one concurrent `xlarge` build. Queue time is not billed.
+The matrix runs one architecture at a time (`max-parallel: 1`),
+because the account's quota is one concurrent `xlarge` build
+(`L-04E5CA62`). GitHub does the queueing, not CodeBuild, and that
+matters: a job's runner is a CodeBuild build started by a webhook sent
+once, when the job is queued, and a build that then waits more than
+the project's 60-minute queue timeout is failed. The first
+four-architecture run queued all four at once; `gfx950` built in 65
+minutes, the build queued behind it timed out at 60, and the remaining
+jobs sat on GitHub with no runner coming. Raising the quota to four
+would let the weekly finish in about an hour instead of four, at the
+same cost; `max-parallel` in `nightly.yml` would rise with it.
 
 !!! warning "Not yet measured"
     No weekly run has happened. Each architecture's cost should be a

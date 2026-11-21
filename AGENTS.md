@@ -100,6 +100,14 @@ with the big GPU has the small RAM, and vice versa.
   the schedule and the comparison together, or the weekly silently
   becomes a nightly: one architecture, nothing published.
 
+- **A CodeBuild runner is requested once, when its job is queued.**
+  If that build cannot start within the project's 60-minute queue
+  timeout it fails, and the GitHub job then waits a day for a runner
+  that is not coming, holding its concurrency group. Jobs that must
+  take turns on the one-xlarge quota need `max-parallel: 1`, so GitHub
+  queues them one at a time; a matrix left to queue all at once
+  strands every leg after the first long build.
+
 ## Make macros
 
 - **The `bake` macro's recipe starts with `@echo … ; \`.** A shell
