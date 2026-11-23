@@ -216,151 +216,69 @@ jobs:
             "$(printf '%s' "$arches" | jq -Rc 'split(" ") | map(select(length>0))')" \
             >> "$GITHUB_OUTPUT"
 
-  build:
-    name: ${{ matrix.arch }}
+  # One job per architecture, each waiting on the one before it. The
+  # chain, rather than a matrix, is what keeps CodeBuild from being
+  # asked for two runners at once; .github/workflows/nightly-build.yml
+  # carries the measurement that forced it.
+  #
+  # `if` on membership of the resolved list, so an architecture this
+  # run did not ask for is skipped rather than built. `always()` on
+  # every link but the first, so one architecture failing does not
+  # cancel the rest — what `fail-fast: false` did for the matrix.
+  #
+  # Adding an architecture means adding a link here and naming it in
+  # `needs` for `report` and `publish`; check-contracts.py fails if
+  # this chain and the Makefile's ARCHES disagree.
+  gfx950:
     needs: arches
-    strategy:
-      fail-fast: false
-      # One architecture at a time, and GitHub is the one that queues
-      # them. Left to itself the matrix queues every leg at once, and
-      # that was assumed to be harmless: the account runs one xlarge
-      # build at a time, so the rest would wait their turn in
-      # CodeBuild's queue, unbilled.
-      #
-      # They do not wait long enough. The first four-architecture run
-      # (2026-11-21) built gfx950 in 65 minutes and then stopped for
-      # good. Each leg's runner is a CodeBuild build started by that
-      # leg's "queued" webhook, sent once, when the leg is queued. Four
-      # webhooks at 18:32 produced two builds: one ran gfx950, one sat
-      # QUEUED until the project's 60-minute queue timeout failed it,
-      # five minutes before gfx950 finished. The other two webhooks
-      # produced no build at all. So three legs were left queued on
-      # GitHub with no runner ever coming, holding this workflow's
-      # concurrency group until GitHub gave up a day later.
-      #
-      # With max-parallel: 1 a leg is not queued, and its webhook not
-      # sent, until the one before it has finished, so the build it
-      # asks for starts at once. Nothing waits in CodeBuild's queue and
-      # the queue timeout never comes into it. This costs no wall
-      # clock while the quota is one. If the quota is raised, raise
-      # this with it.
-      max-parallel: 1
-      matrix:
-        arch: ${{ fromJson(needs.arches.outputs.list) }}
+    if: >-
+      contains(fromJson(needs.arches.outputs.list), 'gfx950')
+    uses: ./.github/workflows/nightly-build.yml
+    with:
+      arch: gfx950
+      targets: ${{ inputs.targets || '' }}
+      run_cold: ${{ inputs.run_cold || vars.NIGHTLY_COLD == 'true' }}
+      push: ${{ !(github.event_name == 'workflow_dispatch' && !inputs.push) }}
 
-    # A CodeBuild-hosted ephemeral runner: CodeBuild takes the
-    # WORKFLOW_JOB_QUEUED webhook, starts a build, registers a runner
-    # for this one job and terminates it after. A runner showing
-    # "Offline" in the GitHub UI is the expected steady state here.
-    #
-    # The trailing label overrides the project's instance size per
-    # job, which is why one project serves the whole matrix.
-    #
-    # xlarge (36 vCPU / 72 GiB / 256 GB) rather than 2xlarge (72 / 144
-    # / 824), at $0.0798 a build-minute against $0.200 — 2.5x cheaper.
-    # Three measurements, each of which had to clear before this was
-    # safe, all from CloudWatch per-build metrics and the footprint
-    # block nightly.sh writes:
-    #
-    #   CPU   peaks at 66% of 72 vCPU for about one minute and spends
-    #         most of the run under 10%; mean 6-16% across six runs.
-    #         The five genuinely wide steps total ~8 minutes, so the
-    #         worst case is wall clock growing by roughly that, against
-    #         a minute that costs 40% as much.
-    #   DISK  was the real gate: xlarge cuts 824 GB to 256 GB, a bigger
-    #         cut than CPU or RAM, and nothing had ever measured it.
-    #         The 2026-11-12 gfx1151 run — a COLD architecture, the
-    #         most expensive shape there is — used 122.7 GiB with a
-    #         113.7 GB BuildKit store. Roughly 2x headroom.
-    #   RAM   looked like the blocker at 113-116 GB of "MemoryUtilized",
-    #         which AWS never defines. The footprint block split it:
-    #         anon 0.2 GiB against 1.5 GiB of page cache. It is
-    #         reclaimable, so a 72 GiB box evicts rather than OOMs, and
-    #         Dockerfile.pytorch derives MAX_JOBS from MemAvailable so
-    #         the build self-throttles on a smaller machine anyway.
-    #
-    # Revert by changing this label and NIGHTLY_INSTANCE below; they
-    # must agree or the cost line reports the wrong rate.
-    runs-on:
-      - codebuild-${{ vars.CODEBUILD_PROJECT }}-${{ github.run_id }}-${{ github.run_attempt }}
-      - instance-size:xlarge
+  gfx1201:
+    needs: [arches, gfx950]
+    if: >-
+      always() && needs.arches.result == 'success'
+      && contains(fromJson(needs.arches.outputs.list), 'gfx1201')
+    uses: ./.github/workflows/nightly-build.yml
+    with:
+      arch: gfx1201
+      targets: ${{ inputs.targets || '' }}
+      run_cold: ${{ inputs.run_cold || vars.NIGHTLY_COLD == 'true' }}
+      push: ${{ !(github.event_name == 'workflow_dispatch' && !inputs.push) }}
 
-    # Measured on snoc-think (32 cores), the targets total 9089 s of
-    # work and the cold half runs them from nothing. Six hours is
-    # generous on 36 vCPU and still bounds a wedged build — and it is
-    # now also the worst-case bill: 360 min x $0.0798 = $28.73, where
-    # on 2xlarge the same hang cost $72.
-    timeout-minutes: 360
+  gfx1151:
+    needs: [arches, gfx1201]
+    if: >-
+      always() && needs.arches.result == 'success'
+      && contains(fromJson(needs.arches.outputs.list), 'gfx1151')
+    uses: ./.github/workflows/nightly-build.yml
+    with:
+      arch: gfx1151
+      targets: ${{ inputs.targets || '' }}
+      run_cold: ${{ inputs.run_cold || vars.NIGHTLY_COLD == 'true' }}
+      push: ${{ !(github.event_name == 'workflow_dispatch' && !inputs.push) }}
 
-    steps:
-      - uses: actions/checkout@v4
-
-      # The build's identity is the CodeBuild project's service role,
-      # already attached to this machine. No OIDC exchange and no
-      # stored keys — those are for GitHub-hosted jobs that need AWS.
-      - name: Log in to ECR
-        run: |
-          aws ecr get-login-password --region "${{ vars.AWS_REGION }}" \
-            | docker login --username AWS --password-stdin \
-                "${{ vars.ECR_REGISTRY }}"
-
-      - name: Cold and warm build for ${{ matrix.arch }}
-        env:
-          REGISTRY: ${{ vars.ECR_REGISTRY }}
-          # ECR is HTTPS with auth. The bake file defaults this true
-          # for the fleet's plain-HTTP Zot, and leaving it that way
-          # here fails every cache export rather than falling back.
-          REGISTRY_INSECURE: "false"
-          CACHE_TAG_SUFFIX: -nightly
-          # Where `ubuntu` and `rocm/dev-ubuntu-26.04` come from. Unset
-          # means Docker Hub directly, which is what the fleet does and
-          # what this lane did until it hit Docker Hub's anonymous rate
-          # limit on 2026-11-12 — a 429 two seconds into the gfx1151
-          # run, because CodeBuild egresses from an IP shared with every
-          # other tenant on it.
-          #
-          # Set NIGHTLY_DOCKERHUB to an ECR pull-through prefix, e.g.
-          # <account>.dkr.ecr.<region>.amazonaws.com/dockerhub, after
-          # running codebuild-setup.sh --dockerhub-secret-arn. Left
-          # unset the build still works and still mirrors Docker Hub
-          # through mirror.gcr.io via buildkitd-nightly.toml; that
-          # covers ubuntu but not the ROCm SDK.
-          DOCKERHUB: ${{ vars.NIGHTLY_DOCKERHUB }}
-          # The compute this job runs on, for the cost line in the report.
-          # It is the `instance-size:` label in `runs-on:` above; AWS
-          # exposes no environment variable naming the compute type, so the
-          # two have to be kept in step by hand. Wrong here means a wrong
-          # cost, not a failed build, so it is reported with the rate it
-          # used rather than silently.
-          NIGHTLY_INSTANCE: xlarge
-          # sccache on S3 rather than the fleet's tailnet WebDAV store,
-          # which this machine cannot reach. Unset SCCACHE_BUCKET and
-          # the build falls back to WebDAV and fails at server start —
-          # loudly, which is the right failure.
-          SCCACHE_BUCKET: ${{ vars.SCCACHE_BUCKET }}
-          SCCACHE_REGION: ${{ vars.AWS_REGION }}
-        run: |
-          .builders/nightly.sh \
-            --arch "${{ matrix.arch }}" \
-            --out "/tmp/nightly-${{ matrix.arch }}" \
-            --ensure-ecr \
-            ${{ inputs.targets && format('--targets ''{0}''', inputs.targets) || '' }} \
-            ${{ (inputs.run_cold || vars.NIGHTLY_COLD == 'true') && '' || '--skip-cold' }} \
-            ${{ (github.event_name == 'workflow_dispatch' && !inputs.push) && '--no-push' || '' }}
-
-      # The report travels as an artifact. The job that ran the build
-      # holds registry credentials and third-party build code; it is
-      # not the job that writes to this repository.
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: nightly-${{ matrix.arch }}
-          path: /tmp/nightly-${{ matrix.arch }}
-          if-no-files-found: warn
+  gfx1250:
+    needs: [arches, gfx1151]
+    if: >-
+      always() && needs.arches.result == 'success'
+      && contains(fromJson(needs.arches.outputs.list), 'gfx1250')
+    uses: ./.github/workflows/nightly-build.yml
+    with:
+      arch: gfx1250
+      targets: ${{ inputs.targets || '' }}
+      run_cold: ${{ inputs.run_cold || vars.NIGHTLY_COLD == 'true' }}
+      push: ${{ !(github.event_name == 'workflow_dispatch' && !inputs.push) }}
 
   report:
     name: Report
-    needs: [changed, arches, build]
+    needs: [changed, arches, gfx950, gfx1201, gfx1151, gfx1250]
     # always(): a nightly that reports only on success cannot be told
     # apart from one that never ran. The issue is the signal, so it
     # has to survive the failure it exists to describe.
@@ -382,12 +300,25 @@ jobs:
           pattern: nightly-*
 
       - name: Assemble the night's summary
+        env:
+          # One word per architecture, in chain order. Reduced in shell
+          # below rather than in an `if:` expression, so the summary can
+          # say which state it found.
+          ARCH_RESULTS: >-
+            ${{ needs.gfx950.result }}
+            ${{ needs.gfx1201.result }}
+            ${{ needs.gfx1151.result }}
+            ${{ needs.gfx1250.result }}
         run: |
+          result=success
+          for r in ${ARCH_RESULTS}; do
+            case "${r}" in success | skipped) ;; *) result="${r}" ;; esac
+          done
           {
             printf '## %s %s\n\n' \
               "${{ needs.changed.outputs.weekly == 'true' && 'Weekly' || 'Nightly' }}" \
               "$(date -u +%Y-%m-%d)"
-            printf 'Build result: **%s**\n\n' "${{ needs.build.result }}"
+            printf 'Build result: **%s**\n\n' "${result}"
             found=0
             for d in /tmp/reports/nightly-*/; do
               [ -s "$d/report.md" ] || continue
@@ -416,7 +347,7 @@ jobs:
       # one harness's numbers as another's, and merging them into one
       # index would be that mistake made structural.
       - name: Publish the run onto gh-pages
-        if: needs.build.result != 'skipped'
+        if: contains(needs.*.result, 'success')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -472,11 +403,11 @@ jobs:
   # The weekly's second half: put what was just built where people
   # install it from.
   #
-  # All or nothing across architectures. `needs.build.result` is
-  # success only when every matrix leg was, so one architecture failing
-  # holds back the other three -- a set of indexes that are not all on
-  # the same pins is harder to reason about than a week-old set that
-  # is.
+  # All or nothing across architectures: one failing holds back the
+  # others, because a set of indexes that are not all on the same pins
+  # is harder to reason about than a week-old set that is. `skipped`
+  # counts as fine — it is an architecture this run was not asked for,
+  # and it is not in the matrix below either.
   #
   # After `report`, not beside it: both push to gh-pages, and the
   # loser of that race fails on a non-fast-forward. `always()` because
@@ -487,15 +418,28 @@ jobs:
   # machine size and its permissions are written down.
   publish:
     name: Publish
-    needs: [changed, arches, build, report]
+    needs: [changed, arches, gfx950, gfx1201, gfx1151, gfx1250, report]
     if: >-
       always()
       && needs.changed.outputs.weekly == 'true'
-      && needs.build.result == 'success'
+      && contains(fromJson('["success", "skipped"]'), needs.gfx950.result)
+      && contains(fromJson('["success", "skipped"]'), needs.gfx1201.result)
+      && contains(fromJson('["success", "skipped"]'), needs.gfx1151.result)
+      && contains(fromJson('["success", "skipped"]'), needs.gfx1250.result)
       && !(github.event_name == 'workflow_dispatch'
            && (!inputs.push || inputs.targets != ''))
     strategy:
       fail-fast: false
+      # A matrix here, where the builds above are a chain, and the
+      # difference is the quota. These run on `instance-size:small`,
+      # which the account allows thirty of at once, so four webhooks in
+      # one second are four builds that all start and none that queue.
+      #
+      # max-parallel is still 1, for gh-pages: each leg commits the
+      # index there, and four concurrent pushes would mostly collide.
+      # It does not hold the webhooks back — nothing does but `needs` —
+      # so three runners idle while the first publishes, at $0.005 a
+      # minute. Call it five cents a weekly.
       max-parallel: 1
       matrix:
         arch: ${{ fromJson(needs.arches.outputs.list) }}
