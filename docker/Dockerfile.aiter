@@ -215,11 +215,16 @@ WORKDIR /opt/aiter
 # broken in the expected way nor already correct, because a third shape
 # means this patch no longer understands the file it is editing.
 #
-# v0.1.29 is the newest AITER tag as of 2026-11-10, and it pins the
-# same CK commit as v0.1.28 (96afae1d), so the defect is still here and
-# this patch still applies — checked by running it against the header
-# at that commit: one match, the stray brace removed, second run a
-# no-op. There is no ref to bump to that avoids this.
+# v0.1.28 and v0.1.29 both pinned CK 96afae1d, where the defect is
+# present: run against that header this patch finds one match, removes
+# the stray brace, and is a no-op on a second run.
+#
+# v0.1.30 moves CK to f93c029e, where the brace is in the right place —
+# checked the same way: zero matches for the broken shape, the correct
+# shape present, so the patch prints "already correct upstream" and
+# exits 0. That is the no-op branch working as designed, not the patch
+# becoming dead code: it stays until every supported ref is past the
+# fix, so that a pin moved back does not silently lose it.
 # Upstream issue still to be filed.
 # Written to a file rather than passed to `python3 -c`: the check needs
 # real if/else, which semicolon-chaining cannot express, and hadolint
