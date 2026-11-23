@@ -18,7 +18,7 @@ is authoritative if this page has aged.
 | `PYTHON_VERSION` | `3.14` |
 | `TRITON_VERSION` | `3.9.0` |
 | `TRITON_REF` | `aad2a60d958f945420c5c40936b37d411fb02e89` |
-| `AITER_REF` | `v0.1.29.post1` |
+| `AITER_REF` | `v0.1.30` |
 | `TORCHVISION_REF` | `v0.29.2` |
 | `ATOM_REF` | `v0.1.10` |
 | `NIXL_REF` | `v1.5.2` |

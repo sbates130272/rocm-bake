@@ -46,7 +46,7 @@ default — `PERF_BIND=` narrows it, `make perf-serve-stop` ends it.
 | ROCm | [rocm/dev-ubuntu-26.04](https://hub.docker.com/r/rocm/dev-ubuntu-26.04) | `ROCM_VERSION` | `10.2.0-full` |
 | Python | [python.org](https://www.python.org/) | `PYTHON_VERSION` | `3.14` |
 | Triton | [triton-lang/triton](https://github.com/triton-lang/triton) | `TRITON_VERSION` | `3.9.0` |
-| AITER | [ROCm/aiter](https://github.com/ROCm/aiter) | `AITER_REF` | `v0.1.29.post1` |
+| AITER | [ROCm/aiter](https://github.com/ROCm/aiter) | `AITER_REF` | `v0.1.30` |
 | torchvision | [pytorch/vision](https://github.com/pytorch/vision) | `TORCHVISION_REF` | `v0.29.2` |
 | ATOM | [ROCm/ATOM](https://github.com/ROCm/ATOM) | `ATOM_REF` | `v0.1.10` |
 | NIXL | [ai-dynamo/nixl](https://github.com/ai-dynamo/nixl) | `NIXL_REF` | `v1.5.2` |
