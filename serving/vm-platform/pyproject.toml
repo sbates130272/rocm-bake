@@ -1,0 +1,19 @@
+# vLLM's ROCm platform with one attribute changed, for the VM lane's
+# emulated GPU. See rocm_bake_vm/__init__.py for the reason. Installed
+# in the guest by .builders/vm-test.sh and nowhere else; it is in no
+# index.
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rocm-bake-vm-platform"
+version = "1.0"
+description = "vLLM ROCm platform without RCCL, for rocjitsu guests"
+requires-python = ">=3.10"
+
+[project.entry-points."vllm.platform_plugins"]
+rocm_bake_vm = "rocm_bake_vm:register"
+
+[tool.setuptools]
+packages = ["rocm_bake_vm"]
