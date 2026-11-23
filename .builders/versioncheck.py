@@ -284,6 +284,14 @@ BUMP_HOLD = {
                "NIXL release was tested against",
     "BUILDKIT_VERSION": "pinned by digest in builder-create.sh and "
                         "nightly.sh, which a version alone cannot rewrite",
+    # Added after PR #62 moved it unaccompanied: five Dockerfiles carry
+    # ARG SCCACHE_SHA256 for the tarball that version names, bake does
+    # not pass it and version-scrub does not regenerate it, so a bumped
+    # version alone fails every ADD --checksum on mismatch. The hash is
+    # published beside the asset as a .sha256 file; check-contracts.py
+    # asserts the five agree once they are moved.
+    "SCCACHE_VERSION": "the tarball's sha256 is pinned in five "
+                       "Dockerfiles, which a version alone cannot rewrite",
 }
 
 # Pins that do not live in rocm-bake.hcl.

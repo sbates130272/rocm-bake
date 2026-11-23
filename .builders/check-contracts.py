@@ -467,7 +467,52 @@ def check_buildkit_pin():
              f"cannot reintroduce #6418 silently.")
 
 
-# ── 11. CACHE_REPOS ↔ every cache-to ref in the bake file ────────
+# ── 11. the sccache checksum agrees across every Dockerfile ─────
+SCCACHE_SHA_RE = re.compile(r'^ARG SCCACHE_SHA256=([0-9a-f]{64})$', re.M)
+
+
+def check_sccache_sha():
+    """One sccache tarball, five hardcoded hashes, and a version in bake.
+
+    SCCACHE_VERSION lives in rocm-bake.hcl; the sha256 of the tarball
+    that version names is an ARG in five Dockerfiles, which bake does
+    not pass and version-scrub does not regenerate. Nothing tied the
+    two together, and the weekly version check moves the version on its
+    own.
+
+    That combination already shipped: PR #62 bumped SCCACHE_VERSION
+    0.19.0 -> 0.20.0 and left all five hashes on 0.19.0's tarball.
+    Every ADD --checksum would have failed on mismatch -- loudly, but
+    only once the fleet was occupied building, and in five files one at
+    a time.
+
+    This cannot verify the hash is right for the version without the
+    network, which this check does not have. It asserts the cheaper
+    half: all five agree. A bump that edits some and not others is the
+    shape the failure took, and it is caught before a builder starts.
+    The authoritative hash is published beside the asset:
+
+        https://github.com/mozilla/sccache/releases/download/\
+v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz.sha256
+    """
+    found = {}
+    for path in sorted(ROOT.glob("docker/Dockerfile.*")):
+        for m in SCCACHE_SHA_RE.finditer(read(path.relative_to(ROOT))):
+            found.setdefault(m.group(1), []).append(path.name)
+    if not found:
+        return fail("sccache-sha",
+                    "no ARG SCCACHE_SHA256 found in any Dockerfile; this "
+                    "check is reading the wrong thing")
+    if len(found) > 1:
+        fail("sccache-sha",
+             "the sccache tarball checksum differs between Dockerfiles:\n    "
+             + "\n    ".join(f"{sha}: {', '.join(files)}"
+                             for sha, files in sorted(found.items()))
+             + "\n    One tarball has one hash. A partial bump of "
+               "SCCACHE_VERSION is the usual cause.")
+
+
+# ── 12. CACHE_REPOS ↔ every cache-to ref in the bake file ────────
 def check_cache_repos():
     """The Makefile's cache repo list must name every cache bake writes.
 
@@ -620,6 +665,7 @@ def main():
     check_version_wheel_repos()
     check_manifests()
     check_buildkit_pin()
+    check_sccache_sha()
     check_cache_repos()
     check_nightly_chain()
 
@@ -631,8 +677,8 @@ def main():
     print("contracts ok: nginx log_format, balance placement, sample "
           "shape, perf stages, build-* rules, build-record names, "
           "target-costs, the fleet manifests, versioncheck's wheel "
-          "repos, the buildkit pin, the cache repo list and the "
-          "nightly's architecture chain all agree")
+          "repos, the buildkit pin, the sccache checksum, the cache "
+          "repo list and the nightly's architecture chain all agree")
     return 0
 
 

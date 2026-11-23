@@ -45,7 +45,10 @@ ARG SCCACHE_S3_KEY_PREFIX=rocm-pytorch
 # fixed port is shared by every container on the node and two builds'
 # sccache servers cross. See the long note in Dockerfile.aiter.
 ARG SCCACHE_WEBDAV_KEY_PREFIX=rocm-pytorch
-ARG SCCACHE_VERSION=0.19.0
+# No default: rocm-bake.hcl is the only source for this version.
+# Left empty the download below asks for a release that does not
+# exist and fails, rather than quietly installing another one.
+ARG SCCACHE_VERSION
 # Empty means "derive from the node"; set it to pin a job count.
 ARG MAX_JOBS=
 # Memory budget per compile job, used to derive MAX_JOBS. Shared
