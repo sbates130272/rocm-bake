@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The guest the VM lane serves in: .github/workflows/vm.yml boots it
+  with qemu-tool-action and runs .builders/vm-test.sh inside.
+
+  One guest: an emulated GPU (rocjitsu), an emulated NVMe, and two
+  emulated RDMA NICs (rocm-ernic), the second of which is also an
+  NVMe-oF target. A fleet of our own and not a shipped flavor: the
+  nearest one, xio, carries a second GPU and an SPDK controller this
+  lane has no use for, and each is a device server competing for the
+  runner's four cores.
+
+  A fleet XML is tied to the qemu-tool that reads it, so the workflow
+  pins qemu-tool to a release and this file moves with that pin. It is
+  written for 3.0.0: <devices> is newer than 2.1.0, which refuses the
+  file by naming the element, and 3.x in turn refuses ten elements
+  that 2.x read. One of them, vm-backing-shared, was here until
+  the move to 3.0.0; a stack always shares its guest image now, so
+  nothing replaces it.
+-->
+<fleet xmlns="http://qemu-tool/fleet/1.0">
+
+  <!-- One. The NIC's driver does not probe below four vCPUs and a
+       hosted runner has four cores, so a second guest would be
+       oversubscribed two to one, which the NIC mesh does not always
+       survive. Nothing here needs a peer: the fabrics target is in
+       the NIC's own server. -->
+  <vm-count>1</vm-count>
+  <vm-name-prefix>rocm-bake</vm-name-prefix>
+
+  <!-- QEMU and the device servers are one build and have to stay one:
+       they speak vfio-user to each other and a mixed set wedges at
+       that boundary. This is the set qemu-minimal's own rocm-golden
+       fleet pins at v3.0.0, the release the workflow installs. -->
+  <qemu-ref>docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user-sbates-fork:20261112.gdca6903-qemu.4cb9698-vfu.3719c3a</qemu-ref>
+  <ernic-ref>docker.io/sbates130272/batesste-ci-images-ubuntu-rocm-ernic-sbates-fork:20261112.gdca6903-ernic.90434a2-vfu.3719c3a</ernic-ref>
+  <rocjitsu-ref>docker.io/sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu:20261112.gdca6903-rocjitsu.50be05a</rocjitsu-ref>
+
+  <!-- The guest: qemu-minimal's rocm-golden image, with the ROCm 10.2
+       runtime, rdma-core and nvme-cli. A dated tag; one that moves is
+       refused. -->
+  <backing-ref>docker.io/sbates130272/qemu-tool-rocm-golden:20261119.g2aea67d</backing-ref>
+
+  <!-- gfx1250, and not by choice. It is the one generation rocjitsu
+       can present to a guest driver: given any other config, this
+       build and the newest both answer
+
+         gfx target 120001 has no IP discovery profile, so this device
+         cannot describe itself to a guest driver; modelled
+         generations are gfx1250
+
+       and exit. The config files for gfx1201, gfx1151 and gfx950
+       exist and serve rocjitsu's in-process mode, which has no guest
+       and no kernel driver. So the wheels installed on this card are
+       the gfx1250 ones, and the lane cannot be pointed at another
+       architecture by changing the workflow alone. -->
+  <rocjitsu-config>gfx1250_mi455x.json</rocjitsu-config>
+
+  <devices>
+    <server type='rocjitsu' id='gpu0'/>
+    <!-- One guest and no peer, so no mesh: the server's loopback
+         backend. This is the NIC the guest's own RDMA address is on. -->
+    <server type='ernic' id='nic0'>
+      <backend type='loopback'/>
+    </server>
+    <!-- An NVMe-oF controller inside the second NIC's server. The
+         guest reaches it with `nvme connect` over RDMA at
+         192.168.200.1:4420 and gets one block namespace, which is the
+         fabrics L2 tier. The size is the server's memory, and it
+         holds the KV blocks of one long prompt on a model of a few
+         hundred megabytes. -->
+    <server type='ernic' id='nvmeof'>
+      <backend type='nvmeof'>size=1G</backend>
+    </server>
+  </devices>
+
+  <!-- QEMU's own NVMe: the local L2 tier. A device apart from the
+       fabrics namespace, so the two tiers cannot be confused for one
+       another. -->
+  <vm-nvme>1</vm-nvme>
+  <!-- Used as plain block storage. Pointing it at the GPU's BAR is
+       for hipFile's direct path, which nothing here takes. -->
+  <vm-nvme-vram>false</vm-nvme-vram>
+  <vm-vfio-user-root-port>true</vm-vfio-user-root-port>
+
+  <!-- Four vCPUs is the NIC driver's floor and the runner's core
+       count. 8 GiB of a hosted runner's 16: torch, vLLM and LMCache's
+       L1 arena are host RAM here, and so is everything the emulated
+       card holds. Set here so the action does not resize them. -->
+  <vm-vcpus>4</vm-vcpus>
+  <vm-vmem>8192</vm-vmem>
+  <!-- Must be at least vm-vmem: guest RAM is a shared memfd. -->
+  <vm-shm-size>9g</vm-shm-size>
+
+  <!-- A single guest has nobody to reach over Ethernet. -->
+  <ernic-tap>false</ernic-tap>
+
+</fleet>
