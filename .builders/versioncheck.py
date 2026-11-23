@@ -284,6 +284,14 @@ BUMP_HOLD = {
                "NIXL release was tested against",
     "BUILDKIT_VERSION": "pinned by digest in builder-create.sh and "
                         "nightly.sh, which a version alone cannot rewrite",
+    # Added after PR #62 moved it unaccompanied: five Dockerfiles carry
+    # ARG SCCACHE_SHA256 for the tarball that version names, bake does
+    # not pass it and version-scrub does not regenerate it, so a bumped
+    # version alone fails every ADD --checksum on mismatch. The hash is
+    # published beside the asset as a .sha256 file; check-contracts.py
+    # asserts the five agree once they are moved.
+    "SCCACHE_VERSION": "the tarball's sha256 is pinned in five "
+                       "Dockerfiles, which a version alone cannot rewrite",
 }
 
 # Pins that do not live in rocm-bake.hcl.
@@ -697,6 +705,31 @@ def status_of(var, upstream, default):
     if up and cur and up != cur:
         return "behind" if up > cur else "ahead"
     return "differs"
+
+
+# KNOWN LIMITATION — a pin on a release candidate always reports
+# "ahead", and the report cannot say why.
+#
+# STRICT_SEMVER_REPOS filters candidates out of "upstream latest"
+# deliberately, because LMCache and aiter flag theirs as full releases.
+# So when we pin one on purpose — LMCACHE_REF sat at v0.5.8rc1 from
+# 2026-11-09 to 2026-11-23, because it was the only tag that served at
+# VLLM_REF=v0.34.0 — upstream latest comes back v0.5.7.post1, vkey()
+# ranks our rc above it, and the row reads "ahead of upstream". It is
+# not: it is ahead of the newest *release*, which is the question this
+# tool is not asking.
+#
+# PINNED cannot express it either: that list explains rows that are
+# behind, and --bump already leaves "ahead" alone, so nothing is
+# proposed wrongly. The cost is a row in the "odd" list that a reader
+# has to recognise, and a comment in rocm-bake.hcl to recognise it by.
+#
+# Fixing it means a third state — "pinned to a prerelease, upstream's
+# newest release is X" — which needs the unfiltered tag list as well
+# as the filtered one, and a rule for when a prerelease pin is current
+# (its own series' release has not shipped) versus stale (it has).
+# Worth doing the next time a prerelease pin lasts longer than this
+# one did.
 
 
 # ─── gathering ────────────────────────────────────────────────────

@@ -327,7 +327,7 @@ variable "RUN_ID" {
 }
 
 variable "AITER_REF" {
-  default = "v0.1.29.post1"
+  default = "v0.1.30"
 }
 
 # torchvision, built from source because PyPI publishes it only as a
@@ -518,8 +518,11 @@ variable "CUPY_REF" {
   default = "v14.2.0"
 }
 
-# A release CANDIDATE, deliberately, and the only ref that serves at
-# VLLM_REF=v0.34.0. v0.34.0 deleted CachedRequestData.resumed_req_ids;
+# The floor for serving at VLLM_REF=v0.34.0, and the first of its
+# series to ship as a release rather than a candidate: this pin sat at
+# v0.5.8rc1 until v0.5.8 proper landed on 2026-11-22.
+#
+# v0.34.0 deleted CachedRequestData.resumed_req_ids;
 # LMCache's MP connector reads it unguarded at
 # lmcache_mp_connector.py:1874, reached from build_connector_meta on the
 # first scheduled request, so the pairing dies with
@@ -536,17 +539,17 @@ variable "CUPY_REF" {
 # Upstream fixed it in LMCache PR #6457 (merged 2026-11-08), which
 # changed that site to getattr(cached_reqs, "resumed_req_ids", ()).
 # v0.5.7 predates it and v0.5.7.post1 carries only CI changes over
-# v0.5.7, so neither has it; v0.5.8rc1 is the first tag that does.
-# Their comment gives the reason the empty default is right rather than
-# merely quiet: "vLLM MRV2 readmits resumed requests as full new
-# requests", so on v0.34.0 there is no resumed set to consult.
+# v0.5.7, so neither has it; v0.5.8rc1 was the first tag that did, and
+# v0.5.8 carries it. Their comment gives the reason the empty default
+# is right rather than merely quiet: "vLLM MRV2 readmits resumed
+# requests as full new requests", so on v0.34.0 there is no resumed set
+# to consult.
 #
-# `make version-check` will report this pin as not matching upstream:
-# versioncheck.py filters release candidates out of "upstream latest"
-# on purpose, so v0.5.7.post1 is what it sees there. Expected, and the
-# reason this comment exists. Move to v0.5.8 proper when it ships.
+# Do not fall back below v0.5.8 to dodge an unrelated problem: the
+# Dockerfiles follow this series' package restructuring, and the notes
+# in Dockerfile.lmcache say which import each tag moved.
 variable "LMCACHE_REF" {
-  default = "v0.5.8rc1"
+  default = "v0.5.8"
 }
 
 # vLLM builds vllm/vllm-rs during setup.py; this tracks the channel in
@@ -749,7 +752,7 @@ variable "SCCACHE_LOG" {
 
 # 0.8.0 is the floor for caching hipcc -x hip; see Dockerfile.pytorch.
 variable "SCCACHE_VERSION" {
-  default = "0.19.0"
+  default = "0.20.0"
 }
 
 # There is deliberately no SCCACHE_SERVER_PORT here. The build

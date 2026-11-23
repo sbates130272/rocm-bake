@@ -166,6 +166,13 @@ with the big GPU has the small RAM, and vice versa.
   `nixl_ep` (a CUDA module), fails, warns and continues.
 - **Images dated "3 years ago".** `SOURCE_DATE_EPOCH` pins the created
   timestamp for reproducibility.
+- **`make version-check` saying a pin is *ahead* of upstream.** It
+  compares against the newest tag that passes the strict semver
+  filter, and that filter drops release candidates on purpose
+  (LMCache and aiter flag theirs as full releases). So a pin
+  deliberately on an rc outranks the newest release and reads as
+  "ahead". Known limitation, written up at the end of `status_of()`
+  in `versioncheck.py`; `--bump` does not move an "ahead" row.
 - **`base-cache:latest-<arch>-ref: not found`.** The frozen cache tier
   does not exist for that arch yet; the build carries on.
 - **`no lookup ipc key` in the LMCache log.** Normal for the first

@@ -167,9 +167,10 @@ BUILDER_NAME="${BUILDER_NAME:-rocm-nightly}"
 # Base image digests were identical, commands byte-identical.
 #
 # The fix is upstream in moby/buildkit#7312, merged 2026-10-26 and
-# released in v0.35.0 on 2026-11-11 -- five days before this pin. It
-# unions matching candidates across equivalent keys instead of
-# requiring every alternative to match.
+# released in v0.35.0 on 2026-11-11, which is the floor this pin may
+# not drop below; it is at v0.35.1. It unions matching candidates
+# across equivalent keys instead of requiring every alternative to
+# match.
 #
 # Confirmed on this lane, not assumed: the third `--targets
 # triton-wheel` run -- identical to the two above but for this pin --
@@ -184,7 +185,7 @@ BUILDER_NAME="${BUILDER_NAME:-rocm-nightly}"
 # The same pin is in builder-create.sh for the fleet, whose builders
 # ran v0.33.1 and v0.34.2. check-contracts.py asserts the two agree;
 # `make version-check` watches moby/buildkit for a newer release.
-BUILDKIT_IMAGE="${BUILDKIT_IMAGE:-moby/buildkit:v0.35.0@sha256:aa632b921ef07411d2cb77292cd34213d4f7b384001d6fceef1e1f25bf9752bb}"
+BUILDKIT_IMAGE="${BUILDKIT_IMAGE:-moby/buildkit:v0.35.1@sha256:baf6138eb8c37644800c7c913fba051e840ebb9ba13eaf92d92ef9a1712d0b4c}"
 
 ensure_builder() {
     if docker buildx inspect "${BUILDER_NAME}" >/dev/null 2>&1; then
