@@ -100,13 +100,21 @@ with the big GPU has the small RAM, and vice versa.
   the schedule and the comparison together, or the weekly silently
   becomes a nightly: one architecture, nothing published.
 
-- **A CodeBuild runner is requested once, when its job is queued.**
-  If that build cannot start within the project's 60-minute queue
-  timeout it fails, and the GitHub job then waits a day for a runner
-  that is not coming, holding its concurrency group. Jobs that must
-  take turns on the one-xlarge quota need `max-parallel: 1`, so GitHub
-  queues them one at a time; a matrix left to queue all at once
-  strands every leg after the first long build.
+- **A CodeBuild runner is requested once, by a webhook, and the
+  account takes one queued build.** GitHub sends
+  `workflow_job.queued` once per job; CodeBuild answers it by starting
+  a build. With one build running and one queued, every further
+  request is refused outright — *"Cannot have more than 1 builds in
+  queue for the account"* — and never retried, so that job waits for a
+  runner that is not coming until GitHub gives up, about fifteen
+  hours later, holding its concurrency group.
+  **`strategy.max-parallel` does not help**: it limits how many legs
+  run, not how many are announced, and all four webhooks go out under
+  it. Only `needs` delays the announcement. That is why the weekly's
+  architectures are a chain of jobs in `nightly.yml` calling
+  `nightly-build.yml`, not a matrix, and why `check-contracts.py`
+  asserts the chain matches `ARCHES`. A matrix is still right for jobs
+  on `instance-size:small`, whose quota is thirty.
 
 ## Make macros
 

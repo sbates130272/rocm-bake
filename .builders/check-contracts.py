@@ -513,6 +513,101 @@ def check_cache_repos():
              f"are left behind by `make clean-cache`.")
 
 
+def nightly_jobs():
+    """{job: body} for .github/workflows/nightly.yml, without a parser.
+
+    Stdlib only, like the rest of this file: the lint job that runs it
+    installs nothing, and pulling PyYAML in to read one key would make
+    this check the reason the gate needs a dependency. A job is a
+    two-space key at the top of `jobs:`; its body is everything
+    indented past that until the next one.
+    """
+    text = read(".github/workflows/nightly.yml")
+    body = text[text.index("\njobs:\n"):]
+    jobs, name, lines = {}, None, []
+    for line in body.splitlines():
+        m = re.match(r"^  ([A-Za-z0-9_-]+):\s*$", line)
+        if m:
+            if name:
+                jobs[name] = "\n".join(lines)
+            name, lines = m.group(1), []
+        elif name is not None:
+            lines.append(line)
+    if name:
+        jobs[name] = "\n".join(lines)
+    return jobs
+
+
+def needs_of(body):
+    """The `needs:` of one job body, flow or block form, as a list."""
+    m = re.search(r"^    needs:\s*(.*)$", body, re.M)
+    if not m:
+        return []
+    value = m.group(1).strip()
+    if value.startswith("["):
+        return [v.strip() for v in value.strip("[]").split(",") if v.strip()]
+    if value:
+        return [value]
+    return re.findall(r"^      - (\S+)$", body, re.M)
+
+
+def check_nightly_chain():
+    """nightly.yml names every architecture the Makefile builds, in a chain.
+
+    The architectures are separate jobs linked by `needs`, not a
+    matrix, and that is forced: a matrix announces every leg at once,
+    four `workflow_job.queued` webhooks arrive at CodeBuild in the same
+    second, and the account allows one build running plus one queued.
+    The rest are refused with "Cannot have more than 1 builds in queue
+    for the account" and never retried, so those architectures wait for
+    a runner that is not coming. Measured 2026-11-21; the header of
+    nightly-build.yml has it in full.
+
+    The cost of a chain is that it cannot be generated from another
+    job's output -- GitHub fixes the job graph before anything runs --
+    so the names are written out, and nothing but this stops them
+    drifting from ARCHES. An architecture missing from the chain is
+    never built by the weekly and never published, silently: the
+    `arches` job still lists it, and the publish matrix still has a leg
+    for it, which then finds no wheels in ECR.
+    """
+    mk = re.search(r"^ARCHES\s*\?=\s*(.+)$", read("Makefile"), re.M)
+    if not mk:
+        return fail("nightly-chain", "no ARCHES in the Makefile")
+    want = mk.group(1).split()
+
+    jobs = nightly_jobs()
+    chain = [n for n, b in jobs.items()
+             if "uses: ./.github/workflows/nightly-build.yml" in b]
+    if chain != want:
+        return fail("nightly-chain",
+                    f"nightly.yml builds {chain or '[]'}, the Makefile's "
+                    f"ARCHES is {want}.\n    Add a link to the chain in "
+                    f".github/workflows/nightly.yml, and name it in "
+                    f"`needs` for `report` and `publish`.")
+
+    # Each link waits on the one before it, which is the whole point.
+    for n, arch in enumerate(chain):
+        needs = needs_of(jobs[arch])
+        if n and chain[n - 1] not in needs:
+            fail("nightly-chain",
+                 f"{arch} does not wait for {chain[n - 1]}: needs={needs}.\n"
+                 f"    Two architectures would then ask CodeBuild for a "
+                 f"runner at once, and one request would be refused.")
+        if re.search(r"^    strategy:", jobs[arch], re.M):
+            fail("nightly-chain",
+                 f"{arch} has a `strategy`; a matrix announces its legs "
+                 f"together, which is what the chain exists to avoid")
+
+    for job in ("report", "publish"):
+        missing = [a for a in chain if a not in needs_of(jobs.get(job, ""))]
+        if missing:
+            fail("nightly-chain",
+                 f"`{job}` does not name {missing} in `needs`, so it "
+                 f"would run before "
+                 + ("they are" if len(missing) > 1 else "it is") + " built")
+
+
 def main():
     report = load("perfreport", ".builders/perfreport.py")
     sample = load("perfsample", ".builders/perfsample.py")
@@ -526,6 +621,7 @@ def main():
     check_manifests()
     check_buildkit_pin()
     check_cache_repos()
+    check_nightly_chain()
 
     if FAIL:
         print("contract violations:", file=sys.stderr)
@@ -535,7 +631,8 @@ def main():
     print("contracts ok: nginx log_format, balance placement, sample "
           "shape, perf stages, build-* rules, build-record names, "
           "target-costs, the fleet manifests, versioncheck's wheel "
-          "repos, the buildkit pin and the cache repo list all agree")
+          "repos, the buildkit pin, the cache repo list and the "
+          "nightly's architecture chain all agree")
     return 0
 
 

@@ -68,7 +68,8 @@ from the other six nights in three ways.
 
 - **Every architecture**, from the `WEEKLY_ARCHES` repository variable
   or, unset, `ARCHES` in the Makefile. `NIGHTLY_ARCHES` is not
-  consulted; it is what keeps the nightly to one.
+  consulted; it is what keeps the nightly to one. The list decides
+  which links of the chain run; an architecture not in it is skipped.
 - **Whether or not `main` moved.** A build has inputs no commit of ours
   records — the image behind a base tag, the Ubuntu archive — and the
   nightly's gate would skip them for ever.
@@ -81,17 +82,32 @@ from the other six nights in three ways.
 Run the same shape by hand with the `weekly` input of the workflow's
 dispatch form. Turn it off with `NIGHTLY_ENABLED`, which gates both.
 
-The matrix runs one architecture at a time (`max-parallel: 1`),
-because the account's quota is one concurrent `xlarge` build
-(`L-04E5CA62`). GitHub does the queueing, not CodeBuild, and that
-matters: a job's runner is a CodeBuild build started by a webhook sent
-once, when the job is queued, and a build that then waits more than
-the project's 60-minute queue timeout is failed. The first
-four-architecture run queued all four at once; `gfx950` built in 65
-minutes, the build queued behind it timed out at 60, and the remaining
-jobs sat on GitHub with no runner coming. Raising the quota to four
-would let the weekly finish in about an hour instead of four, at the
-same cost; `max-parallel` in `nightly.yml` would rise with it.
+The architectures build **one at a time, as a chain of jobs** —
+`nightly.yml` calls `nightly-build.yml` once per architecture, each
+waiting on the one before it — because the account's quota is one
+concurrent `xlarge` build (`L-04E5CA62`), and because of how a runner
+is asked for.
+
+A job's runner is a CodeBuild build that CodeBuild starts when GitHub
+sends `workflow_job.queued` for that job, once. The account also
+allows only **one build in the queue**, so with one running and one
+queued every further request is refused with *"Cannot have more than 1
+builds in queue for the account"*, and a refused request is not
+retried. The first two four-architecture runs each announced all four
+jobs in the same second, got two builds, and left the other two
+architectures waiting for runners that never came — fifteen hours on
+2026-11-22, until GitHub gave up and the report failed.
+
+`strategy.max-parallel: 1` does not fix it, which the second run
+proved: it limits how many legs *run*, not how many are *announced*.
+`needs` is the only thing that delays the announcement, so the
+architectures are separate jobs. `check-contracts.py` fails if that
+chain and the Makefile's `ARCHES` disagree, since a chain cannot be
+generated from the architecture list the way a matrix could.
+
+Raising the quota to four would let the weekly finish in about an hour
+rather than four, at the same cost, and the chain could become a
+matrix again.
 
 !!! warning "Not yet measured"
     No weekly run has happened. Each architecture's cost should be a
