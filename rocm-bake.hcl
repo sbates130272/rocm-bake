@@ -327,7 +327,7 @@ variable "RUN_ID" {
 }
 
 variable "AITER_REF" {
-  default = "v0.1.29.post1"
+  default = "v0.1.30"
 }
 
 # torchvision, built from source because PyPI publishes it only as a
@@ -749,7 +749,7 @@ variable "SCCACHE_LOG" {
 
 # 0.8.0 is the floor for caching hipcc -x hip; see Dockerfile.pytorch.
 variable "SCCACHE_VERSION" {
-  default = "0.19.0"
+  default = "0.20.0"
 }
 
 # There is deliberately no SCCACHE_SERVER_PORT here. The build
