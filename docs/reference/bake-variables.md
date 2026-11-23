@@ -26,7 +26,7 @@ is authoritative if this page has aged.
 | `VLLM_REF` | `v0.34.0` |
 | `LLM_EMU_REF` | `b71c6025b189784cbd4b926d15afa8257738ea39` |
 | `CUPY_REF` | `v14.2.0` |
-| `LMCACHE_REF` | `v0.5.8rc1` |
+| `LMCACHE_REF` | `v0.5.8` |
 | `RUST_VERSION` | `1.95` |
 | `GIT_REF` | `""` - a specific PyTorch ref to build |
 

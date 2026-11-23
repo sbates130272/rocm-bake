@@ -104,7 +104,7 @@ use_if_default() {
 #
 # The image is baked in at create time, so an existing builder does NOT
 # pick it up. Recreate: docker buildx rm <node> && make builder-<node>.
-BUILDKIT_IMAGE="${BUILDKIT_IMAGE:-moby/buildkit:v0.35.0@sha256:aa632b921ef07411d2cb77292cd34213d4f7b384001d6fceef1e1f25bf9752bb}"
+BUILDKIT_IMAGE="${BUILDKIT_IMAGE:-moby/buildkit:v0.35.1@sha256:baf6138eb8c37644800c7c913fba051e840ebb9ba13eaf92d92ef9a1712d0b4c}"
 
 # network=host, the raised step-log limits and linux/amd64 are the same
 # on every node and every driver; see buildkitd.toml.in for why the

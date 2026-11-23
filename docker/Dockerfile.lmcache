@@ -101,7 +101,7 @@ ENV PIP_CONSTRAINT=/etc/pip-constraints.txt
 # ─── Builder ─────────────────────────────────────────────────────
 FROM deps AS builder
 
-ARG LMCACHE_REF=v0.5.8rc1
+ARG LMCACHE_REF=v0.5.8
 # Redeclared, not inherited: ARG does not cross a FROM, and `deps`
 # declaring it does nothing for this stage. Without this the LABEL below
 # reads "for ROCm ," and the wheel's version suffix comes out "+rocm"
@@ -388,7 +388,7 @@ RUN ls -la /wheels/
 # ─── Multi-process runtime image ─────────────────────────────────
 FROM deps AS final
 
-ARG LMCACHE_REF=v0.5.8rc1
+ARG LMCACHE_REF=v0.5.8
 ARG PYTORCH_ROCM_ARCH
 ARG ROCM_VERSION
 
