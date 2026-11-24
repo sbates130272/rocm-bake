@@ -47,6 +47,20 @@ INDEX_URL="${INDEX_URL:-https://sbates130272.github.io/rocm-bake/data/wheels/roc
 MODEL="${MODEL:-nickypro/tinyllama-15M}"
 CTX="${CTX:-256}"
 STAGES="${STAGES:-install vllm}"
+
+# LMCache stores whole chunks and never a partial one, so the shared
+# prefix below has to span several. The serving stack uses 256 tokens;
+# 64 here, because every token of that prefix is prefilled twice on a
+# GPU that interprets its own instructions, and three 64-token chunks
+# prove the same thing as three 256-token ones.
+CHUNK_SIZE="${CHUNK_SIZE:-64}"
+L1_SIZE_GB="${L1_SIZE_GB:-1}"
+LMCACHE_PORT="${LMCACHE_PORT:-5555}"
+LMCACHE_API_PORT="${LMCACHE_API_PORT:-8080}"
+# Words, not tokens, and deliberately more than CHUNK_SIZE tokens'
+# worth: a prefix shorter than one chunk is never stored, and the
+# stage would then fail against a working cache.
+PREFIX_WORDS="${PREFIX_WORDS:-200}"
 GPU_UTIL="${GPU_UTIL:-0.8}"
 STARTUP_TIMEOUT="${STARTUP_TIMEOUT:-1500}"
 REQUEST_TIMEOUT="${REQUEST_TIMEOUT:-900}"
@@ -248,10 +262,18 @@ EOF
     metric seconds "$(since "${t0}")"
 }
 
-stage_vllm() {
-    begin vllm
-    local t0 t1 pid deadline up="" body n dt extra=()
-    t0=$(now)
+# ─── the server, shared by the stages that need one ──────────────
+#
+# Each stage starts its own and stops it again, rather than one server
+# for the run: a stage that cannot start the engine then fails alone
+# instead of taking every stage after it, and the page says which.
+SERVE_PID=""
+
+# serve_up <log> [extra vllm args...] -> 0 once /health answers
+serve_up() {
+    local log="$1" deadline
+    shift
+    local extra=()
     read -r -a extra <<< "${VLLM_EXTRA_ARGS:-}"
 
     # ATOM_DISABLE_VLLM_PLUGIN: the metapackage installs ATOM, whose
@@ -275,9 +297,15 @@ stage_vllm() {
     #   default is then 0.92, and 0.12 GiB of the card is taken before
     #   vLLM starts, so the engine refuses at startup with "free memory
     #   (0.88/1.0 GiB) is less than desired".
+    # VLLM_SERVER_DEV_MODE: exposes /reset_prefix_cache, which the
+    #   lmcache stage needs to empty VRAM between its two requests.
+    #   Without it vLLM answers the second from its own prefix cache
+    #   and LMCache is never asked -- which reads as "stored but
+    #   served none". See the same note in serving/docker-compose.yml.
     #
     # setsid, so the engine process vLLM starts can be stopped with it.
     ATOM_DISABLE_VLLM_PLUGIN=1 ROCM_BAKE_VM_PLATFORM=1 \
+    VLLM_SERVER_DEV_MODE=1 \
     PYTHONFAULTHANDLER=1 HF_HOME="${HOME}/hf" \
         setsid nohup "${VENV}/bin/vllm" serve "${MODEL}" \
             --host 127.0.0.1 --port "${PORT}" \
@@ -285,19 +313,45 @@ stage_vllm() {
             --max-num-seqs 1 --enforce-eager --dtype float16 \
             --disable-extensible-kv-cache \
             --gpu-memory-utilization "${GPU_UTIL}" \
-            "${extra[@]}" > "${OUT}/vllm.log" 2>&1 &
-    pid=$!
+            "$@" "${extra[@]}" > "${log}" 2>&1 &
+    SERVE_PID=$!
 
     deadline=$((SECONDS + STARTUP_TIMEOUT))
     while :; do
-        if curl -fsS -m 5 "http://127.0.0.1:${PORT}/health" > /dev/null 2>&1; then
-            up=1
-            break
-        fi
-        kill -0 "${pid}" 2> /dev/null || break
-        [ "${SECONDS}" -lt "${deadline}" ] || break
+        curl -fsS -m 5 "http://127.0.0.1:${PORT}/health" > /dev/null 2>&1 \
+            && return 0
+        kill -0 "${SERVE_PID}" 2> /dev/null || return 1
+        [ "${SECONDS}" -lt "${deadline}" ] || return 1
         sleep 10
     done
+}
+
+# The whole session, then without asking: a server that would not
+# start is often one that will not stop either.
+serve_down() {
+    [ -n "${SERVE_PID}" ] || return 0
+    kill -TERM -- "-${SERVE_PID}" 2> /dev/null \
+        || kill -TERM "${SERVE_PID}" 2> /dev/null || true
+    for _ in $(seq 1 30); do
+        kill -0 "${SERVE_PID}" 2> /dev/null || break
+        sleep 1
+    done
+    kill -KILL -- "-${SERVE_PID}" 2> /dev/null || true
+    # Reaped here rather than asynchronously, or bash announces the
+    # kill by printing the whole `vllm serve` command line into the
+    # middle of the stage output.
+    wait "${SERVE_PID}" 2> /dev/null || true
+    SERVE_PID=""
+}
+
+stage_vllm() {
+    begin vllm
+    local t0 t1 up="" body n dt
+    t0=$(now)
+
+    if serve_up "${OUT}/vllm.log"; then
+        up=1
+    fi
 
     if [ -n "${up}" ]; then
         metric startup_s "$(since "${t0}")"
@@ -323,21 +377,14 @@ stage_vllm() {
             check fail "completion" \
                 "$(cat "${OUT}/completion.err" "${OUT}/completion.json" 2> /dev/null)"
         fi
-    elif kill -0 "${pid}" 2> /dev/null; then
+    elif kill -0 "${SERVE_PID}" 2> /dev/null; then
         body=$(errors_in "${OUT}/vllm.log" | head -n 1)
         check fail "/health" "no answer in ${STARTUP_TIMEOUT}s, server still running: ${body:-no error in its log}"
     else
         check fail "/health" "server exited after $(since "${t0}")s: $(errors_in "${OUT}/vllm.log" | head -n 1)"
     fi
 
-    # The whole session, then without asking: a server that would not
-    # start is often one that will not stop either.
-    kill -TERM -- "-${pid}" 2> /dev/null || kill -TERM "${pid}" 2> /dev/null || true
-    for _ in $(seq 1 30); do
-        kill -0 "${pid}" 2> /dev/null || break
-        sleep 1
-    done
-    kill -KILL -- "-${pid}" 2> /dev/null || true
+    serve_down
     metric seconds "$(since "${t0}")"
 
     quiet_log "${OUT}/vllm.log"
@@ -347,6 +394,181 @@ stage_vllm() {
         echo "  --- errors in vllm.log, first raised first ---"
         errors_in "${OUT}/vllm.log" | sed 's/^/  /'
     fi
+}
+
+# A prefix no previous run has seen. A fixed one would already be in
+# the store from the run before, so the "cold" request would be warm
+# and the comparison would show nothing. Prose-shaped, because a
+# tokenizer turns random characters into far more tokens than words
+# and the prompt length would stop being predictable.
+new_prefix() {
+    "${VENV}/bin/python" - "${PREFIX_WORDS}" << 'EOF'
+import random
+import string
+import sys
+
+words = ["cache", "tensor", "kernel", "stream", "block", "offload",
+         "prefix", "token", "layer", "device", "memory", "engine"]
+tag = "".join(random.choices(string.ascii_lowercase, k=8))
+print(f"Document {tag}. " + " ".join(random.choices(words, k=int(sys.argv[1]))))
+EOF
+}
+
+# One completion, max_tokens=1, timed. Decode then rounds to nothing
+# and what is measured is almost entirely prefill -- the only part a
+# KV cache can make cheaper.
+#
+# Results come back in globals rather than on stdout. A $(timed_prefill)
+# would run the whole thing in a subshell, where the HTTP status it
+# records is set and then thrown away with that subshell -- which it
+# did, until `set -u` caught the empty variable in the caller.
+PREFILL_CODE=""
+PREFILL_SECONDS=""
+timed_prefill() {
+    local t0
+    t0=$(now)
+    PREFILL_CODE=$(curl -s -o "${OUT}/lmcache-reply.json" -w '%{http_code}' \
+        -m "${REQUEST_TIMEOUT}" "http://127.0.0.1:${PORT}/v1/completions" \
+        -H 'Content-Type: application/json' \
+        --data-binary @- << EOF
+{"model": "${MODEL}", "prompt": $(printf '%s' "$1" | "${VENV}/bin/python" -c 'import json,sys; print(json.dumps(sys.stdin.read()))'), "max_tokens": 1, "temperature": 0}
+EOF
+    )
+    PREFILL_SECONDS=$(since "${t0}")
+}
+
+stage_lmcache() {
+    begin lmcache
+    local t0 lm_pid prefix cold warm hits_before hits_after reset stored got nokey
+    t0=$(now)
+
+    # The MP server first: vLLM's connector dials it at engine start
+    # and the engine does not come up without it.
+    #
+    # L1 only here (no --l2-adapter), which is the serving stack's
+    # KV_TIER=cpu. The L2 tiers are the nixl-* stages below.
+    LD_LIBRARY_PATH="/opt/rocm/lib" HSA_ENABLE_IPC_MODE_LEGACY=1 \
+        setsid nohup "${VENV}/bin/lmcache" server \
+            --host 127.0.0.1 --port "${LMCACHE_PORT}" \
+            --l1-size-gb "${L1_SIZE_GB}" \
+            --chunk-size "${CHUNK_SIZE}" \
+            --transport zmq \
+            --supported-transfer-mode lmcache_driven \
+            --eviction-policy LRU > "${OUT}/lmcache.log" 2>&1 &
+    lm_pid=$!
+
+    for _ in $(seq 1 30); do
+        curl -fsS -m 5 "http://127.0.0.1:${LMCACHE_API_PORT}/healthcheck" \
+            > /dev/null 2>&1 && break
+        sleep 5
+    done
+    if curl -fsS -m 5 "http://127.0.0.1:${LMCACHE_API_PORT}/healthcheck" \
+            > /dev/null 2>&1; then
+        check pass "lmcache server" "zmq :${LMCACHE_PORT}, chunk ${CHUNK_SIZE}, L1 ${L1_SIZE_GB}GB"
+    else
+        check fail "lmcache server" \
+            "no healthcheck in 150s: $(errors_in "${OUT}/lmcache.log" | head -n 1)"
+        kill -KILL -- "-${lm_pid}" 2> /dev/null || true
+        metric seconds "$(since "${t0}")"
+        return
+    fi
+
+    # lmcache.mp.use_vmm_api=false is required from LMCache v0.5.8rc1
+    # on vLLM v0.34.0: LMCache #6499 made fd-exported KV memory the
+    # default, and v0.34.0 refuses that on ROCm, raising on VllmConfig
+    # before it serves anything. False makes the connector answer
+    # LEGACY_IPC instead, which is also why HSA_ENABLE_IPC_MODE_LEGACY
+    # is set. The whole reasoning is in serving/docker-compose.yml.
+    if HSA_ENABLE_IPC_MODE_LEGACY=1 serve_up "${OUT}/vllm-lmcache.log" \
+            --disable-hybrid-kv-cache-manager \
+            --kv-transfer-config \
+            "{\"kv_connector\":\"LMCacheMPConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"lmcache.mp.host\":\"tcp://127.0.0.1\",\"lmcache.mp.port\":${LMCACHE_PORT},\"lmcache.mp.use_vmm_api\":false}}"
+    then
+        metric startup_s "$(since "${t0}")"
+        check pass "vLLM with the MP connector" "/health after $(since "${t0}")s"
+    else
+        check fail "vLLM with the MP connector" \
+            "$(errors_in "${OUT}/vllm-lmcache.log" | head -n 1 \
+               || echo "no /health in ${STARTUP_TIMEOUT}s")"
+        serve_down
+        kill -KILL -- "-${lm_pid}" 2> /dev/null || true
+        quiet_log "${OUT}/vllm-lmcache.log"
+        metric seconds "$(since "${t0}")"
+        return
+    fi
+
+    prefix=$(new_prefix)
+    timed_prefill "${prefix}"
+    cold="${PREFILL_SECONDS}"
+    if [ "${PREFILL_CODE}" = 200 ]; then
+        check pass "first prefill" "${cold}s (stores the prefix)"
+        metric computed_s "${cold}"
+    else
+        check fail "first prefill" \
+            "HTTP ${PREFILL_CODE}: $(head -c 200 "${OUT}/lmcache-reply.json")"
+    fi
+
+    # Empty vLLM's own GPU prefix cache, or the second request is
+    # served from VRAM and proves nothing about LMCache.
+    hits_before=$(curl -fsS -m 10 "http://127.0.0.1:${PORT}/metrics" 2>/dev/null \
+        | awk '/^vllm:prefix_cache_hits_total/ { print $2; exit }')
+    if curl -fsS -m 30 -X POST "http://127.0.0.1:${PORT}/reset_prefix_cache" \
+            -o /dev/null 2>/dev/null; then
+        reset=yes
+    else
+        reset=no
+    fi
+
+    # Same prefix, different tail: the shared prefix is what should
+    # come from the cache, and changing the tail proves the hit is a
+    # real prefix match rather than a whole-response cache.
+    timed_prefill "${prefix} Answer briefly."
+    warm="${PREFILL_SECONDS}"
+    hits_after=$(curl -fsS -m 10 "http://127.0.0.1:${PORT}/metrics" 2>/dev/null \
+        | awk '/^vllm:prefix_cache_hits_total/ { print $2; exit }')
+    [ "${PREFILL_CODE}" = 200 ] && metric cached_s "${warm}"
+
+    if [ "${reset}" = yes ]; then
+        check pass "/reset_prefix_cache" \
+            "vLLM prefix hits ${hits_before:-?} -> ${hits_after:-?}"
+    else
+        check skip "/reset_prefix_cache" \
+            "absent, so the timing below cannot be attributed to LMCache"
+    fi
+
+    serve_down
+    sleep 5
+
+    # Ask LMCache, not the clock. The timing above can be moved by
+    # vLLM's own caching; these lines are LMCache saying it stored the
+    # blocks and gave them back. Both spellings of the store line,
+    # because v0.5.8rc1 reworded v0.5.7's and matching only one is not
+    # a missed line but a wrong answer -- see .builders/serve-test.sh.
+    stored=$(grep -acE 'Stored [0-9]+ (of [0-9]+ requested )?tokens' \
+        "${OUT}/lmcache.log" 2>/dev/null || true)
+    got=$(grep -acE 'retained keys|Retrieved [0-9]+' \
+        "${OUT}/lmcache.log" 2>/dev/null || true)
+    nokey=$(grep -aci 'no lookup ipc key' "${OUT}/lmcache.log" 2>/dev/null || true)
+
+    if [ "${stored:-0}" -gt 0 ] && [ "${got:-0}" -gt 0 ]; then
+        check pass "LMCache stored and served" \
+            "${stored} store(s), ${got} retrieve(s); prefill ${cold}s -> ${warm}s"
+    elif [ "${stored:-0}" -gt 0 ]; then
+        check fail "LMCache served nothing" \
+            "${stored} store(s) and no retrieve: blocks went in and never came back"
+    elif [ "${nokey:-0}" -gt 0 ]; then
+        check fail "LMCache cached nothing" \
+            "only 'no lookup ipc key' (${nokey}x) -- the LMCache#4419 signature"
+    else
+        check fail "LMCache cached nothing" \
+            "no store line in its log; prefix may be shorter than one ${CHUNK_SIZE}-token chunk"
+    fi
+
+    kill -TERM -- "-${lm_pid}" 2> /dev/null || true
+    sleep 2
+    kill -KILL -- "-${lm_pid}" 2> /dev/null || true
+    quiet_log "${OUT}/vllm-lmcache.log"
+    metric seconds "$(since "${t0}")"
 }
 
 if wanted install; then
@@ -363,9 +585,22 @@ else
     stage_vllm
 fi
 
-for s in lmcache nixl-nvme nixl-nvmeof; do
+if ! wanted lmcache; then
+    skip_stage lmcache "not selected"
+elif failed install || [ ! -x "${VENV}/bin/lmcache" ]; then
+    skip_stage lmcache "not run" "the install stage left no lmcache to start"
+else
+    stage_lmcache
+fi
+
+# The NIXL L2 tiers. Both need lmcache.lmcache_nixl, which the
+# published wheel ships but cannot load outside the image: its RPATH
+# is the build container's /opt/venv path, so libnixl.so is not found
+# in a venv anywhere else. Measured on 2026-11-24 against
+# lmcache 0.5.8+rocm10.2.0 from the public index.
+for s in nixl-nvme nixl-nvmeof; do
     skip_stage "${s}" "not written yet" \
-        "follows vLLM alone, which has not yet served on this card"
+        "needs lmcache_nixl, whose RPATH points at the build container"
 done
 
 say "summary"
