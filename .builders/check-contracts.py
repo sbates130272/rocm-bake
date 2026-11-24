@@ -653,6 +653,60 @@ def check_nightly_chain():
                  + ("they are" if len(missing) > 1 else "it is") + " built")
 
 
+def check_flag_branches():
+    """A boolean input's flag sits on the true branch of its expression.
+
+    GitHub's `a && b || c` is not a ternary. && and || return an
+    operand rather than a boolean, and the empty string is falsy, so
+    `inputs.push && '' || '--no-push'` evaluates `true && ''` to '',
+    which || discards for '--no-push'. The flag is then passed for
+    every value of the input.
+
+    Both forms read the same to a human and only one works, which is
+    why this is checked rather than reviewed. Writing the flag on the
+    true branch -- `!inputs.push && '--no-push' || ''` -- is safe
+    because the flag is a non-empty string, so || is never reached
+    when the condition holds.
+
+    The 2026-11-24 outage was this: the run reported `push: true` in
+    its own Inputs group, ran `--no-push`, exited green, and published
+    nothing. `--skip-cold` carried the same inversion from the start,
+    so a run asking for a cold build was always given a warm one.
+
+    WHAT THIS DOES NOT CATCH. A silent `--no-push` has now happened
+    twice by two mechanisms, and only the second has this shape. The
+    first, over 2026-11-04..10, was `inputs.push == false` being true
+    for a scheduled run, where the input is null rather than false --
+    the flag was already on the true branch and the *condition* was
+    wrong. Nothing structural distinguishes that from a correct
+    condition, so catching it would mean evaluating the expression
+    against each input value, which needs an evaluator for GitHub's
+    expression language that this script has no business carrying.
+
+    So this is a check for one known-shaped mistake, not a guarantee
+    that the lane publishes. The guarantee, if one is wanted, is a
+    post-run assertion that something reached the registry.
+    """
+    for path in sorted(Path(ROOT, ".github/workflows").glob("*.yml")):
+        rel = path.relative_to(ROOT)
+        for n, line in enumerate(read(rel).splitlines(), 1):
+            m = re.search(
+                r"\$\{\{\s*(?P<cond>[^}]*?)\s*&&\s*"
+                r"(?P<a>'[^']*')\s*\|\|\s*(?P<b>'[^']*')\s*\}\}", line)
+            if not m:
+                continue
+            # The dangerous shape is an empty true branch beside a
+            # non-empty false branch: the true branch can never win.
+            if m.group("a") == "''" and m.group("b") != "''":
+                fail("flag-branches",
+                     f"{rel}:{n} puts the empty string on the true "
+                     f"branch, so {m.group('b')} is passed whatever "
+                     f"`{m.group('cond')}` is.\n"
+                     f"    Negate the condition and move the flag: "
+                     f"${{{{ !({m.group('cond')}) && {m.group('b')} "
+                     f"|| '' }}}}")
+
+
 def main():
     report = load("perfreport", ".builders/perfreport.py")
     sample = load("perfsample", ".builders/perfsample.py")
@@ -668,6 +722,7 @@ def main():
     check_sccache_sha()
     check_cache_repos()
     check_nightly_chain()
+    check_flag_branches()
 
     if FAIL:
         print("contract violations:", file=sys.stderr)
@@ -678,7 +733,8 @@ def main():
           "shape, perf stages, build-* rules, build-record names, "
           "target-costs, the fleet manifests, versioncheck's wheel "
           "repos, the buildkit pin, the sccache checksum, the cache "
-          "repo list and the nightly's architecture chain all agree")
+          "repo list, the nightly's architecture chain and every "
+          "workflow's flag branches all agree")
     return 0
 
 

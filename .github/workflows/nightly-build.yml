@@ -153,14 +153,40 @@ jobs:
           # loudly, which is the right failure.
           SCCACHE_BUCKET: ${{ vars.SCCACHE_BUCKET }}
           SCCACHE_REGION: ${{ vars.AWS_REGION }}
+        # THE FLAG GOES ON THE TRUE BRANCH. `a && b || c` is not a
+        # ternary: && and || return an operand, not a boolean, and the
+        # empty string is falsy. So `inputs.push && '' || '--no-push'`
+        # evaluates `true && ''` to `''`, which || then discards for
+        # '--no-push' -- the flag is passed for every value of the
+        # input, and the build quietly publishes nothing while
+        # reporting success.
+        #
+        # That shipped. 2026-11-24 ran with `push: true` in its own
+        # Inputs group and `--no-push` on the command line, and the
+        # last image in ECR is from 11-23. `--skip-cold` had the same
+        # inversion from the start, so a run asking for a cold build
+        # was always given a warm one.
+        #
+        # It is the second time this lane has silently stopped
+        # publishing: the 11-04 to 11-10 runs did it too, when a
+        # scheduled run's null `inputs.push` compared equal to false.
+        # Different mechanism, same consequence, and both invisible
+        # because the run goes green.
+        #
+        # check-contracts.py's `flag-branches` now fails on the shape
+        # below -- an empty true branch next to a flag. It catches
+        # this mistake, not the 11-04 one, where the condition rather
+        # than the branch order was wrong; see that check's docstring
+        # for why the difference is not closable without evaluating
+        # the expression.
         run: |
           .builders/nightly.sh \
             --arch "${{ inputs.arch }}" \
             --out "/tmp/nightly-${{ inputs.arch }}" \
             --ensure-ecr \
             ${{ inputs.targets && format('--targets ''{0}''', inputs.targets) || '' }} \
-            ${{ inputs.run_cold && '' || '--skip-cold' }} \
-            ${{ inputs.push && '' || '--no-push' }}
+            ${{ !inputs.run_cold && '--skip-cold' || '' }} \
+            ${{ !inputs.push && '--no-push' || '' }}
 
       # The report travels as an artifact. The job that ran the build
       # holds registry credentials and third-party build code; it is
