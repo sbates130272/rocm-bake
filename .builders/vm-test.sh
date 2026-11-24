@@ -261,12 +261,20 @@ stage_vllm() {
     # One sequence, a short context and eager mode: the card has 1 GiB
     #   and every kernel it runs is interpreted, so graph capture and a
     #   second sequence are minutes this cannot spend.
-    # --gpu-memory-utilization: vLLM 0.34 defaults it to 1.0 with the
-    #   extensible KV cache and says to leave it unset, except where
-    #   the card's memory is not all the engine's. That is this card:
-    #   0.12 GiB of its 1 GiB is taken before vLLM starts. At the
-    #   default the first hosted run got through warmup and then fitted
-    #   no KV blocks at all "within the requested 1.0 GiB".
+    # --disable-extensible-kv-cache: vLLM 0.34 turns that cache on by
+    #   default, and it cannot work on this card at any setting. (The
+    #   release notes spell the flag --no-enable-...; `vllm serve
+    #   --help=all` in the installed 0.34.0 lists this one.) It
+    #   keeps a margin free whose floor on ROCm is 3 GiB
+    #   (KV_CACHE_MARGIN_FLOOR_BYTES in v1/worker/extensible_kv_cache.py)
+    #   and the card has 1, so the cache is given nothing: two hosted
+    #   runs loaded the model, warmed up and then stopped on "No
+    #   available memory for the cache blocks", at utilisation 1.0 and
+    #   at 0.8 alike.
+    # --gpu-memory-utilization: needed once that cache is off. The
+    #   default is then 0.92, and 0.12 GiB of the card is taken before
+    #   vLLM starts, so the engine refuses at startup with "free memory
+    #   (0.88/1.0 GiB) is less than desired".
     #
     # setsid, so the engine process vLLM starts can be stopped with it.
     ATOM_DISABLE_VLLM_PLUGIN=1 ROCM_BAKE_VM_PLATFORM=1 \
@@ -275,6 +283,7 @@ stage_vllm() {
             --host 127.0.0.1 --port "${PORT}" \
             --max-model-len "${CTX}" --max-num-batched-tokens "${CTX}" \
             --max-num-seqs 1 --enforce-eager --dtype float16 \
+            --disable-extensible-kv-cache \
             --gpu-memory-utilization "${GPU_UTIL}" \
             "${extra[@]}" > "${OUT}/vllm.log" 2>&1 &
     pid=$!
