@@ -34,6 +34,8 @@
 #   MODEL            a model small enough for 1 GiB of emulated VRAM
 #   STAGES           which of the stages to run (default: install vllm)
 #   STARTUP_TIMEOUT  seconds vLLM may take to answer /health
+#   GPU_UTIL         vLLM's --gpu-memory-utilization (default 0.8)
+#   VLLM_EXTRA_ARGS  further flags for `vllm serve`, space separated
 #   OUT              where logs and summary.json go (default: ./out)
 #   RUN_URL, RUN_SHA, QEMU_TOOL   recorded in the summary, not used
 
@@ -45,6 +47,7 @@ INDEX_URL="${INDEX_URL:-https://sbates130272.github.io/rocm-bake/data/wheels/roc
 MODEL="${MODEL:-nickypro/tinyllama-15M}"
 CTX="${CTX:-256}"
 STAGES="${STAGES:-install vllm}"
+GPU_UTIL="${GPU_UTIL:-0.8}"
 STARTUP_TIMEOUT="${STARTUP_TIMEOUT:-1500}"
 REQUEST_TIMEOUT="${REQUEST_TIMEOUT:-900}"
 PORT="${PORT:-8000}"
@@ -92,6 +95,45 @@ wanted() { case " ${STAGES} " in *" $1 "*) return 0 ;; esac; return 1; }
 skip_stage() { begin "$1"; check skip "$2" "${3:-}"; }
 # The log it is redirected into belongs to this user, not to root.
 apt() { sudo DEBIAN_FRONTEND=noninteractive apt-get "$@"; }
+
+# Take the translator's diagnostics out of a server log.
+#
+# Every code object the runtime loads goes through the guest's gfx1250
+# B0-to-A0 translator, which prints one line per block it had to
+# legalize. The first run on a hosted runner wrote 7,077 of them into a
+# 7,436-line vllm.log, and the one line that said why the engine had
+# stopped was in the other 359.
+#
+# Not thrown away: they are counted here, and a digest of the distinct
+# ones is kept beside the log, because a count that moves between two
+# builds is a statement about the kernels in our wheels.
+# The exceptions a server log names, each once, in the order raised.
+#
+# In that order because the last one is vLLM's wrapper -- "Engine core
+# initialization failed. See root cause above" -- and the first is the
+# root cause it means. import_utils.py is left out: vLLM probes for a
+# CUDA nixl_ep on every start, fails, warns and carries on.
+errors_in() {
+    grep -aE '(Error|Exception): ' "$1" 2> /dev/null \
+        | grep -av 'import_utils.py' \
+        | sed -E 's/^\([A-Za-z]+ pid=[0-9]+\) [A-Z]+ [0-9-]+ [0-9:]+ \[[^]]+\] //' \
+        | awk '!seen[$0]++' | cut -c1-400
+}
+
+TRANSLATOR_RE='^\[hsa-hotswap-rj\] warning: translation diagnostic'
+quiet_log() {
+    local log="$1" digest="${1%.log}.translator.txt" n
+    [ -s "${log}" ] || return 0
+    n=$(grep -acE "${TRANSLATOR_RE}" "${log}" || true)
+    metric translator_warnings "${n:-0}"
+    [ "${n:-0}" -gt 0 ] || return 0
+    grep -aE "${TRANSLATOR_RE}" "${log}" \
+        | sed -E 's/ source_id=[^ ]+//; s/ guest_offset=[^ ]+//' \
+        | sort | uniq -c | sort -rn > "${digest}"
+    grep -avE "${TRANSLATOR_RE}" "${log}" > "${log}.tmp"
+    mv "${log}.tmp" "${log}"
+    echo "  ${n} translator diagnostics moved to $(basename "${digest}")"
+}
 
 stage_install() {
     begin install
@@ -208,8 +250,9 @@ EOF
 
 stage_vllm() {
     begin vllm
-    local t0 t1 pid deadline up="" body n dt
+    local t0 t1 pid deadline up="" body n dt extra=()
     t0=$(now)
+    read -r -a extra <<< "${VLLM_EXTRA_ARGS:-}"
 
     # ATOM_DISABLE_VLLM_PLUGIN: the metapackage installs ATOM, whose
     #   vLLM plugin ships disabled in our own image for the reasons in
@@ -218,6 +261,12 @@ stage_vllm() {
     # One sequence, a short context and eager mode: the card has 1 GiB
     #   and every kernel it runs is interpreted, so graph capture and a
     #   second sequence are minutes this cannot spend.
+    # --gpu-memory-utilization: vLLM 0.34 defaults it to 1.0 with the
+    #   extensible KV cache and says to leave it unset, except where
+    #   the card's memory is not all the engine's. That is this card:
+    #   0.12 GiB of its 1 GiB is taken before vLLM starts. At the
+    #   default the first hosted run got through warmup and then fitted
+    #   no KV blocks at all "within the requested 1.0 GiB".
     #
     # setsid, so the engine process vLLM starts can be stopped with it.
     ATOM_DISABLE_VLLM_PLUGIN=1 ROCM_BAKE_VM_PLATFORM=1 \
@@ -226,7 +275,8 @@ stage_vllm() {
             --host 127.0.0.1 --port "${PORT}" \
             --max-model-len "${CTX}" --max-num-batched-tokens "${CTX}" \
             --max-num-seqs 1 --enforce-eager --dtype float16 \
-            > "${OUT}/vllm.log" 2>&1 &
+            --gpu-memory-utilization "${GPU_UTIL}" \
+            "${extra[@]}" > "${OUT}/vllm.log" 2>&1 &
     pid=$!
 
     deadline=$((SECONDS + STARTUP_TIMEOUT))
@@ -265,9 +315,10 @@ stage_vllm() {
                 "$(cat "${OUT}/completion.err" "${OUT}/completion.json" 2> /dev/null)"
         fi
     elif kill -0 "${pid}" 2> /dev/null; then
-        check fail "/health" "no answer in ${STARTUP_TIMEOUT}s, server still running: $(grep -aE 'Error|Exception' "${OUT}/vllm.log" | tail -n 1)"
+        body=$(errors_in "${OUT}/vllm.log" | head -n 1)
+        check fail "/health" "no answer in ${STARTUP_TIMEOUT}s, server still running: ${body:-no error in its log}"
     else
-        check fail "/health" "server exited after $(since "${t0}")s: $(grep -aE 'Error|Exception' "${OUT}/vllm.log" | tail -n 1)"
+        check fail "/health" "server exited after $(since "${t0}")s: $(errors_in "${OUT}/vllm.log" | head -n 1)"
     fi
 
     # The whole session, then without asking: a server that would not
@@ -279,6 +330,14 @@ stage_vllm() {
     done
     kill -KILL -- "-${pid}" 2> /dev/null || true
     metric seconds "$(since "${t0}")"
+
+    quiet_log "${OUT}/vllm.log"
+    # The cause of a failed start is in the server's log and nowhere
+    # else, and the step log is the first place anyone looks.
+    if failed vllm; then
+        echo "  --- errors in vllm.log, first raised first ---"
+        errors_in "${OUT}/vllm.log" | sed 's/^/  /'
+    fi
 }
 
 if wanted install; then
