@@ -1,0 +1,190 @@
+# Install the published gfx1250 wheels into a QEMU guest whose GPU is
+# an emulator, and serve a model through them, on a stock GitHub
+# runner.
+#
+# gfx1250 is in ARCHES and in no machine we have, so its wheels are
+# built every week and never executed: `make gpu-test` cannot cover a
+# card nobody owns. rocjitsu emulates that one generation to a guest
+# kernel driver, which makes this the architecture's only execution
+# path, on infrastructure that costs nothing. It is also why the lane
+# is gfx1250 and cannot be anything else; serving/vm-fleet.xml records
+# what the emulator says when asked for another.
+#
+# Two stages run, install and vLLM alone; .builders/vm-test.sh says why
+# the three cache stages after them are recorded as skipped. Every time
+# this produces is the emulator's on four shared cores and measures no
+# card.
+name: VM — gfx1250 wheels on an emulated GPU
+
+on:
+  # The lane's own files only. Nothing here builds a wheel, so a change
+  # to a Dockerfile cannot change what this installs until the wheels
+  # are next published.
+  #
+  # No schedule and no push to main yet, on purpose: vLLM has not been
+  # seen to reach /health on this card, and a nightly that is red from
+  # its first run teaches people to ignore it. Add the schedule when a
+  # run has passed, after the weekly publish so it tests new wheels.
+  pull_request:
+    paths:
+      - ".builders/vm-test.sh"
+      - ".builders/vmsite.py"
+      - "serving/vm-fleet.xml"
+      - "serving/vm-platform/**"
+      - ".github/workflows/vm.yml"
+  workflow_dispatch:
+    inputs:
+      model:
+        description: 'Model to serve; the emulated card has 1 GiB'
+        required: false
+        default: 'nickypro/tinyllama-15M'
+      stages:
+        description: 'Stages to run, space separated'
+        required: false
+        default: 'install vllm'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vm-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  vm:
+    name: Serve in a guest
+    runs-on: ubuntu-latest
+    # Not measured on a hosted runner yet. In a guest on a fleet node
+    # the install took 42 seconds; vLLM's startup on an interpreted GPU
+    # is the unknown, and vm-test.sh gives it 25 minutes of this.
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      # What the guest is carved out of. The fleet asks for four vCPUs,
+      # the NIC driver's floor, and 8 GiB.
+      - name: Runner
+        run: |
+          grep -m1 'model name' /proc/cpuinfo
+          echo "$(nproc) cpus, $(free -g | awk '/^Mem:/ {print $2}') GiB"
+          ls -l /dev/kvm
+          df -h / | tail -1
+
+      # One directory, so the action's copy has one unambiguous
+      # destination and the script starts beside what it installs.
+      - name: Stage what the guest needs
+        run: |
+          mkdir -p dist/vm-guest
+          cp .builders/vm-test.sh dist/vm-guest/
+          cp -r serving/vm-platform dist/vm-guest/
+
+      # Pinned to a release, both of them. The action's major tag moved
+      # its default qemu-tool from 2.x to 3.x inside v2, and a fleet
+      # XML is tied to the qemu-tool that reads it: 3.x refuses
+      # elements 2.x read, and 2.1.0 refuses the <devices> block this
+      # fleet is built on. Move the two pins and serving/vm-fleet.xml
+      # together.
+      #
+      # gpu: required, because the job is about the GPU: the step
+      # fails unless the guest's card ends bound, and says which state
+      # it was left in. diagnostics: the guest's whole dmesg, lspci and
+      # module parameters at teardown, pass or fail.
+      - name: Boot the guest
+        id: fleet
+        uses: sbates130272/qemu-tool-action@v2.2.0
+        with:
+          qemu-tool-version: '3.0.0'
+          xml: serving/vm-fleet.xml
+          gpu: required
+          diagnostics: true
+          # The image pulls had no limit before 2.2.0. Without one a
+          # stalled registry holds the runner until the job's own.
+          stack-timeout: '1800'
+
+      - name: Serve through the published wheels
+        id: test
+        uses: sbates130272/qemu-tool-action@v2.2.0
+        with:
+          operation: exec
+          copy: |
+            dist/vm-guest:vm
+          env: |
+            ARCH=gfx1250
+            MODEL=${{ inputs.model || 'nickypro/tinyllama-15M' }}
+            STAGES=${{ inputs.stages || 'install vllm' }}
+            QEMU_TOOL=${{ steps.fleet.outputs.qemu-tool-version }}
+            RUN_URL=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            RUN_SHA=${{ github.sha }}
+          run: bash ./vm-test.sh
+          # Fetched whether the script passed or not, which is when
+          # the logs are wanted.
+          fetch: |
+            vm/out
+
+      # The same pages `vmsite.py` would put on gh-pages, built from
+      # this one run and kept as an artifact. Nothing is published:
+      # that is a write to the public site, and it waits for a run
+      # worth publishing.
+      - name: Summary
+        if: always() && steps.test.outputs.fetch-dir != ''
+        env:
+          FETCH: ${{ steps.test.outputs.fetch-dir }}
+        run: |
+          s=$(find "${FETCH}" -name summary.json | head -n 1)
+          test -n "${s}" || { echo "::error::the guest left no summary.json"; exit 1; }
+          python3 -I - "${s}" >> "${GITHUB_STEP_SUMMARY}" <<'EOF'
+          import json, sys
+
+          s = json.load(open(sys.argv[1]))
+          print(f"### `{s.get('rocm_torch') or 'no wheels installed'}` "
+                f"on an emulated {s['arch']}")
+          print()
+          print("Every time here is the emulator's and measures no card.")
+          print()
+          print("| stage | result | checks |")
+          print("| --- | --- | --- |")
+          for st in s["stages"]:
+              checks = "<br>".join(
+                  f"{c['result']}: {c['name']}"
+                  + (f" ({c['detail']})" if c["detail"] else "")
+                  for c in st["checks"]).replace("|", "\\|")
+              print(f"| {st['name']} | {st['result']} | {checks} |")
+          EOF
+          stamp=$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -p "site/data/vm/${stamp}"
+          cp "${s}" "site/data/vm/${stamp}/summary.json"
+          python3 -I .builders/vmsite.py site/data/vm
+
+      # The automatic teardown runs after every step, too late for an
+      # upload. Tear down here; the automatic one then finds nothing.
+      - name: Tear down
+        id: down
+        if: always() && steps.fleet.outputs.stack-dir != ''
+        uses: sbates130272/qemu-tool-action@v2.2.0
+        with:
+          operation: down
+
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.test.outputs.fetch-dir != ''
+        with:
+          name: vm-results
+          path: ${{ steps.test.outputs.fetch-dir }}
+          if-no-files-found: warn
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v4
+        if: always() && hashFiles('site/data/vm/index.html') != ''
+        with:
+          name: vm-site
+          path: site/
+          retention-days: 14
+
+      # The diagnostics redact by name and this job is given no secret
+      # to leak: no `secrets.` reference, and a read-only token.
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.down.outputs.logs-dir != ''
+        with:
+          name: vm-fleet-logs
+          path: ${{ steps.down.outputs.logs-dir }}
+          if-no-files-found: ignore
+          retention-days: 14
