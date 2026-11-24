@@ -62,7 +62,29 @@ LMCACHE_API_PORT="${LMCACHE_API_PORT:-8080}"
 # stage would then fail against a working cache.
 PREFIX_WORDS="${PREFIX_WORDS:-200}"
 GPU_UTIL="${GPU_UTIL:-0.8}"
-STARTUP_TIMEOUT="${STARTUP_TIMEOUT:-1500}"
+# Per ATTEMPT, not for the stage. An engine that is going to come up
+# does so in 47-97s in a guest on snoc-strix and in 300-350s on a
+# hosted runner, which has fewer and slower cores; one that is stuck
+# sits past 1500s. 600 is above every start that has worked and well
+# below every stall, so it separates the two rather than timing a
+# slow one out.
+STARTUP_TIMEOUT="${STARTUP_TIMEOUT:-600}"
+# A stuck start is not retried in hope: it has a signature, and
+# restarting the engine clears it. Measured 2026-11-24, sampling a
+# start every 20s from the host:
+#
+#   ELAPSED   QEMU%   ROCJITSU%   DIAGS  HEALTH
+#        2s  104.72%    100.27%     781       -
+#       25s  107.92%      0.01%     781       -   <- stuck
+#       47s   15.06%    100.37%    7077      UP
+#
+# The guest spins a core while the emulator is idle and the
+# translator's diagnostic count is frozen at 781; a start that clears
+# it walks that count to 7077. The state lasted 20s here and has
+# lasted past 1500s elsewhere, on roughly 1 start in 8 on this node
+# and 1 hosted run in 5. Nothing we pass changes its odds, so the
+# stage takes another engine instead of failing the run.
+SERVE_ATTEMPTS="${SERVE_ATTEMPTS:-2}"
 REQUEST_TIMEOUT="${REQUEST_TIMEOUT:-900}"
 PORT="${PORT:-8000}"
 VENV="${VENV:-${HOME}/venv}"
@@ -109,6 +131,36 @@ wanted() { case " ${STAGES} " in *" $1 "*) return 0 ;; esac; return 1; }
 skip_stage() { begin "$1"; check skip "$2" "${3:-}"; }
 # The log it is redirected into belongs to this user, not to root.
 apt() { sudo DEBIAN_FRONTEND=noninteractive apt-get "$@"; }
+
+# Put the NIXL runtime where lmcache_nixl can find it.
+#
+# WORKAROUND, and the bug is ours. The published lmcache wheel's
+# lmcache_nixl extension is linked with an absolute RPATH from the
+# container that built it:
+#
+#   RPATH:  /opt/venv/lib/python3.14/site-packages/.nixl_rocm.mesonpy.libs
+#   NEEDED: libnixl.so
+#
+# The image's venv is at /opt/venv, so it resolves there and every
+# image-based test passes. Installed into a venv anywhere else, which
+# is how a user installs it, the import fails with "libnixl.so: cannot
+# open shared object file". The library is present, under the nixl
+# package's own directory; only the path is wrong. Measured against
+# lmcache 0.5.8+rocm10.2.0 on 2026-11-24.
+#
+# The fix belongs in docker/Dockerfile.lmcache, making that RPATH
+# $ORIGIN-relative. Until then this makes the NIXL tiers reachable
+# here. Harmless when the directory is absent.
+add_nixl_libs() {
+    local d
+    for d in "${VENV}"/lib/python*/site-packages/.nixl_rocm.mesonpy.libs; do
+        [ -d "${d}" ] || continue
+        case ":${LD_LIBRARY_PATH}:" in
+            *":${d}:"*) ;;
+            *) export LD_LIBRARY_PATH="${d}:${LD_LIBRARY_PATH}" ;;
+        esac
+    done
+}
 
 # Take the translator's diagnostics out of a server log.
 #
@@ -269,8 +321,42 @@ EOF
 # instead of taking every stage after it, and the page says which.
 SERVE_PID=""
 
-# serve_up <log> [extra vllm args...] -> 0 once /health answers
+# serve_up <log> [extra vllm args...] -> 0 once /health answers.
+#
+# Up to SERVE_ATTEMPTS engines, each given STARTUP_TIMEOUT. A stuck
+# one is killed and the next tried; a crashed one is not, because an
+# engine that exits has said why and retrying would only bury it.
+# Each failed attempt's log is kept beside the live one as
+# <log>.attempt<n>, so a run that needed a retry can still be read.
+SERVE_ATTEMPT=0
+# Why the last attempt failed: stuck (no /health, still running) or
+# exited. Read by the stages, because serve_down has cleared SERVE_PID
+# by the time they look and a dead pid reads as "exited" either way.
+SERVE_FAIL=""
 serve_up() {
+    local log="$1" n
+    shift
+    SERVE_FAIL=""
+    for n in $(seq 1 "${SERVE_ATTEMPTS}"); do
+        SERVE_ATTEMPT="${n}"
+        if [ "${n}" -gt 1 ]; then
+            mv -f "${log}" "${log}.attempt$(( n - 1 ))" 2> /dev/null || true
+            echo "  engine did not answer in ${STARTUP_TIMEOUT}s; attempt ${n} of ${SERVE_ATTEMPTS}"
+        fi
+        serve_once "${log}" "$@"
+        case $? in
+            0) SERVE_FAIL=""; return 0 ;;
+            # Exited on its own: errors_in has the reason, so stop.
+            2) SERVE_FAIL="exited"; return 1 ;;
+            *) SERVE_FAIL="stuck" ;;
+        esac
+        serve_down
+    done
+    return 1
+}
+
+# serve_once <log> [args...] -> 0 healthy, 1 stuck, 2 exited
+serve_once() {
     local log="$1" deadline
     shift
     local extra=()
@@ -320,7 +406,7 @@ serve_up() {
     while :; do
         curl -fsS -m 5 "http://127.0.0.1:${PORT}/health" > /dev/null 2>&1 \
             && return 0
-        kill -0 "${SERVE_PID}" 2> /dev/null || return 1
+        kill -0 "${SERVE_PID}" 2> /dev/null || return 2
         [ "${SECONDS}" -lt "${deadline}" ] || return 1
         sleep 10
     done
@@ -354,8 +440,12 @@ stage_vllm() {
     fi
 
     if [ -n "${up}" ]; then
+        local note=""
+        [ "${SERVE_ATTEMPT}" -gt 1 ] \
+            && note=", on engine ${SERVE_ATTEMPT} of ${SERVE_ATTEMPTS}"
         metric startup_s "$(since "${t0}")"
-        check pass "/health" "after $(since "${t0}")s"
+        metric serve_attempts "${SERVE_ATTEMPT}"
+        check pass "/health" "after $(since "${t0}")s${note}"
 
         t1=$(now)
         body=$(curl -fsS -m "${REQUEST_TIMEOUT}" \
@@ -377,9 +467,9 @@ stage_vllm() {
             check fail "completion" \
                 "$(cat "${OUT}/completion.err" "${OUT}/completion.json" 2> /dev/null)"
         fi
-    elif kill -0 "${SERVE_PID}" 2> /dev/null; then
+    elif [ "${SERVE_FAIL}" = stuck ]; then
         body=$(errors_in "${OUT}/vllm.log" | head -n 1)
-        check fail "/health" "no answer in ${STARTUP_TIMEOUT}s, server still running: ${body:-no error in its log}"
+        check fail "/health" "${SERVE_ATTEMPTS} engine(s), each stuck past ${STARTUP_TIMEOUT}s: ${body:-no error logged, so the guest-side translator hang}"
     else
         check fail "/health" "server exited after $(since "${t0}")s: $(errors_in "${OUT}/vllm.log" | head -n 1)"
     fi
@@ -439,15 +529,16 @@ EOF
 
 stage_lmcache() {
     begin lmcache
-    local t0 lm_pid prefix cold warm hits_before hits_after reset stored got nokey
+    local t0 lm_pid prefix cold warm hits_before hits_after reset stored got nokey body
     t0=$(now)
+    add_nixl_libs
 
     # The MP server first: vLLM's connector dials it at engine start
     # and the engine does not come up without it.
     #
     # L1 only here (no --l2-adapter), which is the serving stack's
     # KV_TIER=cpu. The L2 tiers are the nixl-* stages below.
-    LD_LIBRARY_PATH="/opt/rocm/lib" HSA_ENABLE_IPC_MODE_LEGACY=1 \
+    HSA_ENABLE_IPC_MODE_LEGACY=1 \
         setsid nohup "${VENV}/bin/lmcache" server \
             --host 127.0.0.1 --port "${LMCACHE_PORT}" \
             --l1-size-gb "${L1_SIZE_GB}" \
@@ -487,9 +578,9 @@ stage_lmcache() {
         metric startup_s "$(since "${t0}")"
         check pass "vLLM with the MP connector" "/health after $(since "${t0}")s"
     else
+        body=$(errors_in "${OUT}/vllm-lmcache.log" | head -n 1)
         check fail "vLLM with the MP connector" \
-            "$(errors_in "${OUT}/vllm-lmcache.log" | head -n 1 \
-               || echo "no /health in ${STARTUP_TIMEOUT}s")"
+            "${body:-${SERVE_ATTEMPTS} engine(s), each stuck past ${STARTUP_TIMEOUT}s}"
         serve_down
         kill -KILL -- "-${lm_pid}" 2> /dev/null || true
         quiet_log "${OUT}/vllm-lmcache.log"
