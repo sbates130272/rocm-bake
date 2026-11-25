@@ -117,6 +117,38 @@ ARG MAX_JOBS=
 # Memory budget per compile job, used to derive MAX_JOBS. Shared
 # convention with Dockerfile.pytorch; 2GB is measured for cc1plus.
 ARG MEM_PER_JOB_GB=2
+# Memory the derivation does not hand out, and a hard ceiling on the
+# job count. Both are new on 2026-11-25 and BOTH NUMBERS ARE BOUNDS,
+# NOT MEASUREMENTS -- see below before trusting either.
+#
+# This stage became a HIP compile when the NIXL extension landed, and
+# it kept Dockerfile.pytorch's memory derivation, which divides all of
+# MemAvailable by a per-job figure and reserves nothing. Dockerfile.vllm
+# does not do that, and its MEM_RESERVE_GB comment says why: most of a
+# HIP compile's memory does not scale with the job count, about 10GB of
+# it arrives in one burst, and budgeting none of that is how a node
+# gets taken down rather than OOM-killed.
+#
+# That is what has been happening here. Three AWS runs on 2026-11-24
+# (369s, 652s, 1049s) all ended with the host out of memory -- not the
+# build container, the host: `tail` could not allocate and the shell
+# could not fork. On xlarge, 72GB over 2GB a job is 36 jobs, capped
+# only by the 36 cores, with nothing held back for the burst.
+#
+# 12GB mirrors Dockerfile.vllm's measured reserve for the same kind of
+# compile. The ceiling of 8 is deliberately well below what the
+# arithmetic allows (30 jobs at 72GB): the point is to find out whether
+# the job count is the cause at all, and a bound that only just fits
+# cannot answer that. If a run passes with this, the next step is to
+# raise the ceiling until it fails and replace both numbers with what
+# that measures -- not to leave 8 here because it worked.
+#
+# LMCache v0.5.8 is the other suspect and is NOT ruled out: it is 70
+# commits from v0.5.8rc1 and added translation units to this very
+# extension. If this change does not fix it, pin LMCACHE_REF back to
+# v0.5.8rc1 and the two are separated.
+ARG MEM_RESERVE_GB=12
+ARG MAX_JOBS_CEILING=8
 
 LABEL org.opencontainers.image.source="https://github.com/LMCache/LMCache"
 LABEL org.opencontainers.image.description="LMCache ${LMCACHE_REF} for ROCm ${ROCM_VERSION}, ${PYTORCH_ROCM_ARCH}"
@@ -314,13 +346,16 @@ RUN --mount=type=bind,from=nixlwheels,source=/nixl-dev,target=/nixl-dev \
     njobs="${MAX_JOBS}"; \
     if [ -z "${njobs}" ]; then \
         cores=$(nproc); \
-        njobs=$(awk -v per="${MEM_PER_JOB_GB}" '/^MemAvailable:/ {print int($2/1024/1024/per)}' /proc/meminfo); \
+        njobs=$(awk -v per="${MEM_PER_JOB_GB}" -v reserve="${MEM_RESERVE_GB}" \
+            '/^MemAvailable:/ {n = int(($2/1024/1024 - reserve)/per); print (n < 1 ? 1 : n)}' \
+            /proc/meminfo); \
         [ -n "${njobs}" ] || njobs=${cores}; \
         [ "${njobs}" -ge 1 ] || njobs=1; \
         [ "${njobs}" -le "${cores}" ] || njobs=${cores}; \
+        [ "${njobs}" -le "${MAX_JOBS_CEILING}" ] || njobs=${MAX_JOBS_CEILING}; \
     fi; \
     export MAX_JOBS="${njobs}"; \
-    echo "MAX_JOBS=${njobs}"; \
+    echo "MAX_JOBS=${njobs} (from ${cores:-?} cores, $(awk '/^MemAvailable:/ {printf "%.0fGB", $2/1048576}' /proc/meminfo) available, ${MEM_RESERVE_GB}GB held back, ceiling ${MAX_JOBS_CEILING})"; \
     offload_flags="$(printf '%s' "${PYTORCH_ROCM_ARCH}" \
         | sed 's/;/ --offload-arch=/g; s/^/--offload-arch=/')"; \
     echo "hipcc offload flags: ${offload_flags}"; \
