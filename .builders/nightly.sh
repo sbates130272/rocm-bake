@@ -276,6 +276,9 @@ cache_errors() {
         "$1" 2>/dev/null || true
 }
 
+# How much of a failing phase's log to put on stdout. See phase().
+FAIL_TAIL="${FAIL_TAIL:-60}"
+
 phase() {
     # phase <name> <extra bake args...>
     local name="$1"; shift
@@ -292,6 +295,38 @@ phase() {
     printf '%s %s %s %s\n' "${name}" "$((end - start))" "${rc}" "${cerr:-0}" \
         >> "${OUT}/phases"
     log "${name}: rc=${rc} in $((end - start))s, ${cerr:-0} cache error(s) (${logf})"
+    # On failure, put the tail in the runner's log NOW, before
+    # returning to a caller that may not survive to write the report.
+    #
+    # The report already carries this, and the report is an artifact.
+    # That is not good enough. Twice -- 2026-11-24's nightly and the
+    # --targets lmcache run that reproduced it -- the build returned
+    # 255 and the shell was then OOM-killed, so nightly.sh never
+    # reached the report and upload-artifact ran after the job had
+    # completed:
+    #
+    #   Failed to CreateArtifact: (403) Forbidden: job is completed
+    #
+    # Both failures therefore produced NO build log at all. We knew
+    # only that rc was 255. A $0.90 run that cannot say why it failed
+    # is worse than no run, because it costs the same as one that can.
+    #
+    # The runner's own log is the one channel that survives: it is
+    # streamed live, so it is already recorded before anything can be
+    # killed. Same stream as log(). FAIL_TAIL=0 turns this off.
+    #
+    # The report is already `cat`ed to stderr at the end of this
+    # script, and that is not a substitute: on 2026-11-24 the shell
+    # died during the footprint block, ~200 lines earlier, so that cat
+    # never ran. Position is the whole point of this block. On a run
+    # that does survive, the tail appears twice -- once here, once in
+    # the report -- which is the cost of printing it while we can.
+    if [ "${rc}" != 0 ] && [ "${FAIL_TAIL}" -gt 0 ] && [ -s "${logf}" ]; then
+        printf '\n--- last %s lines of %s (rc=%s) ---\n' \
+            "${FAIL_TAIL}" "${logf}" "${rc}" >&2
+        tail -n "${FAIL_TAIL}" "${logf}" >&2
+        printf -- '--- end %s ---\n\n' "${name}" >&2
+    fi
     return "${rc}"
 }
 

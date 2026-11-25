@@ -81,6 +81,39 @@ ARG MAX_JOBS=
 # Memory budget per compile job, used to derive MAX_JOBS. 2GB is
 # measured for cc1plus: triton died at 32 jobs on a 30GB node.
 ARG MEM_PER_JOB_GB=2
+# Memory the derivation does not hand out, and a hard ceiling on the
+# job count. Both are BOUNDS, NOT MEASUREMENTS -- see below.
+#
+# 2GB a job prices one cc1plus. It does not price the build, and this
+# build has a tail that does not scale with the job count: the last
+# ~100 of its 547 steps are the largest translation units in the tree
+# (third_party/proton, python/src/main.cc, the MLIR conversion
+# libraries), and several of those alone are multi-GB.
+#
+# Dividing all of MemAvailable by a per-job figure budgets none of
+# that, which is the same mistake Dockerfile.vllm's MEM_RESERVE_GB
+# comment describes, from the same cause.
+#
+# Measured on AWS xlarge (36 cores, 72GB) on 2026-11-25: 36 jobs, and
+# the build went from step 440 at 61.7s to step 441 at 655.2s --
+# ten minutes on one file -- while the host ran out of memory so
+# completely that `tail` could not allocate and the shell could not
+# fork. Four nightlies failed this way (369s, 652s, 1049s, 772s)
+# before the failing vertex was identified, because nothing survived
+# to say which target it was.
+#
+# This build is normally CACHED and so this path is rare. It was
+# entered because b1549e0 moved SCCACHE_VERSION and SCCACHE_SHA256,
+# and changing an ARG invalidates every layer after it -- so a pin
+# sweep that touched no source rebuilt Triton from scratch on a
+# machine whose job count had never been tested against it.
+#
+# A ceiling of 8 is well under what the reserve alone allows (30 at
+# 72GB). It is chosen to get a green build and repopulate the layer
+# cache, not because 8 is right. Raise it until it fails and replace
+# both numbers with that, or the next ARG change pays this again.
+ARG MEM_RESERVE_GB=12
+ARG MAX_JOBS_CEILING=8
 
 LABEL org.opencontainers.image.source="https://github.com/triton-lang/triton"
 LABEL org.opencontainers.image.description="Triton ${TRITON_VERSION} built for ROCm ${ROCM_VERSION} (architecture-independent)"
@@ -238,12 +271,15 @@ RUN --mount=type=secret,id=aws,required=false \
     echo "TRITON_WHEEL_VERSION_SUFFIX=${TRITON_WHEEL_VERSION_SUFFIX}"; \
     if [ -z "${MAX_JOBS}" ]; then \
         cores=$(nproc); \
-        jobs=$(awk -v per="${MEM_PER_JOB_GB}" '/^MemAvailable:/ {print int($2/1024/1024/per)}' /proc/meminfo); \
+        jobs=$(awk -v per="${MEM_PER_JOB_GB}" -v reserve="${MEM_RESERVE_GB}" \
+            '/^MemAvailable:/ {n = int(($2/1024/1024 - reserve)/per); print (n < 1 ? 1 : n)}' \
+            /proc/meminfo); \
         [ -n "${jobs}" ] || jobs=${cores}; \
         [ "${jobs}" -ge 1 ] || jobs=1; \
         [ "${jobs}" -le "${cores}" ] || jobs=${cores}; \
+        [ "${jobs}" -le "${MAX_JOBS_CEILING}" ] || jobs=${MAX_JOBS_CEILING}; \
         export MAX_JOBS=${jobs}; \
-        echo "MAX_JOBS=${MAX_JOBS} (from ${cores} cores, $(awk '/^MemAvailable:/ {printf "%.0fGB", $2/1048576}' /proc/meminfo) available)"; \
+        echo "MAX_JOBS=${MAX_JOBS} (from ${cores} cores, $(awk '/^MemAvailable:/ {printf "%.0fGB", $2/1048576}' /proc/meminfo) available, ${MEM_RESERVE_GB}GB held back, ceiling ${MAX_JOBS_CEILING})"; \
     else \
         echo "MAX_JOBS=${MAX_JOBS} (pinned via build arg)"; \
     fi; \
