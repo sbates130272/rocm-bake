@@ -29,14 +29,34 @@ comment next to the line before changing the line.
 
 | Node | GPU | Role |
 | --- | --- | --- |
-| `snoc-strix` | gfx1151, Radeon 8060S, 96 GB VRAM | registry (Zot), sccache, builder, 30 GB RAM |
+| `snoc-strix` | gfx1151, Radeon 8060S, unified memory | registry (Zot), sccache, builder, 122 GB RAM |
 | `snoc-think` (ssh: `snoc-thinkstation`) | gfx1201, RX 9070 XT, 16 GB VRAM | builder, 122 GB RAM |
 | `snoc-gaming` | gfx1201 | builder |
 
 `manifests/snoc.yml` is the source; `make list-nodes` prints it.
 
-Note the asymmetry, because it decides where things can run: the node
-with the big GPU has the small RAM, and vice versa.
+**`snoc-strix` is an APU and its split is a BIOS setting, not a fixed
+property of the board.** It was 96 GB carved out as VRAM with 30 GB
+left to the CPU. It is now almost all given to the CPU — 122 GB of
+system RAM, 512 MB of dedicated VRAM — and the GPU allocates what it
+needs from there through GTT, which `/sys/class/kfd` reports as about
+61 GiB available to the device. Check it rather than assume it:
+
+```sh
+free -g                               # what the CPU has
+rocm-smi --showmeminfo vram           # what is dedicated (small now)
+```
+
+That change is recent, so **anything in this repo that reasons from
+"snoc-strix has 30 GB" is describing a machine that no longer
+exists** — including the measurements behind `MEM_RESERVE_GB` in
+`Dockerfile.vllm` and the Triton note about dying at 32 jobs. Those
+numbers were real when taken and are still a safe lower bound; they
+are no longer a description of this node.
+
+The old asymmetry note said the node with the big GPU had the small
+RAM. That is no longer true, and nothing should be scheduled on the
+assumption that it is.
 
 ## Builds
 

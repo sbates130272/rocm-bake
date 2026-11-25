@@ -196,6 +196,11 @@ ARG MAX_JOBS=
 # Memory budget per compile job, used to derive MAX_JOBS. 2GB is
 # measured for cc1plus: triton died at 32 jobs on a 30GB node.
 ARG MEM_PER_JOB_GB=2
+# Memory the derivation does not hand out, and a hard ceiling on the
+# job count. Passed to docker/max-jobs.sh, whose header explains why
+# both exist and why neither is a measurement.
+ARG MEM_RESERVE_GB=12
+ARG MAX_JOBS_CEILING=8
 # See Dockerfile.triton: raise to debug for one run to find out what
 # sccache's "Cache errors" counter is actually counting.
 ARG SCCACHE_LOG=warn
@@ -406,7 +411,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # PYTORCH_BUILD_NUMBER is not optional. The same file raises
 # AssertionError when PYTORCH_BUILD_VERSION is set without it, and a
 # number above 1 would append a .postN nobody asked for.
-RUN --mount=type=secret,id=aws,required=false \
+RUN --mount=type=secret,id=aws,required=false --mount=type=bind,source=docker/max-jobs.sh,target=/max-jobs.sh \
     if [ -s /run/secrets/aws ]; then set -a; . /run/secrets/aws; set +a; fi; \
     tv=$(tr -d '[:space:]' < version.txt); \
     sha=$(git rev-parse HEAD | cut -c1-7); \
@@ -421,17 +426,9 @@ RUN --mount=type=secret,id=aws,required=false \
     else \
         echo "sccache: normal mode — cache reads enabled"; \
     fi; \
-    if [ -z "${MAX_JOBS}" ]; then \
-        cores=$(nproc); \
-        jobs=$(awk -v per="${MEM_PER_JOB_GB}" '/^MemAvailable:/ {print int($2/1024/1024/per)}' /proc/meminfo); \
-        [ -n "${jobs}" ] || jobs=${cores}; \
-        [ "${jobs}" -ge 1 ] || jobs=1; \
-        [ "${jobs}" -le "${cores}" ] || jobs=${cores}; \
-        export MAX_JOBS=${jobs}; \
-        echo "MAX_JOBS=${MAX_JOBS} (from ${cores} cores, $(awk '/^MemAvailable:/ {printf "%.0fGB", $2/1048576}' /proc/meminfo) available)"; \
-    else \
-        echo "MAX_JOBS=${MAX_JOBS} (pinned via build arg)"; \
-    fi; \
+    njobs="${MAX_JOBS}"; \
+    [ -n "${njobs}" ] || njobs="$(sh /max-jobs.sh "${MEM_PER_JOB_GB}" "${MEM_RESERVE_GB}" "${MAX_JOBS_CEILING}")"; \
+    export MAX_JOBS="${njobs}"; \
     python -m build --wheel --no-isolation \
     --outdir /opt/pytorch/dist \
     2>&1 | tee /opt/pytorch/build.log \

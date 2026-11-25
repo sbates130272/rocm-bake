@@ -151,6 +151,13 @@ jobs:
       - name: nightly metrics attribution
         run: python3 -I .builders/tests/test_nightlymetrics.py
 
+      # max-jobs.sh decides how wide every compile in this repo runs,
+      # and a wrong answer does not fail the build -- it takes the node
+      # down, which on AWS cost four nightlies that could not even say
+      # why. Synthetic /proc/meminfo, no build, so it belongs here too.
+      - name: compile job derivation
+        run: python3 -I .builders/tests/test_max_jobs.py
+
   versions:
     name: Version tables
     runs-on: ubuntu-latest
