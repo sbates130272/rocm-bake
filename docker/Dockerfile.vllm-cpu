@@ -30,6 +30,11 @@ ARG MAX_JOBS=
 # The largest single cc1plus measured was 2.7GB (csrc/cpu/cpu_attn.cpp,
 # compiled once per ISA variant).
 ARG MEM_PER_JOB_GB=3
+# Memory the derivation does not hand out, and a hard ceiling on the
+# job count. Passed to docker/max-jobs.sh, whose header explains why
+# both exist and why neither is a measurement.
+ARG MEM_RESERVE_GB=12
+ARG MAX_JOBS_CEILING=8
 ARG SOURCE_DATE_EPOCH
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -97,18 +102,10 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # picks one at runtime from CPUID; nothing is -march=native. The `+cpu`
 # suffix setup.py appends is kept, because it is how vLLM selects
 # CpuPlatform.
-RUN set -eu; \
+RUN --mount=type=bind,source=docker/max-jobs.sh,target=/max-jobs.sh \
+    set -eu; \
     njobs="${MAX_JOBS}"; \
-    if [ -z "${njobs}" ]; then \
-        cores=$(nproc); \
-        njobs=$(awk -v per="${MEM_PER_JOB_GB}" '/^MemAvailable:/ {print int($2/1024/1024/per)}' /proc/meminfo); \
-        [ -n "${njobs}" ] || njobs=${cores}; \
-        [ "${njobs}" -ge 1 ] || njobs=1; \
-        [ "${njobs}" -le "${cores}" ] || njobs=${cores}; \
-        echo "MAX_JOBS=${njobs} (from ${cores} cores, $(awk '/^MemAvailable:/ {printf "%.0fGB", $2/1048576}' /proc/meminfo) available)"; \
-    else \
-        echo "MAX_JOBS=${njobs} (pinned via build arg)"; \
-    fi; \
+    [ -n "${njobs}" ] || njobs="$(sh /max-jobs.sh "${MEM_PER_JOB_GB}" "${MEM_RESERVE_GB}" "${MAX_JOBS_CEILING}")"; \
     export MAX_JOBS="${njobs}"; \
     export VLLM_TARGET_DEVICE=cpu; \
     export CMAKE_BUILD_TYPE=Release; \

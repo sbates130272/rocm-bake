@@ -61,6 +61,11 @@ ARG MAX_JOBS=
 # hipcc compiles of ops/hip/*.hip, closer to pytorch's cc1plus than to
 # AITER's light kernel compiles, so the shared 2GB convention applies.
 ARG MEM_PER_JOB_GB=2
+# Memory the derivation does not hand out, and a hard ceiling on the
+# job count. Passed to docker/max-jobs.sh, whose header explains why
+# both exist and why neither is a measurement.
+ARG MEM_RESERVE_GB=12
+ARG MAX_JOBS_CEILING=8
 
 LABEL org.opencontainers.image.source="https://github.com/pytorch/vision"
 LABEL org.opencontainers.image.description="torchvision ${TORCHVISION_REF} for ROCm ${ROCM_VERSION}, ${PYTORCH_ROCM_ARCH}"
@@ -190,21 +195,13 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # there is no secret and the WebDAV store needs none; on S3 this is the
 # only way they reach the RUN sandbox. The secret is a tmpfs file for
 # the life of this instruction, so it never lands in image history.
-RUN --mount=type=secret,id=aws,required=false \
+RUN --mount=type=secret,id=aws,required=false --mount=type=bind,source=docker/max-jobs.sh,target=/max-jobs.sh \
     if [ -s /run/secrets/aws ]; then set -a; . /run/secrets/aws; set +a; fi; \
     export BUILD_VERSION="${TORCHVISION_REF#v}+rocm${ROCM_VERSION%%-*}"; \
     echo "BUILD_VERSION=${BUILD_VERSION}"; \
-    if [ -z "${MAX_JOBS}" ]; then \
-        cores=$(nproc); \
-        jobs=$(awk -v per="${MEM_PER_JOB_GB}" '/^MemAvailable:/ {print int($2/1024/1024/per)}' /proc/meminfo); \
-        [ -n "${jobs}" ] || jobs=${cores}; \
-        [ "${jobs}" -ge 1 ] || jobs=1; \
-        [ "${jobs}" -le "${cores}" ] || jobs=${cores}; \
-        export MAX_JOBS=${jobs}; \
-        echo "MAX_JOBS=${MAX_JOBS} (from ${cores} cores, $(awk '/^MemAvailable:/ {printf "%.0fGB", $2/1048576}' /proc/meminfo) available, ${MEM_PER_JOB_GB}GB/job)"; \
-    else \
-        echo "MAX_JOBS=${MAX_JOBS} (pinned via build arg)"; \
-    fi; \
+    njobs="${MAX_JOBS}"; \
+    [ -n "${njobs}" ] || njobs="$(sh /max-jobs.sh "${MEM_PER_JOB_GB}" "${MEM_RESERVE_GB}" "${MAX_JOBS_CEILING}")"; \
+    export MAX_JOBS="${njobs}"; \
     python setup.py bdist_wheel --dist-dir=/raw-wheels \
     2>&1 | tee /wheels-build.log \
     && sccache --show-stats | tee /wheels-torchvision-sccache-stats.txt

@@ -54,6 +54,11 @@ ARG MAX_JOBS=
 # Memory budget per compile job, used to derive MAX_JOBS. Shared
 # convention with Dockerfile.pytorch; 2GB is measured for cc1plus.
 ARG MEM_PER_JOB_GB=2
+# Memory the derivation does not hand out, and a hard ceiling on the
+# job count. Passed to docker/max-jobs.sh, whose header explains why
+# both exist and why neither is a measurement.
+ARG MEM_RESERVE_GB=12
+ARG MAX_JOBS_CEILING=8
 
 LABEL org.opencontainers.image.source="https://github.com/cupy/cupy"
 LABEL org.opencontainers.image.description="CuPy ${CUPY_REF} for ROCm ${ROCM_VERSION}, ${PYTORCH_ROCM_ARCH}"
@@ -167,16 +172,11 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # which arrive as a tmpfs file for the life of this instruction and so
 # never reach image history, a layer, or a published tag. `set -a`
 # exports them for the sccache server that the compiler wrapper starts.
-RUN --mount=type=secret,id=aws,required=false \
+RUN --mount=type=secret,id=aws,required=false --mount=type=bind,source=docker/max-jobs.sh,target=/max-jobs.sh \
     if [ -s /run/secrets/aws ]; then set -a; . /run/secrets/aws; set +a; fi; \
     njobs="${MAX_JOBS}"; \
-    if [ -z "${njobs}" ]; then \
-        cores=$(nproc); \
-        njobs=$(awk -v per="${MEM_PER_JOB_GB}" '/^MemAvailable:/ {print int($2/1024/1024/per)}' /proc/meminfo); \
-        [ -n "${njobs}" ] || njobs=${cores}; \
-        [ "${njobs}" -ge 1 ] || njobs=1; \
-        [ "${njobs}" -le "${cores}" ] || njobs=${cores}; \
-    fi; \
+    [ -n "${njobs}" ] || njobs="$(sh /max-jobs.sh "${MEM_PER_JOB_GB}" "${MEM_RESERVE_GB}" "${MAX_JOBS_CEILING}")"; \
+    export MAX_JOBS="${njobs}"; \
     export CUPY_NUM_BUILD_JOBS="${njobs}"; \
     echo "CUPY_NUM_BUILD_JOBS=${njobs}, HCC_AMDGPU_TARGET=${HCC_AMDGPU_TARGET}"; \
     CC="sccache gcc" CXX="sccache g++" \

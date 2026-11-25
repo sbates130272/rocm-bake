@@ -265,24 +265,13 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # and the commit stays visible in the filename:
 # 3.9.0+gitaad2a60d.rocm10.1.0. A leading dot, not a plus -- a version
 # may carry only one local segment, and git_sfx has already opened it.
-RUN --mount=type=secret,id=aws,required=false \
+RUN --mount=type=secret,id=aws,required=false --mount=type=bind,source=docker/max-jobs.sh,target=/max-jobs.sh \
     if [ -s /run/secrets/aws ]; then set -a; . /run/secrets/aws; set +a; fi; \
     export TRITON_WHEEL_VERSION_SUFFIX=".rocm${ROCM_VERSION%%-*}"; \
     echo "TRITON_WHEEL_VERSION_SUFFIX=${TRITON_WHEEL_VERSION_SUFFIX}"; \
-    if [ -z "${MAX_JOBS}" ]; then \
-        cores=$(nproc); \
-        jobs=$(awk -v per="${MEM_PER_JOB_GB}" -v reserve="${MEM_RESERVE_GB}" \
-            '/^MemAvailable:/ {n = int(($2/1024/1024 - reserve)/per); print (n < 1 ? 1 : n)}' \
-            /proc/meminfo); \
-        [ -n "${jobs}" ] || jobs=${cores}; \
-        [ "${jobs}" -ge 1 ] || jobs=1; \
-        [ "${jobs}" -le "${cores}" ] || jobs=${cores}; \
-        [ "${jobs}" -le "${MAX_JOBS_CEILING}" ] || jobs=${MAX_JOBS_CEILING}; \
-        export MAX_JOBS=${jobs}; \
-        echo "MAX_JOBS=${MAX_JOBS} (from ${cores} cores, $(awk '/^MemAvailable:/ {printf "%.0fGB", $2/1048576}' /proc/meminfo) available, ${MEM_RESERVE_GB}GB held back, ceiling ${MAX_JOBS_CEILING})"; \
-    else \
-        echo "MAX_JOBS=${MAX_JOBS} (pinned via build arg)"; \
-    fi; \
+    njobs="${MAX_JOBS}"; \
+    [ -n "${njobs}" ] || njobs="$(sh /max-jobs.sh "${MEM_PER_JOB_GB}" "${MEM_RESERVE_GB}" "${MAX_JOBS_CEILING}")"; \
+    export MAX_JOBS="${njobs}"; \
     python -m build --wheel --no-isolation \
     --outdir /wheels \
     2>&1 | tee /wheels-build.log \

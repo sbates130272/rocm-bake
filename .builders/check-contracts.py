@@ -653,6 +653,68 @@ def check_nightly_chain():
                  + ("they are" if len(missing) > 1 else "it is") + " built")
 
 
+def _instructions(dockerfile):
+    """Yield each Dockerfile instruction with its continuations joined."""
+    cur = []
+    for line in dockerfile.splitlines():
+        cur.append(line)
+        if not line.rstrip().endswith("\\"):
+            yield "\n".join(cur)
+            cur = []
+    if cur:
+        yield "\n".join(cur)
+
+
+def check_max_jobs_shared():
+    """No Dockerfile hand-rolls its own compile-job derivation.
+
+    There were nine copies of that arithmetic, one per compiling
+    Dockerfile, and they had drifted into nine variants: two names for
+    the same variable, three subtracting a memory reserve and six not,
+    one guarding against a zero divisor and eight not, two clamping to
+    a ceiling and seven not.
+
+    That is not a tidiness complaint. The variant without a reserve
+    chose 45 concurrent compiles on a 48-core 91GB runner on
+    2026-11-25 and took the host down -- `tail` could not allocate,
+    the shell could not fork, and four nightlies died leaving no
+    artifact and no log. The bug was present in seven files and fixed
+    in one, which is exactly what nine copies buys you.
+
+    So there is one copy, docker/max-jobs.sh, and this fails the build
+    if a tenth appears. Two things are checked: nobody re-derives the
+    count inline, and every file that calls the script also mounts it
+    -- a call without the mount is a build that fails late, inside a
+    RUN, rather than here.
+    """
+    hand_rolled = re.compile(r"awk[^\n]*MemAvailable[^\n]*per\b|jobs=\$\(nproc\)")
+    mount = "source=docker/max-jobs.sh"
+
+    for path in sorted(Path(ROOT, "docker").glob("Dockerfile.*")):
+        rel = path.relative_to(ROOT)
+        body = read(rel)
+
+        for n, line in enumerate(body.splitlines(), 1):
+            if hand_rolled.search(line):
+                fail("max-jobs",
+                     f"{rel}:{n} derives a job count inline.\n"
+                     f"    Call docker/max-jobs.sh instead; it is the one "
+                     f"copy, and its header says why.")
+
+        # Per RUN, not per file: a call needs the mount on its own
+        # instruction, and counting substrings over the whole file
+        # gets this wrong -- the mount names the path twice and the
+        # comments name it again.
+        for instr in _instructions(body):
+            if "sh /max-jobs.sh" in instr and mount not in instr:
+                first = instr.split("\n", 1)[0][:60]
+                fail("max-jobs",
+                     f"{rel}: a RUN calls max-jobs.sh without mounting "
+                     f"it.\n    {first}...\n"
+                     f"    Add `--mount=type=bind,{mount},"
+                     f"target=/max-jobs.sh` to that RUN.")
+
+
 def check_flag_branches():
     """A boolean input's flag sits on the true branch of its expression.
 
@@ -723,6 +785,7 @@ def main():
     check_cache_repos()
     check_nightly_chain()
     check_flag_branches()
+    check_max_jobs_shared()
 
     if FAIL:
         print("contract violations:", file=sys.stderr)
@@ -733,8 +796,9 @@ def main():
           "shape, perf stages, build-* rules, build-record names, "
           "target-costs, the fleet manifests, versioncheck's wheel "
           "repos, the buildkit pin, the sccache checksum, the cache "
-          "repo list, the nightly's architecture chain and every "
-          "workflow's flag branches all agree")
+          "repo list, the nightly's architecture chain, every "
+          "workflow's flag branches and the shared compile-job "
+          "derivation all agree")
     return 0
 
 

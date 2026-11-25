@@ -337,19 +337,10 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # deps — so the extension links and runs against the same libnixl the
 # `nixl` Python bindings use. docker/auditwheel-rocm.sh keeps it that
 # way by refusing to vendor libnixl into this wheel.
-RUN --mount=type=bind,from=nixlwheels,source=/nixl-dev,target=/nixl-dev \
+RUN --mount=type=bind,from=nixlwheels,source=/nixl-dev,target=/nixl-dev --mount=type=bind,source=docker/max-jobs.sh,target=/max-jobs.sh \
     set -eu; \
     njobs="${MAX_JOBS}"; \
-    if [ -z "${njobs}" ]; then \
-        cores=$(nproc); \
-        njobs=$(awk -v per="${MEM_PER_JOB_GB}" -v reserve="${MEM_RESERVE_GB}" \
-            '/^MemAvailable:/ {n = int(($2/1024/1024 - reserve)/per); print (n < 1 ? 1 : n)}' \
-            /proc/meminfo); \
-        [ -n "${njobs}" ] || njobs=${cores}; \
-        [ "${njobs}" -ge 1 ] || njobs=1; \
-        [ "${njobs}" -le "${cores}" ] || njobs=${cores}; \
-        [ "${njobs}" -le "${MAX_JOBS_CEILING}" ] || njobs=${MAX_JOBS_CEILING}; \
-    fi; \
+    [ -n "${njobs}" ] || njobs="$(sh /max-jobs.sh "${MEM_PER_JOB_GB}" "${MEM_RESERVE_GB}" "${MAX_JOBS_CEILING}")"; \
     export MAX_JOBS="${njobs}"; \
     echo "MAX_JOBS=${njobs} (from ${cores:-?} cores, $(awk '/^MemAvailable:/ {printf "%.0fGB", $2/1048576}' /proc/meminfo) available, ${MEM_RESERVE_GB}GB held back, ceiling ${MAX_JOBS_CEILING})"; \
     offload_flags="$(printf '%s' "${PYTORCH_ROCM_ARCH}" \
