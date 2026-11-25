@@ -118,8 +118,7 @@ ARG MAX_JOBS=
 # convention with Dockerfile.pytorch; 2GB is measured for cc1plus.
 ARG MEM_PER_JOB_GB=2
 # Memory the derivation does not hand out, and a hard ceiling on the
-# job count. Both are new on 2026-11-25 and BOTH NUMBERS ARE BOUNDS,
-# NOT MEASUREMENTS -- see below before trusting either.
+# job count. Both are BOUNDS, NOT MEASUREMENTS.
 #
 # This stage became a HIP compile when the NIXL extension landed, and
 # it kept Dockerfile.pytorch's memory derivation, which divides all of
@@ -127,26 +126,23 @@ ARG MEM_PER_JOB_GB=2
 # does not do that, and its MEM_RESERVE_GB comment says why: most of a
 # HIP compile's memory does not scale with the job count, about 10GB of
 # it arrives in one burst, and budgeting none of that is how a node
-# gets taken down rather than OOM-killed.
+# gets taken down rather than OOM-killed. On xlarge, 72GB over 2GB a
+# job is 36 jobs, bounded only by the 36 cores.
 #
-# That is what has been happening here. Three AWS runs on 2026-11-24
-# (369s, 652s, 1049s) all ended with the host out of memory -- not the
-# build container, the host: `tail` could not allocate and the shell
-# could not fork. On xlarge, 72GB over 2GB a job is 36 jobs, capped
-# only by the 36 cores, with nothing held back for the burst.
+# HONEST PROVENANCE: this guard was added on 2026-11-25 while chasing
+# four OOM-killed nightlies that were blamed on this stage. They were
+# not this stage. The failing vertex was Triton -- `--targets lmcache`
+# reproduced the failure only because lmcache depends on triton-wheel,
+# and the real culprit was found once nightly.sh started printing the
+# failing phase's tail. Dockerfile.triton carries that story.
 #
-# 12GB mirrors Dockerfile.vllm's measured reserve for the same kind of
-# compile. The ceiling of 8 is deliberately well below what the
-# arithmetic allows (30 jobs at 72GB): the point is to find out whether
-# the job count is the cause at all, and a bound that only just fits
-# cannot answer that. If a run passes with this, the next step is to
-# raise the ceiling until it fails and replace both numbers with what
-# that measures -- not to leave 8 here because it worked.
-#
-# LMCache v0.5.8 is the other suspect and is NOT ruled out: it is 70
-# commits from v0.5.8rc1 and added translation units to this very
-# extension. If this change does not fix it, pin LMCACHE_REF back to
-# v0.5.8rc1 and the two are separated.
+# So this stage has never actually been seen to exhaust a node, and
+# these numbers were not derived from it. It is kept because the
+# reasoning above is sound on its own -- an unreserved derivation in
+# front of a HIP compile is the same latent bug, and seven other
+# Dockerfiles still have it -- but it is a precaution, not a fix for
+# anything observed here. Treat a failure in this stage as new
+# information rather than a recurrence.
 ARG MEM_RESERVE_GB=12
 ARG MAX_JOBS_CEILING=8
 
