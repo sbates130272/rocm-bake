@@ -30,10 +30,14 @@ ARG MAX_JOBS=
 # The largest single cc1plus measured was 2.7GB (csrc/cpu/cpu_attn.cpp,
 # compiled once per ISA variant).
 ARG MEM_PER_JOB_GB=3
-# Memory the derivation does not hand out, and a hard ceiling on the
-# job count. Passed to docker/max-jobs.sh, whose header explains why
-# both exist and why neither is a measurement.
-ARG MEM_RESERVE_GB=12
+# No reserve here, unlike the GPU builds. The reserve in the other
+# Dockerfiles stands for a HIP compile's burst, and this build has no
+# HIP in it. Its per-job figure is measured (above), and 4 jobs on a
+# 4-core 14.5GB GitHub runner built it green for months. With a
+# reserve that runner dropped to 2 jobs, the build went from about 22
+# minutes to 40, and the CPU lane timed out behind it (PR #68). The
+# ceiling stays, for the large nodes. See docker/max-jobs.sh.
+ARG MEM_RESERVE_GB=0
 ARG MAX_JOBS_CEILING=8
 ARG SOURCE_DATE_EPOCH
 

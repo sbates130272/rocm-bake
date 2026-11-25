@@ -74,13 +74,27 @@ class MaxJobs(unittest.TestCase):
 
         The same reserve on a 122GB node must stay exactly 12.
         """
-        small, _ = run(2, 12, 8, avail_gb=13, cores=16, tmp=self.tmp)
+        small, err = run(2, 12, 8, avail_gb=13, cores=16, tmp=self.tmp)
         self.assertGreater(small, 1, "a 16-core node must not drop to 1 job")
-        self.assertEqual(small, 3)
+        self.assertEqual(small, 4, "(13 - 13/4) / 2")
+        # The log line reports what was held back, not what was asked.
+        self.assertIn("3.2GB held back", err)
+        self.assertNotIn("12GB held back", err)
 
         # cores=64 so the core clamp does not hide the arithmetic
         big, _ = run(2, 12, 99, avail_gb=122, cores=64, tmp=self.tmp)
         self.assertEqual(big, 55, "(122-12)/2, so the reserve is untouched")
+
+    def test_the_github_runner_that_timed_out(self):
+        """4 cores, 14.5GB, vllm-cpu at 3GB a job with no reserve.
+
+        This runner built vllm-cpu at 4 jobs for months. A reserve
+        capped at half the node cut it to 2, the build took 40 minutes
+        instead of about 22, and the CPU lane hit its 60-minute limit
+        (PR #68). Dockerfile.vllm-cpu now passes a reserve of 0.
+        """
+        n, _ = run(3, 0, 8, avail_gb=14.5, cores=4, tmp=self.tmp)
+        self.assertEqual(n, 4)
 
     def test_cores_bound_a_small_memory_rich_node(self):
         bare, _ = run(1, avail_gb=256, cores=4, tmp=self.tmp)
@@ -131,7 +145,7 @@ class MaxJobs(unittest.TestCase):
         part of why the cause took four runs to find.
         """
         _, err = run(2, 12, 8, avail_gb=91, cores=48, tmp=self.tmp)
-        for fragment in ("max-jobs: 8", "48 cores", "91", "12GB held back",
+        for fragment in ("max-jobs: 8", "48 cores", "91", "12.0GB held back",
                          "ceiling 8"):
             self.assertIn(fragment, err)
 

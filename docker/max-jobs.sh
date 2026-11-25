@@ -47,23 +47,30 @@ avail_gb="$(awk '/^MemAvailable:/ {printf "%.1f", $2/1048576}' "${meminfo}" 2>/d
 # avail empty. Both fall back to one job rather than to `cores`: a
 # node whose memory cannot be read is exactly where guessing wide is
 # worst, and the caller can always pin MAX_JOBS explicitly.
-# THE RESERVE NEVER TAKES MORE THAN HALF THE NODE. A fixed figure is
-# a different proposition on different hardware: 12GB is a tenth of
-# snoc-strix and over nine tenths of snoc-gaming, which has 13GB
-# available. Applied flat it took that 16-core node from 6 jobs to 1
-# -- not conservative, just removed from the fleet. Measured on
-# 2026-11-25, when the first fleet build after this script landed gave
-# snoc-gaming one target and 2% mean CPU.
+# THE RESERVE NEVER TAKES MORE THAN A QUARTER OF THE NODE. A fixed
+# figure is a different proposition on different hardware: 12GB is a
+# tenth of snoc-strix and over nine tenths of snoc-gaming, which has
+# 13GB available. Applied flat it took that 16-core node from 6 jobs
+# to 1 -- not conservative, just removed from the fleet.
 #
-# Halving is a bound, not a measurement, and it is the wrong question
-# on a node this size anyway: Dockerfile.vllm's note says that below
-# about 20GB available its build wants a bigger node rather than a
-# smaller job count. What this prevents is the reserve silently
-# deciding that for every target on every small node.
-n="$(awk -v per="${per}" -v reserve="${reserve}" -v avail="${avail_gb}" '
+# The first cap tried was a half. That was still too much: a 4-core
+# 14.5GB GitHub runner that had built vllm-cpu at 4 jobs for months
+# dropped to 2, the build took 40 minutes instead of about 22, and the
+# CPU lane ran out of its 60-minute job before the server came up
+# (2026-11-25, PR #68). A quarter is a bound, not a measurement.
+#
+# eff is what was actually held back, and it is what the log line
+# reports: printing the requested figure when a smaller one was
+# applied described a decision that was not the one made.
+eff="$(awk -v reserve="${reserve}" -v avail="${avail_gb}" '
+    BEGIN {
+        if (avail == "") { print reserve; exit }
+        if (reserve > avail / 4) reserve = avail / 4
+        printf "%.1f", reserve
+    }')"
+n="$(awk -v per="${per}" -v reserve="${eff}" -v avail="${avail_gb}" '
     BEGIN {
         if (per <= 0 || avail == "") { print 1; exit }
-        if (reserve > avail / 2) reserve = avail / 2
         n = int((avail - reserve) / per)
         print (n < 1 ? 1 : n)
     }')"
@@ -74,6 +81,6 @@ if [ "${ceiling}" -gt 0 ] && [ "${n}" -gt "${ceiling}" ]; then
 fi
 
 printf 'max-jobs: %s (%s cores, %sGB available, %sGB held back, %s a job, ceiling %s)\n' \
-    "${n}" "${cores}" "${avail_gb:-unknown}" "${reserve}" "${per}" \
+    "${n}" "${cores}" "${avail_gb:-unknown}" "${eff}" "${per}" \
     "$([ "${ceiling}" -gt 0 ] && echo "${ceiling}" || echo none)" >&2
 printf '%s\n' "${n}"
