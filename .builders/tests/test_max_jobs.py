@@ -64,6 +64,24 @@ class MaxJobs(unittest.TestCase):
         guarded, _ = run(2, 12, 8, avail_gb=91, cores=48, tmp=self.tmp)
         self.assertEqual(guarded, 8)
 
+    def test_the_reserve_does_not_swallow_a_small_node(self):
+        """snoc-gaming: 16 cores, 13GB available.
+
+        A flat 12GB reserve is over nine tenths of this node and took
+        it from 6 jobs to 1 -- a 16-core machine effectively removed
+        from the fleet. Measured on the first fleet build after this
+        script landed, where it got one target and 2% mean CPU.
+
+        The same reserve on a 122GB node must stay exactly 12.
+        """
+        small, _ = run(2, 12, 8, avail_gb=13, cores=16, tmp=self.tmp)
+        self.assertGreater(small, 1, "a 16-core node must not drop to 1 job")
+        self.assertEqual(small, 3)
+
+        # cores=64 so the core clamp does not hide the arithmetic
+        big, _ = run(2, 12, 99, avail_gb=122, cores=64, tmp=self.tmp)
+        self.assertEqual(big, 55, "(122-12)/2, so the reserve is untouched")
+
     def test_cores_bound_a_small_memory_rich_node(self):
         bare, _ = run(1, avail_gb=256, cores=4, tmp=self.tmp)
         self.assertEqual(bare, 4, "never more jobs than cores")
@@ -76,7 +94,11 @@ class MaxJobs(unittest.TestCase):
         """
         for avail in (12, 10, 1, 0):
             n, _ = run(2, 12, 8, avail_gb=avail, cores=8, tmp=self.tmp)
-            self.assertEqual(n, 1, f"{avail}GB available should give 1")
+            self.assertGreaterEqual(n, 1, f"{avail}GB available gave {n}")
+        # Where the node is genuinely too small to divide, it is 1.
+        for avail in (1, 0):
+            n, _ = run(2, 12, 8, avail_gb=avail, cores=8, tmp=self.tmp)
+            self.assertEqual(n, 1)
 
     def test_per_job_of_zero_does_not_divide_by_zero(self):
         n, _ = run(0, 12, 8, avail_gb=91, cores=48, tmp=self.tmp)
