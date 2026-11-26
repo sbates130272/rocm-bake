@@ -93,14 +93,69 @@ export SCCACHE_S3_KEY_PREFIX="${SCCACHE_S3_KEY_PREFIX:-rocm-pytorch}"
 # arg is recorded in image history and would publish them with every
 # push. The file is 0600, lives only for this run, and is shredded on
 # exit however the script leaves.
+#
+# THE FILE IS REFRESHED FOR THE LIFE OF THE BUILD. These are temporary
+# credentials from the CodeBuild role and they last about an hour. A
+# snapshot taken once at startup is therefore good for an hour-long
+# build and no longer, and a cold graph takes about an hour: on
+# 2026-11-26 the build ran 59m04s and the last target to start died at
+# sccache server startup with
+#
+#   S3Error { code: "ExpiredToken", message: "The provided token has
+#   expired." }
+#
+# Warm nights ran 3 to 26 minutes and never came near it, which is how
+# this sat unnoticed from the day the lane was built.
+#
+# Refreshing the file is enough because BuildKit asks the client for a
+# secret when a step starts, not when the build does: buildx re-reads
+# the file each time. Measured, not assumed -- with the file replaced
+# mid-build, a step already running kept the old contents and the next
+# step saw the new ones. So every RUN that starts gets whatever the
+# role had at that moment. The replacement is a rename, so a reader
+# sees the old file or the new one and never half of each.
+#
+# What this does not do is extend a credential under a step that is
+# already running. sccache checks its storage at server start, which
+# is the failure above; an expiry later in a long step costs cache
+# reads and writes, not the build.
+#
+# Each refresh logs the expiry it was given and nothing else. If the
+# role's credentials ever stop rotating, the log says so: the expiry
+# stops moving.
 SECRET_ARGS=()
 CREDS_FILE=""
+CREDS_REFRESH_PID=""
+CREDS_REFRESH_SECONDS="${CREDS_REFRESH_SECONDS:-300}"
 cleanup_creds() {
-    [ -n "${CREDS_FILE}" ] && [ -f "${CREDS_FILE}" ] \
-        && shred -u "${CREDS_FILE}" 2>/dev/null
+    if [ -n "${CREDS_REFRESH_PID}" ]; then
+        pkill -P "${CREDS_REFRESH_PID}" 2>/dev/null
+        kill "${CREDS_REFRESH_PID}" 2>/dev/null
+    fi
+    if [ -n "${CREDS_FILE}" ]; then
+        rm -f "${CREDS_FILE}.new" 2>/dev/null
+        [ -f "${CREDS_FILE}" ] && shred -u "${CREDS_FILE}" 2>/dev/null
+    fi
     return 0
 }
 trap cleanup_creds EXIT INT TERM
+
+# export_creds: write the role's current credentials over CREDS_FILE.
+# On any failure the existing file is left as it was -- a refresh that
+# cannot reach the endpoint must not replace working credentials with
+# an empty file.
+export_creds() {
+    local tmp="${CREDS_FILE}.new"
+    ( umask 077
+      aws configure export-credentials --format env-no-export > "${tmp}" 2>/dev/null
+    ) && [ -s "${tmp}" ] && mv -f "${tmp}" "${CREDS_FILE}" && return 0
+    rm -f "${tmp}" 2>/dev/null
+    return 1
+}
+# The expiry only. Never the key, the secret or the token.
+creds_expiry() {
+    sed -n 's/^AWS_CREDENTIAL_EXPIRATION=//p' "${CREDS_FILE}" 2>/dev/null | head -1
+}
 
 if [ -n "${SCCACHE_BUCKET}" ]; then
     [ -n "${SCCACHE_REGION}" ] || {
@@ -109,10 +164,27 @@ if [ -n "${SCCACHE_BUCKET}" ]; then
     }
     CREDS_FILE="$(mktemp)"
     chmod 600 "${CREDS_FILE}"
-    if aws configure export-credentials --format env-no-export \
-         > "${CREDS_FILE}" 2>/dev/null && [ -s "${CREDS_FILE}" ]; then
+    if export_creds; then
         SECRET_ARGS=(--set "*.secrets=id=aws,src=${CREDS_FILE}")
         log "sccache: S3 ${SCCACHE_BUCKET} (${SCCACHE_REGION}), credentials via secret mount"
+        log "credentials: expire $(creds_expiry || true), refreshed every ${CREDS_REFRESH_SECONDS}s"
+        if [ "${CREDS_REFRESH_SECONDS}" -gt 0 ]; then
+            (
+                last="$(creds_expiry)"
+                while sleep "${CREDS_REFRESH_SECONDS}"; do
+                    if export_creds; then
+                        now="$(creds_expiry)"
+                        if [ "${now}" != "${last}" ]; then
+                            log "credentials: refreshed, now expire ${now}"
+                            last="${now}"
+                        fi
+                    else
+                        log "credentials: refresh FAILED, keeping the previous ones (expire ${last})"
+                    fi
+                done
+            ) &
+            CREDS_REFRESH_PID=$!
+        fi
     else
         echo "nightly: SCCACHE_BUCKET is set but no AWS credentials resolved;" \
              "the build would fail at sccache server start" >&2
