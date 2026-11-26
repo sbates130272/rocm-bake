@@ -131,6 +131,39 @@ def cost_cache(summary):
     return cost, sccache, layer
 
 
+# An architecture keeps its colour whichever others are on the chart.
+#
+# The colours used to be dealt out to whichever architectures a chart
+# happened to contain, in sorted order, from a list of three. So the
+# same architecture changed colour between charts, and the first run to
+# publish a fourth -- the weekly of 2026-11-26, all four built for the
+# first time -- had no colour for gfx950 and died on a KeyError. The
+# report job failed there, before committing, and that run's data never
+# reached the site.
+#
+# Slot 4 is the violet perfreport.py already carries as its fourth
+# fallback. The four pass the palette validator on both surfaces; the
+# aqua is under 3:1 against white, which the table under the chart
+# relieves. An architecture not listed here takes the next unused slot
+# and then a neutral grey: an unknown name is a reason to draw the bar
+# plainly, never a reason to lose the report.
+VIOLET, NEUTRAL = "#9456c9", "#8b949e"
+ARCH_COLOURS = {"gfx1201": BLUE, "gfx1151": ORANGE,
+                "gfx1250": GREEN, "gfx950": VIOLET}
+
+
+def arch_colours(arches):
+    spare = [c for c in (BLUE, ORANGE, GREEN, VIOLET)
+             if c not in {ARCH_COLOURS[a] for a in arches if a in ARCH_COLOURS}]
+    out = {}
+    for a in arches:
+        if a in ARCH_COLOURS:
+            out[a] = ARCH_COLOURS[a]
+        else:
+            out[a] = spare.pop(0) if spare else NEUTRAL
+    return out
+
+
 def write_chart(root, runs):
     """Warm wall clock per run, oldest left, one bar group per arch.
 
@@ -151,7 +184,7 @@ def write_chart(root, runs):
         return None
 
     arches = sorted({a for _, a, _ in series})
-    colours = {a: c for a, c in zip(arches, (BLUE, ORANGE, GREEN))}
+    colours = arch_colours(arches)
     stamps = sorted({s for s, _, _ in series})
 
     w, h, pad_l, pad_b, pad_t = 760, 260, 54, 46, 28
