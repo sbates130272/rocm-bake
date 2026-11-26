@@ -151,7 +151,12 @@ CREDS_FILE=""
 CREDS_REFRESH_PID=""
 CREDS_REFRESH_SECONDS="${CREDS_REFRESH_SECONDS:-300}"
 SCCACHE_SECRET_ID="${SCCACHE_SECRET_ID:-}"
+MEM_SAMPLER_PID=""
 cleanup_creds() {
+    if [ -n "${MEM_SAMPLER_PID}" ]; then
+        pkill -P "${MEM_SAMPLER_PID}" 2>/dev/null
+        kill "${MEM_SAMPLER_PID}" 2>/dev/null
+    fi
     if [ -n "${CREDS_REFRESH_PID}" ]; then
         pkill -P "${CREDS_REFRESH_PID}" 2>/dev/null
         kill "${CREDS_REFRESH_PID}" 2>/dev/null
@@ -460,6 +465,49 @@ phase() {
 COLD_RC=skipped
 WARM_RC=1
 
+# ── memory, sampled while the build runs ─────────────────────────
+# The footprint below reads memory once, after the bake, from this
+# shell's own cgroup. Neither half of that answers "how much memory
+# did the compile need":
+#
+#   AFTER THE BAKE is after every compiler has exited. The weekly of
+#   2026-11-26 recorded 0.2 GiB in use on a leg that had just run
+#   6,100 compiles.
+#
+#   THIS SHELL'S CGROUP does not appear to contain the build. That
+#   same leg recorded 1.6 GiB of page cache while CloudWatch showed
+#   the machine at 60-98% of its memory. The compilers run in the
+#   BuildKit container, which is not under this process.
+#
+# So the job counts in docker/max-jobs.sh are bounds nobody has been
+# able to check, and the one number that would check them -- peak
+# memory in use during the compile -- has never been recorded.
+#
+# /proc/meminfo is the machine-wide view, the same one max-jobs.sh
+# reads inside a RUN step, so sampling it here measures what that
+# script is budgeting against. Every MEM_SAMPLE_SECONDS it records
+# MemAvailable and AnonPages; footprint() reduces the samples to the
+# lowest MemAvailable and the highest AnonPages of the run.
+#
+# The file is appended to, one short line per sample, so a run that
+# is killed still leaves everything up to the kill. MEM_SAMPLE_SECONDS=0
+# turns it off.
+MEM_SAMPLE_SECONDS="${MEM_SAMPLE_SECONDS:-15}"
+MEM_SAMPLES="${OUT}/memsamples.tsv"
+: > "${MEM_SAMPLES}"
+if [ "${MEM_SAMPLE_SECONDS}" -gt 0 ] && [ -r /proc/meminfo ]; then
+    (
+        while :; do
+            awk -v t="$(date +%s)" '
+                /^MemAvailable:/ {a=$2} /^AnonPages:/ {n=$2} /^Cached:/ {c=$2}
+                END {printf "%s\t%s\t%s\t%s\n", t, a, n, c}' /proc/meminfo \
+                >> "${MEM_SAMPLES}" 2>/dev/null
+            sleep "${MEM_SAMPLE_SECONDS}"
+        done
+    ) &
+    MEM_SAMPLER_PID=$!
+fi
+
 if [ "${SKIP_COLD}" = 0 ]; then
     # --no-cache stops BuildKit reusing its own local layers;
     # `*.cache-from=` clears the registry import so the previous
@@ -473,6 +521,13 @@ PUSH_FLAG=()
 [ "${PUSH}" = 1 ] && PUSH_FLAG=(--push)
 phase warm "${PUSH_FLAG[@]}"
 WARM_RC=$?
+
+# The build is over; stop sampling so the idle tail is not in the data.
+if [ -n "${MEM_SAMPLER_PID}" ]; then
+    pkill -P "${MEM_SAMPLER_PID}" 2>/dev/null
+    kill "${MEM_SAMPLER_PID}" 2>/dev/null
+    MEM_SAMPLER_PID=""
+fi
 
 # ── footprint ────────────────────────────────────────────────────
 # Disk, BuildKit store and the anon/page-cache split, measured on the
@@ -525,10 +580,23 @@ footprint() {
         anon="$(awk '$1=="rss"{print $2}' /sys/fs/cgroup/memory/memory.stat)"
         file="$(awk '$1=="cache"{print $2}' /sys/fs/cgroup/memory/memory.stat)"
     fi
+    # What this machine says it is, and what it is allowed to use. The
+    # two can differ: a RUN step on the xlarge runner sees 48 cores
+    # and about 90GB, and xlarge is sold as 36 vCPU and 72 GiB. If a
+    # cgroup limit sits under those numbers, max-jobs.sh is dividing
+    # memory the build cannot have. "max" means no limit is set.
+    local cores mem_total_kb cg_mem_max cg_cpu_max
+    cores="$(nproc 2>/dev/null || true)"
+    mem_total_kb="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || true)"
+    cg_mem_max="$(cat /sys/fs/cgroup/memory.max 2>/dev/null \
+        || cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null || true)"
+    cg_cpu_max="$(cat /sys/fs/cgroup/cpu.max 2>/dev/null || true)"
     python3 -I - "${f}" "${docker_root}" "${used_kb:-}" "${avail_kb:-}" \
-        "${du_human:-}" "${anon:-}" "${file:-}" <<'PY'
+        "${du_human:-}" "${anon:-}" "${file:-}" "${MEM_SAMPLES:-}" \
+        "${cores:-}" "${mem_total_kb:-}" "${cg_mem_max:-}" "${cg_cpu_max:-}" <<'PY'
 import json, re, sys
 path, root, used_kb, avail_kb, du_h, anon, file_ = sys.argv[1:8]
+samples_path, cores, mem_total_kb, cg_mem_max, cg_cpu_max = sys.argv[8:13]
 def num(x, mul=1):
     try:
         return int(x) * mul
@@ -552,6 +620,25 @@ def human(x):
 
 used, avail = num(used_kb, 1024), num(avail_kb, 1024)
 du_b = human(du_h)
+
+# The samples taken while the build ran: epoch, MemAvailable, AnonPages,
+# Cached, in kB. A short or unreadable line is skipped, not fatal.
+n_samples, avail_min, anon_peak, cached_peak = 0, None, None, None
+try:
+    for line in open(samples_path):
+        parts = line.split("\t")
+        try:
+            a, n, c = int(parts[1]), int(parts[2]), int(parts[3])
+        except (IndexError, ValueError):
+            continue
+        n_samples += 1
+        avail_min = a if avail_min is None else min(avail_min, a)
+        anon_peak = n if anon_peak is None else max(anon_peak, n)
+        cached_peak = c if cached_peak is None else max(cached_peak, c)
+except OSError:
+    pass
+kb = lambda v: None if v is None else v * 1024
+
 out = {
     "docker_root": root or None,
     "disk_used_bytes": used,
@@ -560,8 +647,22 @@ out = {
     # "how full is the volume" -- a shared volume's used bytes include
     # things this build did not put there.
     "buildkit_store_bytes": du_b,
+    # These two are this shell's cgroup, read once after the bake. They
+    # are kept because published summaries carry them, and they are NOT
+    # the build's memory; see the sampler above.
     "mem_anon_bytes": num(anon),
     "mem_file_bytes": num(file_),
+    # The build's memory: machine-wide, sampled while it ran.
+    "mem_samples": n_samples,
+    "mem_available_min_bytes": kb(avail_min),
+    "mem_anon_peak_bytes": kb(anon_peak),
+    "mem_cached_peak_bytes": kb(cached_peak),
+    # What the machine reports, and what a cgroup allows ("max" = no
+    # limit). cpu.max is "<quota> <period>" in microseconds.
+    "cores": num(cores),
+    "mem_total_bytes": num(mem_total_kb, 1024),
+    "cgroup_memory_max": cg_mem_max or None,
+    "cgroup_cpu_max": cg_cpu_max or None,
 }
 open(path, "w").write(json.dumps(out, indent=2) + "\n")
 PY
