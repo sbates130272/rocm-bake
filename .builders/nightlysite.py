@@ -124,7 +124,13 @@ def cost_cache(summary):
     rate = sc.get("hit_rate")
     sccache = "—" if rate is None else f"{rate:.0f}%"
 
-    if lc:
+    # Distinct build steps where the run recorded them. `cached`/`done`
+    # are raw progress-line counts -- BuildKit re-reports a vertex each
+    # time another target resolves against it -- and are kept only for
+    # runs from before build_steps existed.
+    if lc.get("build_steps"):
+        layer = f"{lc.get('build_steps_cached', 0)}/{lc['build_steps']}"
+    elif lc:
         layer = f"{lc.get('cached', 0)}/{lc.get('done', 0)}"
     else:
         layer = "—"
@@ -279,33 +285,173 @@ machine, one job per architecture.</p>
 """)
 
 
+RUN_CSS = """
+h2 { font-size: 1.15rem; margin: 2.5rem 0 .25rem; }
+h3 { font-size: .85rem; margin: 1.75rem 0 0; opacity: .7;
+     text-transform: uppercase; letter-spacing: .03em; }
+.tiles { display: grid; gap: .75rem; margin-top: 1rem;
+         grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr)); }
+.tile { padding: .7rem .85rem; border-radius: 6px;
+        border: 1px solid color-mix(in srgb, currentColor 15%, transparent); }
+.tile .k { font-size: .78rem; opacity: .7; text-transform: uppercase;
+           letter-spacing: .03em; }
+.tile .v { font-size: 1.35rem; font-weight: 600; margin: .1rem 0;
+           font-variant-numeric: tabular-nums; }
+.tile .d { font-size: .82rem; opacity: .7; }
+td.num, th.num { text-align: right; }
+td.barcell { width: 40%; }
+.track { height: 10px; }
+.bar { height: 10px; min-width: 2px; border-radius: 0 4px 4px 0;
+       background: BAR_COLOR; }
+""".replace("BAR_COLOR", BLUE)
+
+
+def hms(secs):
+    secs = int(round(secs))
+    return f"{secs // 60}m{secs % 60:02d}s"
+
+
+def gb(n, unit=1e9):
+    return "—" if n is None else f"{n / unit:.1f}"
+
+
+def tile(key, value, detail="", cls=""):
+    return (f'<div class="tile"><div class="k">{html.escape(key)}</div>'
+            f'<div class="v {cls}">{value}</div>'
+            f'<div class="d">{detail}</div></div>')
+
+
+def arch_section(arch, s):
+    """Everything one architecture's summary.json records, drilled down.
+
+    Every figure can be absent -- older runs recorded less, and a failed
+    run records less still -- and an absent one is left out or shown as
+    an em dash, never as a zero. Zero is a measurement.
+    """
+    ph = s.get("phases") or {}
+    m = s.get("metrics") or {}
+    lc = m.get("layer_cache") or {}
+    sc = m.get("sccache") or {}
+    c = s.get("cost") or {}
+    fp = s.get("footprint") or {}
+    name = html.escape(arch)
+    out = [f"<h2><code>{name}</code></h2>"]
+
+    tiles = []
+    for phase in ("cold", "warm"):
+        spec = ph.get(phase)
+        if not spec:
+            continue
+        ok = spec.get("rc", 1) == 0
+        tiles.append(tile(f"{phase} build", hms(spec.get("seconds", 0)),
+                          "passed" if ok else f"FAILED, exit {spec.get('rc')}",
+                          "" if ok else "fail"))
+    if c.get("usd") is not None:
+        rate = c.get("usd_per_min")
+        detail = str(c.get("instance", "?"))
+        if rate:
+            detail += f" at ${rate:.4f}/min"
+        if not c.get("rate_verified"):
+            detail += ", rate unverified"
+        tiles.append(tile("cost", f"${c['usd']:.2f}", html.escape(detail)))
+    if lc.get("build_steps"):
+        n, d = lc.get("build_steps_cached", 0), lc["build_steps"]
+        tiles.append(tile("layer cache", f"{n}/{d}",
+                          f"{100 * n / d:.0f}% of build steps cached"))
+    if sc.get("hit_rate") is not None:
+        tiles.append(tile(
+            "sccache", f"{sc['hit_rate']:.1f}%",
+            f"{sc.get('hits', 0):,} hits, {sc.get('misses', 0):,} misses"))
+    elif sc and not sc.get("requests"):
+        tiles.append(tile("sccache", "—", "no compiler ran"))
+    if "import_misses" in lc:
+        tiles.append(tile("cache imports missed", str(lc["import_misses"]),
+                          "refs that do not exist in this registry"))
+    if ph:
+        errs = sum((ph.get(k) or {}).get("cache_errors", 0)
+                   for k in ("cold", "warm"))
+        tiles.append(tile("cache export errors", str(errs),
+                          "layers that failed to push", "warn" if errs else ""))
+    if fp.get("buildkit_store_bytes") is not None:
+        tiles.append(tile("BuildKit store",
+                          f"{gb(fp['buildkit_store_bytes'])} GB",
+                          "what this build materialised"))
+    if fp.get("disk_used_bytes") is not None:
+        free = fp.get("disk_avail_bytes")
+        tiles.append(tile("disk used",
+                          f"{gb(fp['disk_used_bytes'], 2**30)} GiB",
+                          "" if free is None
+                          else f"{gb(free, 2**30)} GiB free"))
+    if fp.get("mem_anon_bytes") is not None:
+        tiles.append(tile(
+            "memory in use", f"{gb(fp['mem_anon_bytes'], 2**30)} GiB",
+            f"plus {gb(fp.get('mem_file_bytes'), 2**30)} GiB page cache"))
+    if tiles:
+        out.append(f'<div class="tiles">{"".join(tiles)}</div>')
+
+    targets = m.get("targets") or {}
+    if targets:
+        top = max((t.get("seconds", 0) for t in targets.values()),
+                  default=0) or 1
+        rows = []
+        for tname, t in sorted(targets.items(),
+                               key=lambda kv: -kv[1].get("seconds", 0)):
+            secs = t.get("seconds", 0)
+            label = f"{html.escape(tname)}: {hms(secs)}"
+            rows.append(
+                f"<tr><td><code>{html.escape(tname)}</code></td>"
+                f'<td class="barcell"><div class="track" title="{label}">'
+                f'<div class="bar" style="width:{100 * secs / top:.1f}%">'
+                f"</div></div></td>"
+                f'<td class="num">{hms(secs)}</td>'
+                f'<td class="num">{t.get("steps", "—")}</td>'
+                f'<td class="num">{t.get("cached", "—")}</td></tr>')
+        # A target cannot take longer than the build it is part of. Where
+        # one does, the split is wrong and the page says so instead of
+        # drawing it as fact: summaries written before the per-target
+        # accounting was fixed (2026-11-19) counted a step once for every
+        # time BuildKit re-reported it, and those files are still served.
+        wall = sum((ph.get(k) or {}).get("seconds", 0) for k in ("cold", "warm"))
+        if wall and top > wall * 1.02:
+            out.append(
+                '<div class="note"><strong>The per-target times below are '
+                "not reliable.</strong> The largest is longer than the whole "
+                f"build ({hms(top)} against {hms(wall)}), which cannot be "
+                "true. Per-target time is known to have been over-counted "
+                "in runs recorded before 2026-11-19, and this run shows the "
+                "same sign whatever its date. The totals above are "
+                "unaffected.</div>")
+        out.append(
+            "<h3>Where the time went</h3>"
+            "<table><thead><tr><th>Target</th><th></th>"
+            '<th class="num">Time</th><th class="num">Steps run</th>'
+            '<th class="num">Steps cached</th></tr></thead>'
+            f'<tbody>{"".join(rows)}</tbody></table>'
+            '<p class="sub">Targets build concurrently and a stage shared '
+            "by two targets is counted under each, so these times overlap "
+            "and add up to more than the wall clock. The sccache figure "
+            "covers only the targets that print their statistics.</p>")
+
+    out.append(f'<p class="sub"><a href="{name}/report.md">report.md</a> · '
+               f'<a href="{name}/summary.json">summary.json</a></p>')
+    return "\n".join(out)
+
+
 def write_run_html(d, summaries):
-    """A per-run page, so <stamp>/ is not a 404 either."""
-    rows = []
-    for arch, s in sorted(summaries.items()):
-        ph = s.get("phases", {})
-        cold, cold_cls = fmt(ph.get("cold"))
-        warm, warm_cls = fmt(ph.get("warm"))
-        rows.append(f"<tr><td><code>{html.escape(arch)}</code></td>"
-                    f'<td class="{cold_cls}">{cold}</td>'
-                    f'<td class="{warm_cls}">{warm}</td>'
-                    f'<td><a href="{html.escape(arch)}/report.md">report.md</a>'
-                    f"</td></tr>")
+    """A per-run page: the drilldown for every architecture in the run."""
+    sections = "\n".join(arch_section(a, s)
+                         for a, s in sorted(summaries.items()))
     stamp = html.escape(d.name)
     (d / "index.html").write_text(f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Nightly {stamp} — rocm-bake</title>
 <link rel="icon" href="{FAVICON}">
-<style>{CSS}</style>
+<style>{CSS}{RUN_CSS}</style>
 </head><body>
 <h1>Nightly {stamp}</h1>
 <p class="sub"><a href="../">All nightly runs</a></p>
-<table>
-<thead><tr><th>Arch</th><th>Cold</th><th>Warm</th><th></th></tr></thead>
-<tbody>
-{chr(10).join(rows)}
-</tbody></table>
+{sections}
 </body></html>
 """)
 
