@@ -123,10 +123,34 @@ export SCCACHE_S3_KEY_PREFIX="${SCCACHE_S3_KEY_PREFIX:-rocm-pytorch}"
 # Each refresh logs the expiry it was given and nothing else. If the
 # role's credentials ever stop rotating, the log says so: the expiry
 # stops moving.
+#
+# SCCACHE_SECRET_ID NAMES A KEY THAT DOES NOT EXPIRE, AND IS PREFERRED.
+# The refresh above covers every step that starts. It cannot reach a
+# step that is already running, and one step in this graph runs longer
+# than a credential lives. On 2026-11-26 the weekly's gfx950 leg ran
+# 1h49m: the role rotated four times and every refresh picked it up,
+# but pytorch-wheel's compile started on the first credential and
+# outlived it. sccache went on compiling and stopped caching:
+#
+#   Compile requests executed   6100
+#   Cache read errors            718
+#   Cache write errors           726
+#
+# The build passed. 726 objects were compiled and not stored, so the
+# next cold gfx950 pays for them again, and S3 showed no writes at all
+# for thirty minutes.
+#
+# The fix is a credential with no clock: an IAM user whose only
+# permission is this bucket, its key held in Secrets Manager and read
+# here with the CodeBuild role. Set SCCACHE_SECRET_ID to the secret's
+# name or ARN; the secret is JSON with AWS_ACCESS_KEY_ID and
+# AWS_SECRET_ACCESS_KEY. Unset, the role's own credentials are used
+# and refreshed as before.
 SECRET_ARGS=()
 CREDS_FILE=""
 CREDS_REFRESH_PID=""
 CREDS_REFRESH_SECONDS="${CREDS_REFRESH_SECONDS:-300}"
+SCCACHE_SECRET_ID="${SCCACHE_SECRET_ID:-}"
 cleanup_creds() {
     if [ -n "${CREDS_REFRESH_PID}" ]; then
         pkill -P "${CREDS_REFRESH_PID}" 2>/dev/null
@@ -146,9 +170,27 @@ trap cleanup_creds EXIT INT TERM
 # an empty file.
 export_creds() {
     local tmp="${CREDS_FILE}.new"
-    ( umask 077
-      aws configure export-credentials --format env-no-export > "${tmp}" 2>/dev/null
-    ) && [ -s "${tmp}" ] && mv -f "${tmp}" "${CREDS_FILE}" && return 0
+    if [ -n "${SCCACHE_SECRET_ID}" ]; then
+        # The value goes from the API to the file through a pipe. It is
+        # never in a variable, an argument or the log. jq -e fails if
+        # either field is missing, so a secret of the wrong shape is an
+        # error here and not an sccache failure an hour in.
+        ( umask 077
+          set -o pipefail
+          aws secretsmanager get-secret-value \
+              --secret-id "${SCCACHE_SECRET_ID}" --region "${SCCACHE_REGION}" \
+              --query SecretString --output text 2>/dev/null \
+          | jq -er '[.AWS_ACCESS_KEY_ID, .AWS_SECRET_ACCESS_KEY]
+                    | if all(type == "string" and length > 0)
+                      then "AWS_ACCESS_KEY_ID=\(.[0])\nAWS_SECRET_ACCESS_KEY=\(.[1])"
+                      else error("secret lacks a key field") end' \
+              > "${tmp}" 2>/dev/null
+        ) && [ -s "${tmp}" ] && mv -f "${tmp}" "${CREDS_FILE}" && return 0
+    else
+        ( umask 077
+          aws configure export-credentials --format env-no-export > "${tmp}" 2>/dev/null
+        ) && [ -s "${tmp}" ] && mv -f "${tmp}" "${CREDS_FILE}" && return 0
+    fi
     rm -f "${tmp}" 2>/dev/null
     return 1
 }
@@ -167,8 +209,13 @@ if [ -n "${SCCACHE_BUCKET}" ]; then
     if export_creds; then
         SECRET_ARGS=(--set "*.secrets=id=aws,src=${CREDS_FILE}")
         log "sccache: S3 ${SCCACHE_BUCKET} (${SCCACHE_REGION}), credentials via secret mount"
-        log "credentials: expire $(creds_expiry || true), refreshed every ${CREDS_REFRESH_SECONDS}s"
-        if [ "${CREDS_REFRESH_SECONDS}" -gt 0 ]; then
+        if [ -n "${SCCACHE_SECRET_ID}" ]; then
+            # Nothing to refresh: the key has no expiry.
+            log "credentials: static key from secret ${SCCACHE_SECRET_ID}, no expiry"
+        else
+            log "credentials: expire $(creds_expiry || true), refreshed every ${CREDS_REFRESH_SECONDS}s"
+        fi
+        if [ -z "${SCCACHE_SECRET_ID}" ] && [ "${CREDS_REFRESH_SECONDS}" -gt 0 ]; then
             (
                 last="$(creds_expiry)"
                 while sleep "${CREDS_REFRESH_SECONDS}"; do
@@ -186,8 +233,15 @@ if [ -n "${SCCACHE_BUCKET}" ]; then
             CREDS_REFRESH_PID=$!
         fi
     else
-        echo "nightly: SCCACHE_BUCKET is set but no AWS credentials resolved;" \
-             "the build would fail at sccache server start" >&2
+        if [ -n "${SCCACHE_SECRET_ID}" ]; then
+            echo "nightly: could not read an access key from secret" \
+                 "${SCCACHE_SECRET_ID}. It must be JSON with" \
+                 "AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, and this" \
+                 "role needs secretsmanager:GetSecretValue on it." >&2
+        else
+            echo "nightly: SCCACHE_BUCKET is set but no AWS credentials resolved;" \
+                 "the build would fail at sccache server start" >&2
+        fi
         exit 1
     fi
 else

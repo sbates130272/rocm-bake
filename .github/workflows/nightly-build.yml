@@ -153,6 +153,14 @@ jobs:
           # loudly, which is the right failure.
           SCCACHE_BUCKET: ${{ vars.SCCACHE_BUCKET }}
           SCCACHE_REGION: ${{ vars.AWS_REGION }}
+          # The name or ARN of a Secrets Manager secret holding an
+          # access key that can reach only the sccache bucket. A name,
+          # not a credential: the key itself never leaves AWS. With it
+          # set, sccache gets a key with no expiry, which is what a
+          # compile longer than the role's one-hour credential needs;
+          # nightly.sh has the measurement. Unset, the role's own
+          # credentials are used and refreshed during the build.
+          SCCACHE_SECRET_ID: ${{ vars.SCCACHE_SECRET_ID }}
         # THE FLAG GOES ON THE TRUE BRANCH. `a && b || c` is not a
         # ternary: && and || return an operand, not a boolean, and the
         # empty string is falsy. So `inputs.push && '' || '--no-push'`
