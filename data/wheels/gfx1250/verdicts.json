@@ -1,6 +1,6 @@
 {
  "arch": "gfx1250",
- "build": "20261127",
+ "build": "20261127.2",
  "rocm": "10.2.0-full",
  "wheels": [
   {
@@ -86,7 +86,7 @@
    "newest_policy": "manylinux_2_41_x86_64",
    "project": "rocm-torch",
    "tag": "any",
-   "wheel": "rocm_torch-10.2.0.20261127+gfx1250.2e5f1e68-py3-none-any.whl"
+   "wheel": "rocm_torch-10.2.0.20261127.2+gfx1250.2e5f1e68-py3-none-any.whl"
   },
   {
    "best": true,
