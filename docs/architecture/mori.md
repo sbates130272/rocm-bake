@@ -160,19 +160,89 @@ like a configuration problem until the last one:
 | …with the IO engine set | `backend initialization failed: no active RDMA device on this host; set MORI_DISABLE_AUTO_XGMI=0 to enable XGMI-only fallback` |
 | …with `MORI_DISABLE_AUTO_XGMI=0` | the node **hangs**: still running, no socket, no further log line at all |
 
-So the master-backed path — the only one that gives more than one
-medium — needs an RDMA NIC or XGMI. snoc-thinkstation has a single
-consumer GPU and neither. **L2 on the spare NVMe is not reachable with
-MORI on this fleet**, and that is a hardware gap rather than a
-configuration mistake. It is the same hardware assumption upstream
-states for MORI generally: IBGDA-capable NICs.
+### Is A MORI Component Missing? No
 
-What does work here is the single DRAM node, and it works well — see
-the round trip above.
+The obvious suspicion is that the SSD tier was simply not compiled in.
+It was. `umbp_standalone_server` carries both SSD code paths, and the
+backends that matter need no extra component:
+
+| path | selected by | backends |
+| --- | --- | --- |
+| `SSDTier`, node-local disk | `UMBP_SSD_BACKEND` | `posix`, `io_uring`, `spdk` |
+| `PeerSsdManager`, *distributed SSD* | `UMBP_DISTRIBUTED_MEDIUM=SSD` | `file`, `spdk`, `spdk_proxy`, `dummy_storage` |
+
+**Distributed SSD is not a local disk tier.** It is a node whose
+contribution to the cluster pool is *storage* rather than DRAM — peers
+read and write it through mori.io, which is why it drags in the IO
+engine and then RDMA. The node-local `SSDTier`, with its plain POSIX
+backend, is the thing that looks like LMCache's L2, and nothing
+reachable here routes to it.
+
+The one component this repo does **not** build is SPDK: upstream has a
+separate `BUILD_UMBP_SPDK` flag that `docker/Dockerfile.mori` leaves
+off, and `UMBP_SPDK_PROXY_BIN` names a `umbp_spdk_proxy` binary that is
+absent from our wheel. That is deliberate and not the blocker — the
+SPDK backends bind the NVMe to `vfio-pci` for userspace access, which
+is not what a shared build host wants.
+
+### Why It Still Does Not Write
+
+Two things above the backend, both measured on 2026-11-26.
+
+**The client is always in Distributed mode.** A bare `UMBPConfig()`
+has `ssd.enabled=True`, `ssd_backend=file`,
+`storage_dir=/tmp/umbp_ssd` and `dram.capacity_bytes=4 GiB` — the SSD
+tier is on by default. But the resulting `UMBPClient` reports
+`UMBPDeploymentMode.Distributed` and `is_distributed()` True with
+nothing distributed configured, and `role` (`Standalone`,
+`SharedSSDLeader`, `SharedSSDFollower`) and `force_ssd_copy_on_write`
+do not change that. Driving `UMBPClient` directly, with the NVMe
+bind-mounted at `storage_dir` and 320 MiB put through a 64 MiB DRAM
+tier: 40/40 puts accepted, `flush()` true, **0 files on the NVMe**, and
+0 of the oldest 8 keys still present. DRAM evicts by dropping, not by
+demoting.
+
+That was then checked the hard way, because "no files in the directory
+I was watching" is weak evidence. With the NVMe mounted at `/mnt/l2`
+instead — nowhere near `/tmp` — and a scan of the *entire* container
+filesystem for anything over 1 MiB written during the run: nothing,
+anywhere. The data really is discarded rather than written somewhere
+else.
+
+!!! warning "`/tmp` is tmpfs on snoc-thinkstation"
+    UMBP's default `storage_dir` is `/tmp/umbp_ssd`, and `/tmp` on
+    that node is a 64 GB tmpfs. An "SSD tier" left at its default
+    there is **RAM**, and would report perfectly healthy while backed
+    by the thing it is supposed to be spilling out of. Always point
+    `storage_dir` at a real device, and check `mount` rather than the
+    path's name.
+
+**vLLM has no SSD surface anyway.** Its embedded runtime builds a
+fresh `UMBPConfig()`, calls only `_configure_dram`, never calls
+`UMBPConfig.from_environment`, and puts with
+`batch_put_ranges_from_ptr` — no depth argument, no tier hint. Its
+options are `capacity_bytes` and `dram_*` and nothing else. So even a
+working local SSD tier could not be configured through the connector
+as it stands in vLLM 0.34.0.
+
+So **L2 on the spare NVMe is not reachable with MORI on this fleet**,
+and it is not one gap but a stack of them: the only multi-medium path
+wants RDMA or XGMI that this hardware does not have, the client will
+not leave Distributed mode, and the vLLM connector exposes no SSD
+configuration. What does work is the single DRAM node, and it works
+well — see the round trip above.
 
 !!! warning "The pool pins engine VRAM and does not give it back"
     Workers register their GPU KV allocations with the server through
     HIP IPC. When the engine dies the server keeps holding them.
+
+    **This is not specific to MORI.** Measured 2026-11-26 across four
+    configurations, LMCache does the same and by a slightly larger
+    margin: 8.8-9.1 GiB of a 15.92 GiB card still held twenty seconds
+    after the engine container was removed, whichever backend was
+    running. An earlier version of this note presented it as a MORI
+    property, which was wrong.
+
     Measured on a 15.92 GiB card:
 
     | state | VRAM used |

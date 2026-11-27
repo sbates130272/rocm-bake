@@ -110,14 +110,41 @@ assumption that it is.
   `MORI_DISABLE_AUTO_XGMI=0` makes the node hang silently instead --
   running, no socket, no log. A single DRAM node is the whole of what
   this fleet supports. Do not spend an afternoon on the SSD tier.
-- **The UMBP pool pins an engine's VRAM and does not release it.**
-  Workers register GPU KV allocations with `umbp_standalone_server`
-  over HIP IPC, and killing the engine does not hand them back:
-  measured 4.88 GiB still held 60s after the vLLM container was
-  removed, on a 15.92 GiB card, freed only by restarting the pool.
-  A vLLM restart against a live pool then fails on
-  "Free memory on device cuda:0 ... is less than desired GPU memory
-  utilization". Leave headroom, or restart the pool in the loop.
+- **Nothing is missing from the MORI wheel.** Both SSD paths are
+  compiled in: node-local `SSDTier` (`UMBP_SSD_BACKEND` =
+  posix|io_uring|spdk) and `PeerSsdManager`, the *distributed* SSD
+  (`UMBP_DISTRIBUTED_MEDIUM=SSD`, backends file|spdk|spdk_proxy).
+  Distributed SSD is a node that serves storage to the pool, not a
+  local spill tier, which is why it needs mori.io and then RDMA. We
+  deliberately do not build `BUILD_UMBP_SPDK` -- those backends want
+  the NVMe on vfio-pci.
+- **A bare `UMBPConfig()` already has the SSD tier on, and it still
+  writes nothing.** `ssd.enabled=True`, backend `file`, dir
+  `/tmp/umbp_ssd`. But the client comes up in
+  `UMBPDeploymentMode.Distributed` whatever you set `role` or
+  `force_ssd_copy_on_write` to, and DRAM evicts by dropping: 320 MiB
+  through a 64 MiB tier gave 40/40 puts accepted, 0 files on disk, 0
+  of the oldest 8 keys surviving -- verified by scanning the whole
+  container filesystem, not just the directory, so it is dropped
+  rather than written elsewhere. vLLM cannot help -- its embedded
+  runtime configures only DRAM and never reads
+  `UMBPConfig.from_environment`.
+- **`/tmp` is tmpfs on snoc-thinkstation (64 GB).** UMBP's default
+  `storage_dir` is `/tmp/umbp_ssd`, so an SSD tier left at its default
+  on that node is RAM pretending to be disk. The same trap applies to
+  anything else here that defaults into `/tmp`: check `mount`, not the
+  path's name.
+- **A KV cache backend holds the dead engine's VRAM -- both of
+  them.** Killing the vLLM container does not hand its registered KV
+  allocations back: 8.8-9.1 GiB of a 15.92 GiB card still held 20s
+  later, measured for LMCache and MORI alike on 2026-11-26, freed
+  only by restarting the cache process. A restarted engine then fails
+  on "Free memory on device cuda:0 ... is less than desired GPU
+  memory utilization" unless it asks for well under half the card --
+  Qwen2.5-3B at 0.60 utilisation does not fit on a 16 GB card for
+  this reason. Leave headroom, or restart the cache in the loop. It
+  is not a reason to prefer either backend: the two measure the
+  same.
 - **`/reset_prefix_cache` is 404 on vLLM 0.34.0 even with
   `VLLM_DEV_MODE=1`.** So the LMCache-style "store then re-ask the
   same engine" cache test silently measures VRAM instead. Prove a
