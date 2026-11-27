@@ -199,8 +199,33 @@ ARG MEM_PER_JOB_GB=2
 # Memory the derivation does not hand out, and a hard ceiling on the
 # job count. Passed to docker/max-jobs.sh, whose header explains why
 # both exist and why neither is a measurement.
+#
+# THE CEILING HERE IS 32, NOT THE 8 THE OTHER DOCKERFILES CARRY. 8 was
+# chosen to get Triton green after it exhausted a runner at 45 jobs,
+# and was then applied to every compile. This is the one it cost most:
+#
+#   gfx950 on AWS, sccache cold both times
+#     2026-11-21   no ceiling, ~45 jobs    65 min for the whole build
+#     2026-11-26   ceiling 8              110 min, 87 of them here
+#
+# The runner sat at 22% CPU for most of that hour -- one compile at 8
+# jobs with every other target waiting on it -- and the extra time is
+# what carried this step past the role's one-hour credential, costing
+# 726 cache writes. On the fleet it pinned a 32-core node at a load of
+# about 8.
+#
+# Triton earned its ceiling: its largest translation units are several
+# GB each. This build has not: it ran with no ceiling for weeks,
+# including two cold builds on AWS, without exhausting anything. 32 is
+# below what those runs used, equal to the fleet's core count, and
+# under the 36 vCPU the AWS runner is sold as.
+#
+# It is still a bound and not a measurement. nightly.sh now samples
+# memory while the build runs (footprint: mem_anon_peak_bytes,
+# mem_available_min_bytes); the first cold run at 32 is the
+# measurement, and this number should move to whatever that supports.
 ARG MEM_RESERVE_GB=12
-ARG MAX_JOBS_CEILING=8
+ARG MAX_JOBS_CEILING=32
 # See Dockerfile.triton: raise to debug for one run to find out what
 # sccache's "Cache errors" counter is actually counting.
 ARG SCCACHE_LOG=warn

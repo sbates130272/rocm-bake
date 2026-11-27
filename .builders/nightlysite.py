@@ -415,10 +415,29 @@ def arch_section(arch, s):
                           f"{gb(fp['disk_used_bytes'], 2**30)} GiB",
                           "" if free is None
                           else f"{gb(free, 2**30)} GiB free"))
-    if fp.get("mem_anon_bytes") is not None:
+    # Two generations of memory figure. Runs that sampled memory while
+    # the build ran show the peak. Older runs only have one reading
+    # taken after the build from the driver's own cgroup, which does
+    # not cover the compilers; it is shown for what it is.
+    if fp.get("mem_anon_peak_bytes") is not None:
+        low, total = fp.get("mem_available_min_bytes"), fp.get("mem_total_bytes")
+        detail = f"sampled {fp.get('mem_samples', 0)} times during the build"
+        if low is not None:
+            detail = (f"lowest available {gb(low, 2**30)} GiB"
+                      + ("" if total is None else f" of {gb(total, 2**30)}"))
+        tiles.append(tile("peak memory in use",
+                          f"{gb(fp['mem_anon_peak_bytes'], 2**30)} GiB", detail))
+        if fp.get("cores"):
+            limit = fp.get("cgroup_memory_max")
+            limit = ("no memory limit" if limit in (None, "max")
+                     else f"limit {gb(int(limit), 2**30)} GiB"
+                     if str(limit).isdigit() else "")
+            tiles.append(tile("machine", f"{fp['cores']} cores",
+                              html.escape(limit)))
+    elif fp.get("mem_anon_bytes") is not None:
         tiles.append(tile(
-            "memory in use", f"{gb(fp['mem_anon_bytes'], 2**30)} GiB",
-            f"plus {gb(fp.get('mem_file_bytes'), 2**30)} GiB page cache"))
+            "memory after build", f"{gb(fp['mem_anon_bytes'], 2**30)} GiB",
+            "driver process only, not the compilers"))
     if tiles:
         out.append(f'<div class="tiles">{"".join(tiles)}</div>')
 
