@@ -434,6 +434,9 @@ PUB_LMCACHE = "${REGISTRY}/${REGISTRY_NAME}/lmcache-wheel:${LMCACHE_REF}-${ROCM_
 # the wheel has neither.
 PUB_LMCACHE_CPU = "${REGISTRY}/${REGISTRY_NAME}/lmcache-cpu-wheel:${LMCACHE_REF}-cpu"
 PUB_CUPY    = "${REGISTRY}/${REGISTRY_NAME}/cupy-wheel:${CUPY_REF}-${ROCM_VERSION}-${ARCH_TAG}"
+# The MORI client wheel, which Dockerfile.vllm installs. The pool
+# image itself is not an input to anything.
+PUB_MORI_WHEEL = "${REGISTRY}/${REGISTRY_NAME}/mori-wheel:${MORI_REF}-${ROCM_VERSION}-${ARCH_TAG}"
 PUB_TORCHVISION = "${REGISTRY}/${REGISTRY_NAME}/torchvision-wheel:${TORCHVISION_REF}-${ROCM_VERSION}-${ARCH_TAG}"
 PUB_ATOM    = "${REGISTRY}/${REGISTRY_NAME}/atom-wheel:${ATOM_REF}-${ROCM_VERSION}-${ARCH_TAG}"
 # The serving image as an input, for atom-vllm, which layers onto it the
@@ -835,8 +838,12 @@ group "wheels" {
 # hours on gfx1201). push-all was already that long.
 #
 # This group stays as a way to build the serving stack on its own.
+# mori-wheel is here because vllm installs the MORI client, so the
+# group cannot build without it. The `mori` image is NOT here: that
+# is the buffer pool, a service of its own that nothing in this
+# group builds FROM. See docs/architecture/mori.md.
 group "serving" {
-  targets = ["torchvision-wheel", "cupy-wheel", "nixl-wheel", "vllm", "vllm-wheel", "lmcache", "lmcache-wheel"]
+  targets = ["torchvision-wheel", "cupy-wheel", "nixl-wheel", "vllm", "vllm-wheel", "lmcache", "lmcache-wheel", "mori-wheel"]
 }
 
 # The arch-free emulator lane. See docker/Dockerfile.vllm-emu.
@@ -1771,6 +1778,7 @@ target "vllm" {
     nixl-wheels    = "target:nixl-wheel"
     lmcache-wheels = "target:lmcache-wheel"
     torchvision-wheels = "target:torchvision-wheel"
+    mori-wheels    = "target:mori-wheel"
   }
 
   args = {
@@ -1782,6 +1790,7 @@ target "vllm" {
     NIXL_WHEEL_IMAGE        = USE_PUB ? PUB_NIXL : "nixl-wheels"
     TORCHVISION_WHEEL_IMAGE = USE_PUB ? PUB_TORCHVISION : "torchvision-wheels"
     LMCACHE_WHEEL_IMAGE     = USE_PUB ? PUB_LMCACHE : "lmcache-wheels"
+    MORI_WHEEL_IMAGE        = USE_PUB ? PUB_MORI_WHEEL : "mori-wheels"
     # Dockerfile.vllm has always declared `ARG MAX_JOBS=`, but this
     # target never passed it, so the one knob that bounds the heaviest
     # compile in the graph could not be set — `MAX_JOBS=8 make

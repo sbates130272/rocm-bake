@@ -54,6 +54,18 @@ export UMBP_MASTER_BIN="${UMBP_MASTER_BIN:-${MASTER_BIN}}"
 # multi-node pool. 15558 is the port upstream's own UMBP_MASTER_ADDRESS
 # example uses; 0.0.0.0 rather than 127.0.0.1 because a container's
 # loopback is not reachable from anywhere a peer could be.
+#
+# THIS IS THIS IMAGE'S KNOB, NOT UMBP'S. umbp_master does not read the
+# environment for its listen address -- `strings` on the binary has no
+# UMBP_MASTER_LISTEN in it at all. It takes the address as argv[1],
+# which is why `umbp_master --help` does not print help: it tries to
+# bind "--help" and dies with "Name or service not known". Measured
+# 2026-11-26.
+#
+# The name is kept because it is upstream's, for the separate path
+# where the Python package auto-starts a master (UMBP_MASTER_AUTO_START
+# reads UMBP_MASTER_BIN and UMBP_MASTER_LISTEN). Here it is simply
+# turned into argv[1] below, so both paths are configured the same way.
 export UMBP_MASTER_LISTEN="${UMBP_MASTER_LISTEN:-0.0.0.0:15558}"
 
 # The standalone server's own defaults, restated so that `env` below
@@ -91,7 +103,16 @@ case "${role}" in
         ;;
     master)
         require_binaries
-        echo "mori-entrypoint: ${MASTER_BIN} (listen ${UMBP_MASTER_LISTEN})"
+        # The listen address is argv[1] to the binary. Supplied only
+        # when the caller gave no arguments of its own, so
+        # `docker run <img> master 10.0.0.1:9999` still means what it
+        # looks like. With neither, umbp_master binds whatever its
+        # own default is -- which on this image did not include 15558,
+        # and is how an apparently-healthy master serves nobody.
+        if [ "$#" -eq 0 ]; then
+            set -- "${UMBP_MASTER_LISTEN}"
+        fi
+        echo "mori-entrypoint: ${MASTER_BIN} $*"
         exec "${MASTER_BIN}" "$@"
         ;;
     check)
@@ -120,7 +141,7 @@ case "${role}" in
         require_binaries
         echo "package:                 ${MORI_DIR}"
         echo "UMBP_MASTER_BIN:         ${UMBP_MASTER_BIN}"
-        echo "UMBP_MASTER_LISTEN:      ${UMBP_MASTER_LISTEN}"
+        echo "UMBP_MASTER_LISTEN:      ${UMBP_MASTER_LISTEN}  (passed as argv[1] to umbp_master; the binary reads no env for this)"
         echo "UMBP_MASTER_ADDRESS:     ${UMBP_MASTER_ADDRESS:-<unset: embedded mode, no routing or registration>}"
         echo "UMBP_NODE_ADDRESS:       ${UMBP_NODE_ADDRESS:-<unset: synthesised>}"
         echo "UMBP_STANDALONE_ADDRESS: ${UMBP_STANDALONE_ADDRESS:-<unset: unix:///run/umbp/standalone/NODE.grpc.sock>}"

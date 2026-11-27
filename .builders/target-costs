@@ -180,24 +180,40 @@ cache torchvision-wheel 2595074525
 # run's zot.jsonl.
 cache atom-wheel         60000000
 
-# MEASURED 2026-11-26 on snoc-think (32 cores), ROCm 10.2.0, two runs:
+# MEASURED 2026-11-26 on snoc-think (32 cores), ROCm 10.2.0. Full
+# `mori` target, wall clock, with the layer-cache state that produced
+# it -- which is the thing that actually decides the number:
 #
-#   gfx950   20261126T174903Z  113.2s  5/32 cached  sccache 140 hits/0
-#   gfx1201  20261126T175415Z  150.0s  2/32 cached  sccache 6 hits/134
+#   gfx1201  150.0s   2/32 cached   sccache   6 hits/134  <- cold
+#   gfx1151  116.6s   2/32 cached   sccache 139 hits/1
+#   gfx1250  117.4s   2/32 cached   sccache 139 hits/1
+#   gfx950   113.2s   5/32 cached   sccache 140 hits/0
+#   gfx950    11.1s  19/32 cached
+#   gfx1201    5.6s  22/32 cached
 #
-# The gfx1201 run is the cold one and the one this row is sized on:
-# 134 of its 140 compile requests missed. 180 covers it with headroom
-# on a slower node.
+# 180 covers the cold case with headroom on a slower node.
 #
-# WHY THE SECOND ARCH WAS COLD despite C++ being nominally
-# architecture-independent: the compile line carries an arch-derived
-# define (-D__GFX9__=1 on gfx950), so every translation unit hashes
-# differently per architecture and no C++ object is shared between
-# them. Only 1-2 of the 140 requests are HIP; this is a C++ build,
-# nothing like aiter-wheel's kernel prebuild.
+# THE COMPILE IS NOT THE COST. Only gfx1201's first build actually
+# compiled (134 of 140 requests missed). gfx1151 and gfx1250 took
+# ~117s with 139 of 140 hits -- their time went to apt, the submodule
+# clone, pip, cmake configure, linking and the cache export, because
+# only 2 of 32 layers were cached. Where the layers are warm the same
+# target is 6-11s. So this row is dominated by layer-cache state, not
+# by arch.
+#
+# WHY A SECOND ARCH USUALLY HITS. An earlier version of this comment
+# said each architecture rehashes every translation unit, from the one
+# gfx950-then-gfx1201 pair observed at the time. That generalised too
+# far. The arch reaches the C++ compile line as a family define --
+# -D__GFX9__=1 on gfx950 -- so gfx950 does not share objects with the
+# gfx11/gfx12 cards, while gfx1201, gfx1151 and gfx1250 share with
+# each other. Two families, not four architectures. Only 1-2 of the
+# 140 requests are HIP; this is a C++ build, nothing like
+# aiter-wheel's kernel prebuild.
 #
 # mori-wheel exports the same builder stage and differs only in the
-# final stage it keeps, so its build row is the same work.
+# final stage it keeps. Measured at 11.8-12.2s on all four arches
+# immediately after the mori push, which is the warm case.
 build mori             180
 build mori-wheel       180
 

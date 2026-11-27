@@ -101,6 +101,28 @@ assumption that it is.
   stages; adding the whole directory is safe because 36 of its 37
   sonames carry a `librocm_sysdeps_` prefix and the odd one,
   `libiberty.so.0`, has no system counterpart here.
+- **UMBP is one medium per node, and tiering needs RDMA we do not
+  have.** It is not LMCache's L1/L2: a node serves DRAM *or* SSD, and
+  setting `UMBP_SSD_ENABLED` without `UMBP_DISTRIBUTED_MEDIUM` is
+  refused at startup. More than one medium means a master plus
+  per-medium nodes, and that path demands `UMBP_IO_ENGINE_HOST` and
+  then dies with "no active RDMA device on this host". Forcing
+  `MORI_DISABLE_AUTO_XGMI=0` makes the node hang silently instead --
+  running, no socket, no log. A single DRAM node is the whole of what
+  this fleet supports. Do not spend an afternoon on the SSD tier.
+- **The UMBP pool pins an engine's VRAM and does not release it.**
+  Workers register GPU KV allocations with `umbp_standalone_server`
+  over HIP IPC, and killing the engine does not hand them back:
+  measured 4.88 GiB still held 60s after the vLLM container was
+  removed, on a 15.92 GiB card, freed only by restarting the pool.
+  A vLLM restart against a live pool then fails on
+  "Free memory on device cuda:0 ... is less than desired GPU memory
+  utilization". Leave headroom, or restart the pool in the loop.
+- **`/reset_prefix_cache` is 404 on vLLM 0.34.0 even with
+  `VLLM_DEV_MODE=1`.** So the LMCache-style "store then re-ask the
+  same engine" cache test silently measures VRAM instead. Prove a
+  second tier by restarting the engine against a surviving pool and
+  reading the connector's `operation="load"` counters.
 - **A `manylinux` tag does not cover those libraries.**
   `auditwheel-rocm.sh` excludes every ROCm-only soname from the policy
   calculation as well as from vendoring, so a wheel can be

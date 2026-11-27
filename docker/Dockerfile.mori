@@ -493,10 +493,12 @@ RUN mkdir -p /run/umbp/standalone /tmp/umbp_ssd
 # No HSA_OVERRIDE_GFX_VERSION — see the note in Dockerfile.base.
 
 # 15558 is the port UMBP's own documentation uses in its
-# UMBP_MASTER_ADDRESS example, and what mori-entrypoint.sh defaults
-# UMBP_MASTER_LISTEN to. Documentation, not a binding: change it with
-# UMBP_MASTER_LISTEN and publish whatever you set.
-EXPOSE 15558
+# UMBP_MASTER_ADDRESS example, and what mori-entrypoint.sh passes to
+# umbp_master as argv[1]. 9091 is the second port the master was
+# observed listening on (measured 2026-11-26); it carries the
+# ReportMetrics RPC. Documentation, not a binding: change the first
+# with UMBP_MASTER_LISTEN and publish whatever you set.
+EXPOSE 15558 9091
 
 # The parent image sets no ENTRYPOINT, so this is the only one. The
 # role is the first argument:

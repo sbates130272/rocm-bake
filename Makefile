@@ -1641,6 +1641,42 @@ MORI_MODE ?= check
 mori-check: ## Report the UMBP binaries in the published mori image (MORI_MODE=check|env)
 	@docker run --rm $(REGISTRY)/$(REGISTRY_NAME)/mori:latest $(MORI_MODE)
 
+# Build mori straight into GPU_HOST's docker daemon, the way serve-load
+# does for vllm and lmcache and for the same reason: with a remote
+# builder the push credentials come from the *client*, so a node that
+# can read the registry perfectly well still cannot publish to it. This
+# is how the image gets onto the GPU host without a push.
+#
+# DOCKER_HOST goes through the macro's fourth argument, never before
+# `$(call bake,...)`. The bake recipe starts with `@echo ... ; \`, so a
+# variable written in front of the call attaches to that echo and never
+# reaches docker buildx bake — which once produced a --load that
+# exported to the local daemon while claiming a remote host, and exited
+# 0. See the note on the macro.
+mori-load: builder-ensure ## Build the mori image into GPU_HOST's docker daemon
+	$(require_gpu_host)
+	@echo "loading mori into $(GPU_HOST)'s daemon ($(PYTORCH_ROCM_ARCH))"
+	$(call bake,mori,--load,,DOCKER_HOST=ssh://$(GPU_HOST))
+	@echo "on $(GPU_HOST):"
+	@DOCKER_HOST=ssh://$(GPU_HOST) docker images \
+		--format '   {{.Repository}}:{{.Tag}}  {{.ID}}' \
+		| grep -E '/mori:' | grep -F '$(ROCM_VERSION)' | sort -u
+
+# Start a UMBP pool on the GPU host and prove it is actually serving,
+# not merely running. The distinction is the same one serve-test exists
+# for: a container that stays up has proved nothing.
+#
+# PULL_POLICY has no equivalent here because nothing pulls — mori-load
+# puts the image in the daemon and this runs that image by its local
+# tag. Run mori-load first, or this runs whatever is already there.
+MORI_RUN_FLAGS ?= --device=/dev/kfd --device=/dev/dri --group-add video \
+                  --security-opt seccomp=unconfined --ipc=host --shm-size=8g
+mori-serve-test: ## Start a UMBP pool on GPU_HOST and check it serves
+	$(require_gpu_host)
+	@.builders/mori-test.sh --host "$(GPU_HOST)" \
+		--image "$(REGISTRY)/$(REGISTRY_NAME)/mori:latest" \
+		--run-flags "$(MORI_RUN_FLAGS)"
+
 # The build-only counterparts exist for bench.sh, which dispatches
 # through `make build-<name>` and so could only measure a target that
 # had one. Four of the seven wheels did, so a cold run covered torch,

@@ -94,6 +94,114 @@ and sets only defaults that would otherwise be unset:
 nothing still starts. Sharing the pool between containers means
 bind-mounting a host directory over it.
 
+## vLLM Talks To This Pool, And It Works
+
+vLLM 0.34.0 ships a `UMBPStoreConnector` whose `standalone` runtime
+attaches to exactly the server this image runs, over the Unix socket.
+Its own docstring: *"The server owns one DRAM pool per host. Every
+engine, data-parallel rank, and worker on that host attaches to it
+over a Unix-domain socket, so KV stored by one engine is reusable by
+the others and survives engine restarts."*
+
+Measured end to end on snoc-thinkstation (gfx1201) on 2026-11-26, with
+the pool in this image's container and vLLM in another joined to its
+IPC namespace:
+
+```json
+{"kv_connector": "UMBPStoreConnector", "kv_role": "kv_both",
+ "kv_connector_extra_config": {
+   "mode": "standalone",
+   "endpoint": "/run/umbp/standalone/node0.grpc.sock"}}
+```
+
+| | engine A | engine B, a fresh process |
+| --- | --- | --- |
+| transfers | 80 stores | **80 loads** |
+| bytes | 62,914,560 | **62,914,560** |
+| failed | 0 | 0 |
+
+Engine A was removed and a new one started against the same pool. It
+loaded back byte-for-byte what A had stored, so KV genuinely survives
+an engine restart here. Note the test has to be shaped that way:
+`/reset_prefix_cache` is **404** on this build even with
+`VLLM_DEV_MODE=1`, so a repeat against the same engine is answered
+from VRAM and proves nothing — every counter stays `operation="store"`.
+That is the same "stored but served none" trap `make serve-test`
+exists for on the LMCache side.
+
+No speed-up was demonstrated. 1.14s against 1.22s on a 0.5B model is
+noise; this establishes the path is correct, not that it is worth
+having.
+
+### One Medium Per Node, And What That Costs Here
+
+UMBP is **not** LMCache's L1/L2. There is no DRAM tier with spill to
+disk inside one server — a node serves exactly one medium, and the
+server says so at startup if you try:
+
+```
+UMBP_SSD_ENABLED is set but no medium was selected. A node serves one
+medium: set UMBP_DISTRIBUTED_MEDIUM=SSD (with UMBP_SSD_DIR /
+UMBP_SSD_CAPACITY) to serve storage, or unset UMBP_SSD_ENABLED to
+serve DRAM.
+```
+
+Tiering is a *cluster* property: a master routes puts across nodes of
+different media (`UMBP_ROUTE_PUT_SELECT_ALGO`). Measured on
+snoc-thinkstation on 2026-11-26, that is out of reach on this fleet,
+and the walk to the wall is worth recording because each step looks
+like a configuration problem until the last one:
+
+| attempt | result |
+| --- | --- |
+| DRAM node, SSD disabled | **works** — 804 stores, 603.0 MiB, 0 failed, nothing on the NVMe |
+| pure-SSD node, vLLM attached to it | `MORI UMBP failed to register KV storage 0x…` in `register_kv_caches`, and the server logs nothing. Staging buffers (`UMBP_DISTRIBUTED_SSD_STAGING_*`) do not change it. The GPU-facing attach point wants DRAM |
+| master + DRAM node + SSD node | `master-backed standalone server requested but missing required env: UMBP_IO_ENGINE_HOST` |
+| …with the IO engine set | `backend initialization failed: no active RDMA device on this host; set MORI_DISABLE_AUTO_XGMI=0 to enable XGMI-only fallback` |
+| …with `MORI_DISABLE_AUTO_XGMI=0` | the node **hangs**: still running, no socket, no further log line at all |
+
+So the master-backed path — the only one that gives more than one
+medium — needs an RDMA NIC or XGMI. snoc-thinkstation has a single
+consumer GPU and neither. **L2 on the spare NVMe is not reachable with
+MORI on this fleet**, and that is a hardware gap rather than a
+configuration mistake. It is the same hardware assumption upstream
+states for MORI generally: IBGDA-capable NICs.
+
+What does work here is the single DRAM node, and it works well — see
+the round trip above.
+
+!!! warning "The pool pins engine VRAM and does not give it back"
+    Workers register their GPU KV allocations with the server through
+    HIP IPC. When the engine dies the server keeps holding them.
+    Measured on a 15.92 GiB card:
+
+    | state | VRAM used |
+    | --- | --- |
+    | pool alone | 0.07 GiB |
+    | engine serving | 15.23 GiB |
+    | engine removed, pool still up | **4.88 GiB, stable for 60s** |
+    | pool restarted | 0.06 GiB |
+
+    That residue is enough to stop the next engine starting: a restart
+    at `--gpu-memory-utilization 0.70` failed with *"Free memory on
+    device cuda:0 (7.17/15.92 GiB) on startup is less than desired GPU
+    memory utilization (0.7, 11.15 GiB)"*. Restarting the pool frees
+    it. Anything that cycles vLLM against a long-lived pool needs
+    either headroom or a pool restart in the loop.
+
+**What this does not include.** `mori` is not installed in
+`docker/Dockerfile.vllm`, so none of the above works with the
+published serving image as it stands — the measurement used a
+throwaway image with the mori wheel added. Installing the client there
+is a deliberate decision that has not been taken. It would be the
+*client* library only; the pool stays a separate container, which is
+the whole point of standalone mode.
+
+There is a second, unrelated MORI integration in vLLM: the `moriio`
+connector, which uses `mori.io` to move KV between prefill and decode
+instances. It is not this, it needs `msgpack` which the image does not
+have, and it has not been tried.
+
 ## Architecture Support Is An Open Question
 
 Upstream lists MI308X, MI300X, MI325X and MI355X as the supported
@@ -112,12 +220,20 @@ be unable to take level 2 — by building them.
 
 | Architecture | Status |
 | --- | --- |
-| `gfx950` | **Builds.** 113s for the full `mori` target, 13 extensions, one offload bundle and it is `gfx950` |
-| `gfx1201` | **Builds**, despite not being claimed upstream. Same 13 extensions, one offload bundle and it is `gfx1201`; the UMBP binaries are present and resolve |
-| `gfx1250` | Untried. In upstream's own fallback list, so expected to work |
-| `gfx1151` | Untried |
+| `gfx950` | **Builds.** In upstream's fallback list |
+| `gfx1250` | **Builds.** In upstream's fallback list |
+| `gfx1201` | **Builds**, despite not being claimed upstream (RDNA4) |
+| `gfx1151` | **Builds**, despite not being claimed upstream (RDNA3.5) |
 
-Both measured 2026-11-26 on snoc-think against ROCm 10.2.0.
+All four measured 2026-11-26 on snoc-think against ROCm 10.2.0, and
+all four are identical where it counts: 13 extensions in the wheel,
+exactly one offload bundle and it is the architecture asked for, both
+UMBP binaries present and resolving, and an auditwheel repair to
+`manylinux_2_39`. All four are published to Zot.
+
+The two architectures upstream does not claim behave no differently
+from the two it does. See the note below on why there is so little
+arch-specific code for them to differ in.
 
 !!! warning "Compiling for RDNA is not the same as working on RDNA"
     The gfx1201 result says the source compiles and the wheel carries
@@ -128,9 +244,17 @@ Both measured 2026-11-26 on snoc-think against ROCm 10.2.0.
     and its RDMA paths additionally want an IBGDA-capable NIC that this
     fleet does not have.
 
-    So the honest state is: the build gate is not needed, and the
-    runtime question is open. Treat a gfx1201 or gfx1151 image as
-    unproven until something runs on one.
+    What *has* been run on RDNA4 (gfx1201): `make mori-serve-test`,
+    and the full vLLM round trip above — a real engine registered its
+    KV allocations with the pool, stored 80 blocks, and a second
+    engine loaded them back byte-for-byte. So the data path works on
+    an architecture upstream does not claim.
+
+    So the honest state is: the build gate is not needed, the service
+    and its KV round trip work on RDNA4, and what remains open is
+    MORI's EP/RDMA kernels, which this fleet cannot exercise — it has
+    no IBGDA-capable NIC and nothing here has run a MoE
+    dispatch/combine.
 
 Only one or two of the 140 compile requests are HIP; the rest are C++,
 which is why a cold build is minutes rather than the hours AITER
