@@ -814,12 +814,44 @@ def collect(defaults, registry, namespace, use_zot):
 
 # ─── report ───────────────────────────────────────────────────────
 
-def fmt_published(versions, limit=3):
+# Column widths for the terminal report. The header and the rows read
+# the same constants so they cannot drift apart, and every cell is
+# clamped to its width -- one over-long cell shifts every column after
+# it and the table stops being readable. LMCACHE_REF did exactly that:
+# five published tags rendered "v0.5.8rc1, v0.5.8, v0.5.7.post1 +2
+# more", 39 characters in a 26-character column, and pushed `pinned`
+# and `status` out of line for that row alone.
+COL_VAR, COL_UPSTREAM, COL_PUBLISHED, COL_PINNED = 18, 16, 26, 16
+
+
+def fmt_published(versions, limit=3, width=None):
+    """The published versions, never wider than the column.
+
+    Drops entries until the result fits rather than truncating the
+    whole string, so what is shown stays a complete version and the
+    "+N more" count stays honest about everything omitted. Only if a
+    single version cannot fit is it cut, which no real tag here is
+    close to.
+    """
     if not versions:
         return "-"
-    shown = ", ".join(versions[:limit])
-    extra = len(versions) - limit
-    return "%s +%d more" % (shown, extra) if extra > 0 else shown
+    total = len(versions)
+    for n in range(min(limit, total), 0, -1):
+        extra = total - n
+        shown = ", ".join(versions[:n])
+        if extra:
+            shown = "%s +%d more" % (shown, extra)
+        if width is None or len(shown) <= width:
+            return shown
+    tail = " +%d more" % (total - 1) if total > 1 else ""
+    room = max(1, width - len(tail) - 1)
+    return versions[0][:room] + "\u2026" + tail
+
+
+def clamp(value, width):
+    """No cell may exceed its column, whatever it is."""
+    value = value or "-"
+    return value if len(value) <= width else value[:width - 1] + "\u2026"
 
 
 SHA_RE = re.compile(r"^[0-9a-f]{20,}$")
@@ -840,17 +872,23 @@ def short(value):
 def print_report(rows, zot_error, use_zot):
     print("\n\033[1mVersions\033[0m  upstream latest, "
           "published wheels, our pins\n")
-    print("  \033[2m%-18s %-16s %-26s %-16s %s\033[0m"
-          % ("variable", "upstream", "published", "pinned", "status"))
+    header = "  \033[2m%-*s %-*s %-*s %-*s %s\033[0m"
+    row = "  \033[36m%-*s\033[0m %-*s %-*s %-*s %s"
+    print(header % (COL_VAR, "variable", COL_UPSTREAM, "upstream",
+                    COL_PUBLISHED, "published", COL_PINNED, "pinned",
+                    "status"))
     for r in rows:
-        pub = "n/a" if (use_zot and zot_error) else fmt_published(
-            r["published"])
+        pub = ("n/a" if (use_zot and zot_error)
+               else fmt_published(r["published"], width=COL_PUBLISHED))
         if not use_zot:
             pub = "-"
-        print("  \033[36m%-18s\033[0m %-16s %-26s %-16s %s"
-              % (r["comp"]["var"], short(r["upstream"]), pub,
-                 short(r["default"]),
-                 status_label(r["comp"]["var"], r["status"])))
+        # status is last, so it is the one cell that cannot push
+        # anything out of line and is left whole.
+        print(row % (COL_VAR, clamp(r["comp"]["var"], COL_VAR),
+                     COL_UPSTREAM, clamp(short(r["upstream"]), COL_UPSTREAM),
+                     COL_PUBLISHED, clamp(pub, COL_PUBLISHED),
+                     COL_PINNED, clamp(short(r["default"]), COL_PINNED),
+                     status_label(r["comp"]["var"], r["status"])))
 
     print("\n  \033[2mupstream for TRITON_* is what pytorch/pytorch pins "
           "at its release tag;\n  for RUST_VERSION, what vllm-project/vllm "
