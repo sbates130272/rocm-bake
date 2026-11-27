@@ -37,6 +37,12 @@ ARG TORCHVISION_WHEEL_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/to
 # it. The cache engine still runs in its own container; only the client
 # lives here, without LMCache's requirements — see "LMCache client".
 ARG LMCACHE_WHEEL_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/lmcache-wheel:latest
+# MORI, for the same reason and in the same shape as LMCache above: the
+# UMBP buffer pool runs in its own container (target `mori`), and only
+# the client library belongs here. vLLM's UMBPStoreConnector, in
+# standalone mode, attaches to that pool over a Unix socket and needs
+# mori.cpp in *this* process to do it. See docs/architecture/mori.md.
+ARG MORI_WHEEL_IMAGE=snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/mori-wheel:latest
 # No default: rocm-bake.hcl is the only source. The second ARG fails a
 # build that was not passed one at parse time, instead of going empty.
 ARG ROCM_VERSION
@@ -47,6 +53,7 @@ FROM ${AITER_WHEEL_IMAGE} AS aiterwheels
 FROM ${NIXL_WHEEL_IMAGE} AS nixlwheels
 FROM ${TORCHVISION_WHEEL_IMAGE} AS torchvisionwheels
 FROM ${LMCACHE_WHEEL_IMAGE} AS lmcachewheels
+FROM ${MORI_WHEEL_IMAGE} AS moriwheels
 
 # ─── Build environment: torch + the accelerator wheels ───────────
 # Shared by the compile and by the final image, so both resolve the same
@@ -618,6 +625,53 @@ assert otel, 'vllm declares no opentelemetry requirement to check against';\
 bad = [f'{r} but {version(r.name)} is installed' for r in otel if not r.specifier.contains(version(r.name), prereleases=True)];\
 assert not bad, f'opentelemetry no longer satisfies vLLM: {bad}';\
 print('opentelemetry still satisfies vLLM:', ', '.join(f'{r.name} {version(r.name)}' for r in otel))" && \
+    python -c "import torch; assert torch.version.hip, 'torch lost its HIP build'"
+
+# ─── MORI client ─────────────────────────────────────────────────
+# vLLM ships a UMBPStoreConnector whose `standalone` runtime attaches
+# to a umbp_standalone_server over a Unix socket. The connector module
+# itself imports without mori -- it is the runtime that does
+# `from mori.cpp import ...`, lazily -- so without this the image looks
+# healthy and dies when a request first reaches the pool.
+#
+# The pool stays in its own container. This is the client half only,
+# exactly as the LMCache section above installs LMCache's client while
+# the cache engine runs elsewhere.
+#
+# The ld.so.conf entry is the one Dockerfile.mori explains at length:
+# mori's extensions link ROCm's renamed zlib and libnuma, which live in
+# a directory on no loader path in this base. Without it `import mori`
+# fails here even though the wheel is installed and intact.
+RUN printf '%s\n' /opt/rocm/lib/rocm_sysdeps/lib \
+        > /etc/ld.so.conf.d/rocm-sysdeps.conf && \
+    ldconfig && \
+    ldconfig -p | grep -q librocm_sysdeps_z || \
+        { echo "rocm_sysdeps did not reach the loader path" >&2; exit 1; }
+
+# --no-deps: amd_mori declares no runtime dependencies, and this keeps
+# an upstream that adds one from pulling a CUDA package in behind it.
+RUN --mount=type=bind,from=moriwheels,source=/wheels,target=/w/mori \
+    pip install --no-cache-dir --no-deps /w/mori/*.whl && \
+    python -c "import mori; print('MORI', mori.__version__)"
+
+# The three things that have to hold for `--kv-transfer-config
+# '{"kv_connector":"UMBPStoreConnector", ...}'` to serve, asserted here
+# rather than left to the first request:
+#
+#   1. mori.cpp carries the client the standalone runtime imports. This
+#      is the one that fails when the ld.so.conf entry above is missing.
+#   2. vLLM resolves the connector name to its own class.
+#   3. The standalone runtime module imports, since it is what holds
+#      the `from mori.cpp import ...` the connector defers.
+RUN python -c "\
+from mori.cpp import UMBPClient, UMBPConfig;\
+print('mori.cpp UMBP client OK')" && \
+    python -c "\
+from vllm.distributed.kv_transfer.kv_connector.v1.umbp import UMBPStoreConnector;\
+print('vllm UMBPStoreConnector ->', UMBPStoreConnector.__module__)" && \
+    python -c "\
+from vllm.distributed.kv_transfer.kv_connector.v1.umbp.runtime import standalone;\
+print('UMBP standalone runtime imports OK')" && \
     python -c "import torch; assert torch.version.hip, 'torch lost its HIP build'"
 
 # ─── Wheel-only image ────────────────────────────────────────────

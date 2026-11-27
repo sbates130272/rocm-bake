@@ -282,6 +282,8 @@ BAKE_PRINT = docker buildx bake -f rocm-bake.hcl
         push-triton-wheel fetch-triton-wheel \
         push-nixl-wheel build-nixl-wheel fetch-nixl-wheel \
         push-cupy-wheel build-cupy-wheel fetch-cupy-wheel \
+        push-mori build-mori push-mori-wheel build-mori-wheel \
+        fetch-mori-wheel mori-check \
         push-torchvision-wheel build-torchvision-wheel fetch-torchvision-wheel \
         push-atom-wheel build-atom-wheel fetch-atom-wheel \
         build-atom-vllm push-atom-vllm atom-vllm-doctor atom-vllm-check \
@@ -350,7 +352,7 @@ zot-tags: ## List tags for a repo (REPO=rocm-pytorch/base)
 # panel. Keep in step with the `wheels` group in rocm-bake.hcl.
 WHEEL_REPOS ?= pytorch-wheel triton-wheel aiter-wheel \
                nixl-wheel torchvision-wheel atom-wheel cupy-wheel \
-               vllm-wheel lmcache-wheel
+               vllm-wheel lmcache-wheel mori-wheel
 
 # How many tags zot-wheels shows per repo, newest first. Every build
 # adds a tag and nothing removes them, so the full list is mostly
@@ -381,7 +383,7 @@ zot-logs: ## Follow Zot registry logs
 # own contribution is a fraction of its total has a base-image problem
 # rather than a problem of its own. That is how one 8.67 GB ROCm SDK
 # layer came to be 71-95% of every published image here.
-IMAGE_REPOS ?= rocm-runtime base pytorch runtime vllm lmcache
+IMAGE_REPOS ?= rocm-runtime base pytorch runtime vllm lmcache mori
 
 # Every repo buildkit exports a layer cache to. Keep in step with the
 # cache-to refs in rocm-bake.hcl: pytorch-wheel and lmcache-wheel share
@@ -391,6 +393,7 @@ CACHE_REPOS ?= rocm-runtime-cache base-cache pytorch-cache \
                vllm-cache lmcache-cache triton-wheel-cache \
                aiter-wheel-cache cupy-wheel-cache nixl-wheel-cache \
                torchvision-wheel-cache atom-wheel-cache atom-vllm-cache \
+               mori-cache \
                vllm-emu-cache vllm-emu-capture-cache \
                vllm-cpu-cache lmcache-cpu-cache
 
@@ -1597,6 +1600,83 @@ fetch-cupy-wheel: ## Fetch the CuPy wheel from Zot into ./dist
 			--output type=local,dest=dist -
 	@ls -la dist/wheels/
 
+# MORI. Two artifacts from one Dockerfile: `mori` is the runnable UMBP
+# image — umbp_master or umbp_standalone_server behind one entrypoint —
+# and `mori-wheel` is the scratch image carrying amd_mori for the pip
+# index. Nothing else in this repo depends on either; MORI is a
+# multi-process service that sits beside the serving stack rather than
+# inside it. See docker/Dockerfile.mori.
+#
+# Upstream supports MI300-class hardware, so the gfx1201 and gfx1151
+# builds are an open question rather than an expectation. They are in
+# ARCHES anyway, to find out.
+push-mori: builder-ensure ## * Build and push the MORI UMBP runtime image
+	$(call bake,mori,--push,pub)
+
+build-mori: builder-ensure ## Build the MORI UMBP runtime image (no push)
+	$(call bake,mori)
+
+push-mori-wheel: builder-ensure ## * Build and push the MORI wheel image
+	$(call bake,mori-wheel,--push,pub)
+
+build-mori-wheel: builder-ensure ## Build the MORI wheel image (no push)
+	$(call bake,mori-wheel)
+
+fetch-mori-wheel: ## Fetch the MORI wheel from Zot into ./dist
+	@mkdir -p dist
+	@printf 'FROM %s/%s/mori-wheel:latest\n' "$(REGISTRY)" "$(REGISTRY_NAME)" \
+		| docker buildx build --builder $(BUILDER) \
+			--output type=local,dest=dist -
+	@ls -la dist/wheels/
+
+# What the entrypoint resolved, from the published image. No GPU and no
+# device nodes: `check` only asks the installed package where its two
+# binaries are, which is the question that distinguishes a wheel built
+# with BUILD_UMBP from one built without it. `env` prints the settings
+# a container would start with.
+#
+# MORI_MODE picks between them so this is one rule rather than two
+# that differ by a word.
+MORI_MODE ?= check
+mori-check: ## Report the UMBP binaries in the published mori image (MORI_MODE=check|env)
+	@docker run --rm $(REGISTRY)/$(REGISTRY_NAME)/mori:latest $(MORI_MODE)
+
+# Build mori straight into GPU_HOST's docker daemon, the way serve-load
+# does for vllm and lmcache and for the same reason: with a remote
+# builder the push credentials come from the *client*, so a node that
+# can read the registry perfectly well still cannot publish to it. This
+# is how the image gets onto the GPU host without a push.
+#
+# DOCKER_HOST goes through the macro's fourth argument, never before
+# `$(call bake,...)`. The bake recipe starts with `@echo ... ; \`, so a
+# variable written in front of the call attaches to that echo and never
+# reaches docker buildx bake — which once produced a --load that
+# exported to the local daemon while claiming a remote host, and exited
+# 0. See the note on the macro.
+mori-load: builder-ensure ## Build the mori image into GPU_HOST's docker daemon
+	$(require_gpu_host)
+	@echo "loading mori into $(GPU_HOST)'s daemon ($(PYTORCH_ROCM_ARCH))"
+	$(call bake,mori,--load,,DOCKER_HOST=ssh://$(GPU_HOST))
+	@echo "on $(GPU_HOST):"
+	@DOCKER_HOST=ssh://$(GPU_HOST) docker images \
+		--format '   {{.Repository}}:{{.Tag}}  {{.ID}}' \
+		| grep -E '/mori:' | grep -F '$(ROCM_VERSION)' | sort -u
+
+# Start a UMBP pool on the GPU host and prove it is actually serving,
+# not merely running. The distinction is the same one serve-test exists
+# for: a container that stays up has proved nothing.
+#
+# PULL_POLICY has no equivalent here because nothing pulls — mori-load
+# puts the image in the daemon and this runs that image by its local
+# tag. Run mori-load first, or this runs whatever is already there.
+MORI_RUN_FLAGS ?= --device=/dev/kfd --device=/dev/dri --group-add video \
+                  --security-opt seccomp=unconfined --ipc=host --shm-size=8g
+mori-serve-test: ## Start a UMBP pool on GPU_HOST and check it serves
+	$(require_gpu_host)
+	@.builders/mori-test.sh --host "$(GPU_HOST)" \
+		--image "$(REGISTRY)/$(REGISTRY_NAME)/mori:latest" \
+		--run-flags "$(MORI_RUN_FLAGS)"
+
 # The build-only counterparts exist for bench.sh, which dispatches
 # through `make build-<name>` and so could only measure a target that
 # had one. Four of the seven wheels did, so a cold run covered torch,
@@ -2725,6 +2805,7 @@ list-vars: ## Show the variables these targets read, and their values
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' VLLM_REF "$(VLLM_REF)"
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' LMCACHE_REF "$(LMCACHE_REF)"
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' CUPY_REF "$(call bake_default,CUPY_REF)  (bake)"
+	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' MORI_REF "$(call bake_default,MORI_REF)  (bake)"
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' PYTORCH_ROCM_ARCH "$(PYTORCH_ROCM_ARCH)"
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' ARCHES "$(ARCHES)  (what arches-* fans out over)"
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' MAX_JOBS "$(if $(MAX_JOBS),$(MAX_JOBS),(derived per node from free memory))"
@@ -2745,7 +2826,7 @@ list-vars: ## Show the variables these targets read, and their values
 	@printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' SDE_EPOCH \
 		"$(call bake_default,SDE_EPOCH)  ($(shell date -u -d @$(call bake_default,SDE_EPOCH) '+%Y-%m-%d %H:%M' 2>/dev/null))  (bake)"
 	@printf '  %s\n' 'pinned into every image config; SDE_<IMAGE> overrides one'
-	@for v in $(foreach i,ROCM BASE PYTORCH TRITON AITER RUNTIME NIXL VLLM LMCACHE CUPY TORCHVISION VLLM_CPU LMCACHE_CPU,$(if $(SDE_$(i)),SDE_$(i)=$(SDE_$(i)))); do \
+	@for v in $(foreach i,ROCM BASE PYTORCH TRITON AITER RUNTIME NIXL VLLM LMCACHE CUPY MORI TORCHVISION VLLM_CPU LMCACHE_CPU,$(if $(SDE_$(i)),SDE_$(i)=$(SDE_$(i)))); do \
 		printf '  $(C_CYAN)%-24s$(C_OFF) %s\n' "$${v%%=*}" "$${v#*=}  (overridden)"; \
 	done
 	@printf '\n$(C_BOLD)Serving$(C_OFF)  (make serve-vllm / serve-stack / serve-test)\n'

@@ -48,6 +48,26 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+# A missing auditwheel is a build bug, not a verdict. Without this,
+# --allow-unrepaired turns "the tool is not installed in this stage"
+# into "repair failed, keeping the unrepaired wheel" and the build
+# goes green having measured nothing -- which is precisely the shape
+# of mistake docker/wheel-verdict.py exists to prevent. Found on
+# 2026-11-26, when Dockerfile.mori called this without installing
+# auditwheel and the log read:
+#
+#   /usr/local/bin/auditwheel-rocm: line 184: auditwheel: command not found
+#   auditwheel-rocm: repair FAILED; keeping the unrepaired wheel
+#
+# Every other caller already pip-installs auditwheel and patchelf, so
+# this is a no-op for them.
+command -v auditwheel >/dev/null 2>&1 || {
+    echo "auditwheel-rocm: auditwheel is not installed in this stage." >&2
+    echo "  This is a build bug, not a manylinux verdict. Add" >&2
+    echo "  'auditwheel patchelf' to this Dockerfile's pip install." >&2
+    exit 1
+}
+
 ROCM="${ROCM_PATH:-/opt/rocm}"
 LOG=/wheels-auditwheel.txt
 

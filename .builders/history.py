@@ -171,6 +171,9 @@ OUR_IMAGES = {
     # cupy-wheel was missing here too, so its builds were filtered out
     # of the layer-reuse panel the same way the serving stack once was.
     "torchvision-wheel", "cupy-wheel", "atom-wheel",
+    # MORI: the UMBP runtime image and its wheel, which share a builder
+    # stage and so should be read together when the panel shows reuse.
+    "mori", "mori-wheel",
     # The arch-free emulator lane. Its records stamp "noarch" where the
     # others stamp a gfx name — the same thing triton-wheel does, and
     # arch_of() already handles it.

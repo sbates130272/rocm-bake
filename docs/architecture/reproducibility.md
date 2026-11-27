@@ -95,7 +95,7 @@ NO_PROVENANCE = ["type=provenance,disabled=true"]
 ```
 
 `pytorch-run`, `aiter-wheel`, `torchvision-wheel`, `cupy-wheel`,
-`nixl-wheel`, `vllm` and `lmcache` keep theirs — nothing inherits a
+`nixl-wheel`, `vllm`, `lmcache` and `mori` keep theirs — nothing inherits a
 layer stack from them, so their digests may churn freely.
 
 That is a weaker claim than "nothing builds `FROM` them", and the

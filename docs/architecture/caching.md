@@ -47,6 +47,7 @@ them.
 | `nixl-wheel` | `nixl-wheel-cache` |
 | `vllm`, `vllm-wheel` | `vllm-cache` |
 | `lmcache`, `lmcache-wheel` | `lmcache-cache` |
+| `mori`, `mori-wheel` | `mori-cache` |
 
 ### Two Tiers
 

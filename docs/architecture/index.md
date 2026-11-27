@@ -102,6 +102,8 @@ to `serving/docker-compose.yml`, which owns the runtime defaults.
 - [Multiple GFX targets](multi-arch.md) — `ARCHES` vs
   `PYTORCH_ROCM_ARCH`, and the per-arch pip index
 - [Serving stack](serving.md) — vLLM, LMCache and NIXL
+- [MORI and UMBP](mori.md) — the buffer-pool service built beside the
+  serving stack rather than inside it
 - [Emulated serving](emulation.md) — one vLLM wheel for every card,
   serving without a GPU
 - [CPU serving](cpu.md) — vLLM and LMCache on CPU: real tokens, no

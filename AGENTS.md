@@ -79,6 +79,90 @@ assumption that it is.
 - **Wheel images are `FROM scratch`.** They carry `/wheels` and, for
   `nixl-wheel`, `/nixl-dev`. They have no shell: inspect them by
   `COPY --from=` or by bind-mounting into another stage.
+- **MORI without `BUILD_UMBP=ON` builds, imports, and is useless.**
+  Upstream defaults it off, and with it off the wheel simply has no
+  `mori/umbp_master` and no `mori/umbp_standalone_server` — the two
+  processes the `mori` image exists to run. Nothing else notices.
+  `Dockerfile.mori` unpacks the wheel and asserts both are there.
+- **MORI's job count is `PYTHON_CPU_COUNT`, not `MAX_JOBS`.** Its
+  `setup.py` runs `cmake --build . -j {os.cpu_count()}`, so the count
+  is baked into the argument before `MAX_JOBS` or
+  `CMAKE_BUILD_PARALLEL_LEVEL` could be read. Python 3.13's
+  `PYTHON_CPU_COUNT` changes what `os.cpu_count()` returns and is the
+  only lever that reaches it.
+- **A binary that links ROCm's `rocm_sysdeps` libraries will not
+  load.** `/opt/rocm/lib/rocm_sysdeps/lib` is on no loader path in our
+  base — no `ld.so.conf.d` entry, not in `LD_LIBRARY_PATH`, invisible
+  to `ldconfig`. ROCm's own libraries reach it through `$ORIGIN`
+  RPATHs; anything built outside the ROCm tree does not. Naming
+  `rocm_sysdeps` in `CMAKE_PREFIX_PATH` is what causes it, because
+  `find_package` then resolves zlib and libnuma to ROCm's renamed
+  copies. `Dockerfile.mori` adds the `ld.so.conf.d` entry in both its
+  stages; adding the whole directory is safe because 36 of its 37
+  sonames carry a `librocm_sysdeps_` prefix and the odd one,
+  `libiberty.so.0`, has no system counterpart here.
+- **UMBP is one medium per node, and tiering needs RDMA we do not
+  have.** It is not LMCache's L1/L2: a node serves DRAM *or* SSD, and
+  setting `UMBP_SSD_ENABLED` without `UMBP_DISTRIBUTED_MEDIUM` is
+  refused at startup. More than one medium means a master plus
+  per-medium nodes, and that path demands `UMBP_IO_ENGINE_HOST` and
+  then dies with "no active RDMA device on this host". Forcing
+  `MORI_DISABLE_AUTO_XGMI=0` makes the node hang silently instead --
+  running, no socket, no log. A single DRAM node is the whole of what
+  this fleet supports. Do not spend an afternoon on the SSD tier.
+- **Nothing is missing from the MORI wheel.** Both SSD paths are
+  compiled in: node-local `SSDTier` (`UMBP_SSD_BACKEND` =
+  posix|io_uring|spdk) and `PeerSsdManager`, the *distributed* SSD
+  (`UMBP_DISTRIBUTED_MEDIUM=SSD`, backends file|spdk|spdk_proxy).
+  Distributed SSD is a node that serves storage to the pool, not a
+  local spill tier, which is why it needs mori.io and then RDMA. We
+  deliberately do not build `BUILD_UMBP_SPDK` -- those backends want
+  the NVMe on vfio-pci.
+- **A bare `UMBPConfig()` already has the SSD tier on, and it still
+  writes nothing.** `ssd.enabled=True`, backend `file`, dir
+  `/tmp/umbp_ssd`. But the client comes up in
+  `UMBPDeploymentMode.Distributed` whatever you set `role` or
+  `force_ssd_copy_on_write` to, and DRAM evicts by dropping: 320 MiB
+  through a 64 MiB tier gave 40/40 puts accepted, 0 files on disk, 0
+  of the oldest 8 keys surviving -- verified by scanning the whole
+  container filesystem, not just the directory, so it is dropped
+  rather than written elsewhere. vLLM cannot help -- its embedded
+  runtime configures only DRAM and never reads
+  `UMBPConfig.from_environment`.
+- **`/tmp` is tmpfs on snoc-thinkstation (64 GB).** UMBP's default
+  `storage_dir` is `/tmp/umbp_ssd`, so an SSD tier left at its default
+  on that node is RAM pretending to be disk. The same trap applies to
+  anything else here that defaults into `/tmp`: check `mount`, not the
+  path's name.
+- **A KV cache backend holds the dead engine's VRAM -- both of
+  them.** Killing the vLLM container does not hand its registered KV
+  allocations back: 8.8-9.1 GiB of a 15.92 GiB card still held 20s
+  later, measured for LMCache and MORI alike on 2026-11-26, freed
+  only by restarting the cache process. A restarted engine then fails
+  on "Free memory on device cuda:0 ... is less than desired GPU
+  memory utilization" unless it asks for well under half the card --
+  Qwen2.5-3B at 0.60 utilisation does not fit on a 16 GB card for
+  this reason. Leave headroom, or restart the cache in the loop. It
+  is not a reason to prefer either backend: the two measure the
+  same.
+- **`/reset_prefix_cache` is 404 on vLLM 0.34.0 even with
+  `VLLM_DEV_MODE=1`.** So the LMCache-style "store then re-ask the
+  same engine" cache test silently measures VRAM instead. Prove a
+  second tier by restarting the engine against a surviving pool and
+  reading the connector's `operation="load"` counters.
+- **A `manylinux` tag does not cover those libraries.**
+  `auditwheel-rocm.sh` excludes every ROCm-only soname from the policy
+  calculation as well as from vendoring, so a wheel can be
+  `manylinux_2_39` and still need `librocm_sysdeps_z.so.1`.
+- **MORI builds on RDNA even though upstream does not claim it.**
+  Measured 2026-11-26 on snoc-think: gfx950 and gfx1201 both produce a
+  wheel with 13 extensions, one offload bundle for the arch asked for,
+  and both UMBP binaries resolving. Only one or two of the 140 compile
+  requests are HIP, so there is very little arch-specific code to go
+  wrong. **This is a build result, not a runtime one** — nothing here
+  has executed MORI on a GPU, upstream still lists only MI300-class
+  hardware, and its RDMA paths want an IBGDA NIC this fleet lacks. No
+  build gate is needed; do not read that as support.
 
 ## The registry (Zot, on snoc-strix)
 

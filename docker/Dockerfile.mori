@@ -1,0 +1,529 @@
+# syntax=docker/dockerfile:1
+# MORI (github.com/ROCm/mori) built as a wheel, and as a runnable image.
+#
+# MORI is AMD's GPU communication library — P2P, RDMA/IBGDA, SDMA, and
+# the MoE dispatch/combine kernels. What this repo wants from it is
+# UMBP, its unified memory buffer pool: two long-lived processes that
+# serve memory to workers over gRPC on a unix socket, which is why the
+# image here exists at all rather than only a wheel.
+#
+# WHY BUILD IT. PyPI ships amd_mori for cp310 and cp312 only. This
+# stack is cp314 (see PYTHON_VERSION in rocm-bake.hcl), so there is no
+# wheel to install and the sdist would have to compile anyway.
+#
+# WHY `FROM` THE BASE IMAGE AND NOT PYTORCH. MORI's torch integration
+# is its SymmetricMemory backend, and BUILD_TORCH_SYMM=OFF below turns
+# it off. Nothing else in the build imports torch, so this hangs off
+# pytorch-base alongside cupy-wheel rather than queueing behind the
+# PyTorch compile. Same reasoning as Dockerfile.cupy.
+#
+# WHAT WE DO NOT KNOW YET. Upstream lists MI308X/MI300X/MI325X/MI355X
+# as the supported hardware and its own fallback target list is
+# gfx942;gfx950;gfx1250 — all CDNA or CDNA-next. Half this fleet is
+# RDNA (gfx1201, gfx1151), and this target is built for every entry in
+# ARCHES deliberately, to find out what happens rather than to assume
+# it. If an RDNA build fails, that failure is the measurement; record
+# it here and gate the target then, not before.
+
+ARG BASE_IMAGE
+# No default: rocm-bake.hcl is the only source. The second ARG fails a
+# build that was not passed one at parse time, instead of going empty.
+ARG ROCM_VERSION
+ARG ROCM_VERSION_REQUIRED="${ROCM_VERSION:?must be passed as a build arg - rocm-bake.hcl is the source of truth}"
+
+FROM ${BASE_IMAGE} AS builder
+
+# No default: rocm-bake.hcl is the only source for this ref, and an
+# empty one fails the clone below.
+ARG MORI_REF
+ARG PYTORCH_ROCM_ARCH=gfx950
+ARG ROCM_VERSION
+ARG SCCACHE_WEBDAV_ENDPOINT=http://snoc-strix.fold-leaffish.ts.net:8081
+
+# sccache on S3, for builds that are not on the fleet. Empty selects
+# the WebDAV store above: sccache treats an empty SCCACHE_BUCKET as
+# unset, so these are inert on SNOC. Credentials are NOT args — they
+# arrive as a BuildKit secret, so they stay out of image history.
+ARG SCCACHE_BUCKET=
+ARG SCCACHE_REGION=
+ARG SCCACHE_S3_KEY_PREFIX=rocm-pytorch
+# Key namespace within the shared store, and a unix socket rather than
+# a TCP port — the builders run with --driver-opt network=host, so a
+# fixed port is shared by every container on the node and two builds'
+# sccache servers cross. See the long note in Dockerfile.aiter.
+ARG SCCACHE_WEBDAV_KEY_PREFIX=rocm-pytorch
+# No default: rocm-bake.hcl is the only source for this version.
+ARG SCCACHE_VERSION
+# Empty means "derive from the node"; set it to pin a job count.
+ARG MAX_JOBS=
+# Memory budget per compile job, used to derive MAX_JOBS. MORI's HIP
+# translation units are large (the EP dispatch/combine kernels are
+# templated over every transport), so this keeps the 2GB convention
+# shared with Dockerfile.pytorch rather than AITER's 1GB.
+ARG MEM_PER_JOB_GB=2
+# Memory the derivation does not hand out, and a hard ceiling on the
+# job count. Passed to docker/max-jobs.sh, whose header explains why
+# both exist and why neither is a measurement.
+ARG MEM_RESERVE_GB=12
+ARG MAX_JOBS_CEILING=8
+
+LABEL org.opencontainers.image.source="https://github.com/ROCm/mori"
+LABEL org.opencontainers.image.description="MORI ${MORI_REF} for ROCm ${ROCM_VERSION}, ${PYTORCH_ROCM_ARCH}"
+
+# MORI_GPU_ARCHS is the whole reason this needs an explicit arch, and
+# it is the same trap AITER and CuPy fall into. setup.py resolves the
+# target list in this order:
+#
+#   MORI_GPU_ARCHS -> rocm_agent_enumerator -> PYTORCH_ROCM_ARCH
+#   -> GPU_ARCHS -> the hardcoded fallback gfx942;gfx950;gfx1250
+#
+# A BuildKit RUN has no /dev/kfd, so the enumerator stage finds no
+# device; left to itself the build would silently land on the
+# fallback list and ship a wheel for three architectures, none of
+# which need be the one this build is tagged for. Setting the first
+# entry makes the question unanswerable any other way.
+#
+# PYTORCH_ROCM_ARCH's fat form is ";"-separated, which is also CMake's
+# list separator and what setup.py passes to -DGPU_TARGETS, so the fat
+# case needs no translation.
+ENV MORI_GPU_ARCHS=${PYTORCH_ROCM_ARCH} \
+    PYTORCH_ROCM_ARCH=${PYTORCH_ROCM_ARCH} \
+    GPU_ARCHS=${PYTORCH_ROCM_ARCH} \
+    ROCM_PATH=/opt/rocm \
+    HIP_PATH=/opt/rocm \
+    SCCACHE_WEBDAV_ENDPOINT=${SCCACHE_WEBDAV_ENDPOINT} \
+    SCCACHE_BUCKET=${SCCACHE_BUCKET} \
+    SCCACHE_REGION=${SCCACHE_REGION} \
+    SCCACHE_S3_KEY_PREFIX=${SCCACHE_S3_KEY_PREFIX} \
+    SCCACHE_SERVER_UDS=/tmp/sccache.sock \
+    SCCACHE_WEBDAV_KEY_PREFIX=${SCCACHE_WEBDAV_KEY_PREFIX} \
+    SCCACHE_IGNORE_CLIENT_VERSION=1 \
+    SCCACHE_CONF=/etc/sccache.toml \
+    CMAKE_C_COMPILER_LAUNCHER=sccache \
+    CMAKE_CXX_COMPILER_LAUNCHER=sccache \
+    CMAKE_HIP_COMPILER_LAUNCHER=sccache \
+    CMAKE_POLICY_VERSION_MINIMUM=3.5
+
+# hipcc's own launcher hook. CMAKE_HIP_COMPILER_LAUNCHER covers the
+# compiles CMake drives, but MORI's build also invokes hipcc outside
+# CMake for its JIT-able kernel objects, and hipcc wraps clang itself —
+# so without this those compiles reach no cache. See the long note in
+# Dockerfile.aiter for why wrapping hipcc directly does not work.
+ENV HIP_CLANG_LAUNCHER=/usr/local/bin/sccache
+
+# sccache lives in Dockerfile.pytorch's builder stage and never reaches
+# the base image this is FROM.
+RUN curl -fsSL "https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+    -o /tmp/sccache.tar.gz && \
+    tar xzf /tmp/sccache.tar.gz -C /usr/local/bin --strip-components=1 \
+        "sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache" && \
+    rm /tmp/sccache.tar.gz && chmod +x /usr/local/bin/sccache && sccache --version
+
+# Each RUN is a fresh container, so a build step starts its own sccache
+# server and startup probes the remote store. That probe is bounded by
+# a 10s timeout compiled into sccache; only this config field moves it.
+RUN printf 'server_startup_timeout_ms = 60000\n' > /etc/sccache.toml
+
+# Build dependencies the base image does not already carry. cmake,
+# ninja-build, git, ca-certificates and python${PYTHON_VERSION}-dev are
+# installed in Dockerfile.base and are deliberately not repeated here;
+# python3-dev is NOT installed, because it would pull the distro's
+# python3 headers rather than the 3.14 the venv is built from.
+#
+# The protobuf/gRPC set is what UMBP's control plane is written
+# against: its master and standalone server speak gRPC over a unix
+# socket. libibverbs/libnuma/libpci are MORI's RDMA and topology
+# dependencies.
+#
+# libdrm-dev is here for ROCm's own headers, not for MORI's. MORI
+# includes rocm_smi.h, which includes kfd_ioctl.h, whose line 26 is
+# `#include <libdrm/drm.h>` -- so the first compile of the build dies
+# with
+#
+#   /opt/rocm/include/rocm_smi/kfd_ioctl.h:26:10:
+#     fatal error: 'libdrm/drm.h' file not found
+#
+# measured on 2026-11-26, 7.5s into target 7 of 157 (mlx5.cpp).
+#
+# ROCm does ship a copy, at
+# /opt/rocm/lib/rocm_sysdeps/include/libdrm/drm.h, and putting that
+# directory on the include path would also fix it -- for every
+# translation unit at once. That subtree is ROCm's bundle of ordinary
+# third-party libraries and it also holds elf.h, zlib.h, bzlib.h,
+# expat.h and curses.h, which would then shadow glibc's and ncurses'
+# for the whole compile. The same split docker/auditwheel-rocm.sh
+# makes applies here: where the system provides the library too, the
+# system's is the generic one to use. One apt package beats a
+# shadowed include path.
+#
+# Not in the paste this target was written from, because the stock
+# rocm/dev-ubuntu-26.04 image carries libdrm-dev and our base does
+# not.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libdrm-dev \
+    libgrpc++-dev \
+    libgrpc-dev \
+    libibverbs-dev \
+    libnuma-dev \
+    libpci-dev \
+    libprotobuf-dev \
+    protobuf-compiler \
+    protobuf-compiler-grpc \
+    && rm -rf /var/lib/apt/lists/*
+
+# Put ROCm's bundled third-party libraries on the loader path.
+#
+# WHY. CMAKE_PREFIX_PATH below names rocm_sysdeps, so MORI's
+# find_package calls resolve zlib and libnuma to ROCm's copies and the
+# UMBP binaries come out linking librocm_sysdeps_z.so.1 and
+# librocm_sysdeps_numa.so.1. Nothing can load them: that directory is
+# on no loader path in this base -- no /etc/ld.so.conf.d entry, not in
+# LD_LIBRARY_PATH, and invisible to ldconfig. ROCm's own libraries
+# reach it through $ORIGIN-relative RPATHs; a binary built outside the
+# ROCm tree gets no such RPATH. Measured 2026-11-26: 17 `=> not found`
+# lines across the two binaries, all of them these two sonames.
+#
+# WHY THE WHOLE DIRECTORY IS SAFE. 36 of the 37 real sonames in there
+# are renamed with a librocm_sysdeps_ prefix, which is the entire
+# point of that prefix -- they cannot shadow the system's zlib, numa,
+# ncurses or anything else. The one exception is libiberty.so.0, and
+# this base has no system libiberty at all (checked: `ldconfig -p`
+# finds none and /usr/lib/x86_64-linux-gnu has no libiberty.so), so
+# there is nothing for it to shadow either.
+#
+# Repeated in `final` below rather than shared, because an ENV or a
+# RUN does not cross a FROM. The two must agree: this copy is what
+# makes the ldd check further down test the same conditions the
+# runtime image provides, which is the only thing that makes that
+# check worth running.
+RUN printf '%s\n' /opt/rocm/lib/rocm_sysdeps/lib \
+        > /etc/ld.so.conf.d/rocm-sysdeps.conf && \
+    ldconfig && \
+    ldconfig -p | grep -q librocm_sysdeps_z || \
+        { echo "rocm_sysdeps did not reach the loader path" >&2; exit 1; }
+
+# MORI vendors its dependencies under third_party, so the submodules
+# are not optional any more than PyTorch's are.
+RUN git clone --depth 1 --branch "${MORI_REF}" --recurse-submodules \
+    --shallow-submodules \
+    https://github.com/ROCm/mori.git /opt/mori
+
+WORKDIR /opt/mori
+
+# --no-build-isolation below means pip will NOT fetch the build
+# backend's own dependencies, so everything in [build-system].requires
+# has to be installed first. Read them out of pyproject.toml rather
+# than hardcoding: the list is upstream's and moves between releases.
+# Same approach, and the same reason, as Dockerfile.aiter.
+#
+# Isolation is off because the build reads the ROCm environment set
+# above and compiles against /opt/rocm; a PEP 517 front end would run
+# setup.py in a venv where the HIP toolchain and the sccache launchers
+# are not visible, and the compiles would silently miss the cache.
+#
+# auditwheel and patchelf are for the repair step further down, the
+# same way Dockerfile.cupy installs them. They are asserted here
+# rather than left to fail later: auditwheel-rocm.sh is called with
+# --allow-unrepaired, which without the tool present would report
+# "repair FAILED, keeping the unrepaired wheel" and exit 0 -- a build
+# that measured nothing and said it had. Measured on 2026-11-26, which
+# is also why that script now refuses to run without it.
+RUN python -c "import tomllib; print(chr(10).join(tomllib.load(open('pyproject.toml','rb'))['build-system']['requires']))" \
+        > /tmp/build-reqs.txt && \
+    echo "--- MORI build-system requires ---" && cat /tmp/build-reqs.txt && \
+    pip install --no-cache-dir -r /tmp/build-reqs.txt && \
+    pip install --no-cache-dir auditwheel patchelf && \
+    auditwheel --version
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# BUILD_UMBP=ON is load-bearing, not a tuning knob. Upstream defaults
+# it OFF, and with it off the wheel still builds, still imports and
+# still passes every other check here — it simply contains no
+# umbp_master and no umbp_standalone_server, which are the two
+# processes the serving side of this repo wants. The explicit check
+# after the build is there because "builds fine, useless" is the
+# failure mode.
+#
+# BUILD_TORCH_SYMM=OFF keeps torch out of the build, which is what lets
+# this target hang off pytorch-base. Left at its "AUTO" default it
+# would compile the SymmetricMemory backend if it found torch and skip
+# it if it did not — i.e. the contents of the wheel would depend on the
+# base image rather than on this file.
+#
+# CMAKE_PREFIX_PATH names rocm_sysdeps as well as the ROCm root: ROCm
+# 10.x keeps its bundled third-party libraries (libnuma, libelf,
+# libzstd ...) in that subtree, and MORI's find_package calls do not
+# look there on their own.
+#
+# PYTHON_CPU_COUNT is how the job count is enforced. MORI's setup.py
+# runs `cmake --build . -j {os.cpu_count()}` with the count baked into
+# the argument, so neither MAX_JOBS nor CMAKE_BUILD_PARALLEL_LEVEL
+# reaches it — the -j wins. Python 3.13 added PYTHON_CPU_COUNT, which
+# changes what os.cpu_count() itself returns, and that is the only
+# lever on this build's parallelism. Without it a 32-core node runs 32
+# HIP compiles whatever the node's memory, which is the shape of the
+# 2026-11-25 outage recorded in docker/max-jobs.sh.
+#
+# MAX_JOBS and CMAKE_BUILD_PARALLEL_LEVEL are exported anyway: they
+# cost nothing, and they are what a future upstream that stops passing
+# -j explicitly would read.
+#
+# The secret is optional on purpose. On the fleet there is none and
+# sccache uses the WebDAV store; on S3 it carries the credentials,
+# which arrive as a tmpfs file for the life of this instruction and so
+# never reach image history, a layer, or a published tag.
+RUN --mount=type=secret,id=aws,required=false --mount=type=bind,source=docker/max-jobs.sh,target=/max-jobs.sh \
+    if [ -s /run/secrets/aws ]; then set -a; . /run/secrets/aws; set +a; fi; \
+    njobs="${MAX_JOBS}"; \
+    [ -n "${njobs}" ] || njobs="$(sh /max-jobs.sh "${MEM_PER_JOB_GB}" "${MEM_RESERVE_GB}" "${MAX_JOBS_CEILING}")"; \
+    export MAX_JOBS="${njobs}"; \
+    export CMAKE_BUILD_PARALLEL_LEVEL="${njobs}"; \
+    export PYTHON_CPU_COUNT="${njobs}"; \
+    base=$(python -c 'from setuptools_scm import get_version; print(get_version())'); \
+    [ -n "${base}" ] || { echo "setuptools_scm returned nothing" >&2; exit 1; }; \
+    case "${base}" in \
+        0.1.dev*|0.1.0) echo "setuptools_scm found no tags (got ${base});" \
+                             "the clone has no tag to describe from" >&2; exit 1 ;; \
+    esac; \
+    case "${base}" in \
+        *+*) export SETUPTOOLS_SCM_PRETEND_VERSION="${base}.rocm${ROCM_VERSION%%-*}" ;; \
+        *)   export SETUPTOOLS_SCM_PRETEND_VERSION="${base}+rocm${ROCM_VERSION%%-*}" ;; \
+    esac; \
+    echo "mori version: ${base} -> ${SETUPTOOLS_SCM_PRETEND_VERSION}"; \
+    echo "MORI_GPU_ARCHS=${MORI_GPU_ARCHS}, jobs=${njobs}"; \
+    CMAKE_PREFIX_PATH="/opt/rocm:/opt/rocm/lib/rocm_sysdeps" \
+    BUILD_UMBP=ON \
+    BUILD_TORCH_SYMM=OFF \
+    pip wheel --no-deps --no-build-isolation --wheel-dir /raw-wheels . \
+    2>&1 | tee /wheels-build.log \
+    && sccache --show-stats | tee /wheels-mori-sccache-stats.txt
+
+SHELL ["/bin/sh", "-c"]
+
+# MEASURED 2026-11-26 on snoc-think, gfx950, ROCm 10.2.0: the repair
+# succeeds and the wheel comes out
+#
+#   amd_mori-1.2.3.post1+rocm10.2.0-cp314-cp314-manylinux_2_39_x86_64.whl
+#
+# This was written with --allow-unrepaired first, because this wheel
+# carries ELF *executables* and not only extension modules, and
+# whether auditwheel could vendor their libgrpc++/libprotobuf/
+# libibverbs had never been tested here. It can.
+#
+# The flag is gone now that the answer is known, and that is the
+# point: left in, a future upstream or base-image change that broke
+# the repair would silently downgrade this wheel to linux_x86_64 and
+# the build would still go green. Without it, a repair failure fails
+# the build and someone looks at /wheels-auditwheel.txt, which travels
+# into both published images.
+#
+# NOTE what the manylinux tag does *not* cover. auditwheel-rocm.sh
+# excludes every ROCm-only soname from both vendoring and the policy
+# calculation, so librocm_sysdeps_z.so.1 and librocm_sysdeps_numa.so.1
+# -- which these binaries link, see the ld.so.conf note above -- are
+# not counted. The tag is honest about glibc and about the generic
+# libraries; it still assumes a ROCm install with rocm_sysdeps on the
+# loader path, which is the same assumption every wheel here makes and
+# which the `final` stage below arranges.
+COPY docker/auditwheel-rocm.sh /usr/local/bin/auditwheel-rocm
+RUN auditwheel-rocm /raw-wheels /wheels
+
+# setuptools_scm is the one mechanism here that fails by producing a
+# plausible wrong answer rather than an error: PRETEND_VERSION is only
+# read if the package actually uses scm for its version, and MORI's
+# pyproject declares a 0.1.0 fallback for a clone with no tags — so a
+# bad clone yields a wheel named amd_mori-0.1.0 with no complaint.
+RUN set -eu; \
+    test "$(find /wheels -maxdepth 1 -name '*.whl' | wc -l)" -eq 1; \
+    case "$(basename /wheels/*.whl)" in \
+        amd_mori-*"+"*"rocm${ROCM_VERSION%%-*}-"*) \
+            echo "version ok: $(basename /wheels/*.whl)" ;; \
+        *) echo "mori wheel is $(basename /wheels/*.whl)," \
+                "expected amd_mori-...+rocm${ROCM_VERSION%%-*}" >&2; \
+           exit 1 ;; \
+    esac
+
+# The check BUILD_UMBP exists for. Without it the two server binaries
+# are absent and nothing else here notices: the wheel installs, `import
+# mori` works, and the first attempt to start a buffer pool fails at
+# run time on a host, hours later.
+#
+# ldd, not just "the file is present": a binary that cannot resolve
+# libgrpc++ is as useless as a missing one, and it is the shape a
+# mismatched protobuf/gRPC apt set would produce.
+#
+# Written to a file rather than passed to `python3 -c`: the check needs
+# real control flow, and hadolint cannot parse a `RUN cmd <<'EOF'`
+# heredoc — see the same note in Dockerfile.vllm.
+RUN --mount=type=tmpfs,target=/tmp/mori-wheel \
+    set -eu; \
+    python -m zipfile -e /wheels/*.whl /tmp/mori-wheel; \
+    printf '%s\n' \
+        'import os, sys' \
+        'root = sys.argv[1]' \
+        'ELF = bytes([0x7F]) + b"ELF"' \
+        'want = ("umbp_standalone_server", "umbp_master")' \
+        'missing = []' \
+        'for name in want:' \
+        '    p = os.path.join(root, "mori", name)' \
+        '    if not os.path.isfile(p):' \
+        '        missing.append(name); continue' \
+        '    with open(p, "rb") as f:' \
+        '        if f.read(4) != ELF:' \
+        '            missing.append(name + " (not an ELF binary)")' \
+        'if missing:' \
+        '    sys.exit("BUILD_UMBP produced no " + ", ".join(missing) +' \
+        '             " -- the wheel is not usable for serving")' \
+        'print("umbp binaries present:", ", ".join(want))' \
+        > /tmp/umbp-check.py && \
+    python3 -I /tmp/umbp-check.py /tmp/mori-wheel && \
+    : > /wheels-umbp.txt && \
+    for b in umbp_standalone_server umbp_master; do \
+        echo "--- ldd mori/${b}" >> /wheels-umbp.txt; \
+        ldd "/tmp/mori-wheel/mori/${b}" >> /wheels-umbp.txt 2>&1 || true; \
+    done; \
+    cat /wheels-umbp.txt; \
+    if grep -q 'not found' /wheels-umbp.txt; then \
+        echo "a umbp binary has unresolved libraries -- see above" >&2; \
+        exit 1; \
+    fi
+
+# Prove the wheel carries device code for the arch it claims. MORI
+# JIT-compiles part of its kernel surface through hipRTC at run time
+# (upstream's install guide says hipcc is needed at run time for
+# exactly that), so this is the softer CuPy-shaped check rather than
+# AITER's: report what offload bundles are there, and fail only if the
+# wheel has no extension at all, which is what a wrong MORI_GPU_ARCHS
+# would produce.
+RUN --mount=type=tmpfs,target=/tmp/mori-arch \
+    set -eu; \
+    python -m zipfile -e /wheels/*.whl /tmp/mori-arch; \
+    count=$(find /tmp/mori-arch -name '*.so' | wc -l); \
+    echo "shared objects in wheel: ${count}"; \
+    [ "${count}" -gt 0 ] || { echo "wheel contains no extensions" >&2; exit 1; }; \
+    for so in $(find /tmp/mori-arch -name '*.so' | head -20); do \
+        /opt/rocm/llvm/bin/llvm-objdump --offloading "${so}" 2>/dev/null \
+            | grep -oE 'gfx[0-9a-z]+' || true; \
+    done | sort -u | tee /wheels-arch.txt; \
+    echo "arch bundles found: $(wc -l < /wheels-arch.txt)"
+
+RUN ls -la /wheels/
+
+# ─── UMBP runtime image ──────────────────────────────────────────
+# The point of this stage. MORI in multi-process mode is two long-lived
+# processes — umbp_master and umbp_standalone_server — that workers
+# reach over gRPC, and they are not supposed to live inside the vLLM
+# image: that would tie a pool serving several workers to the lifetime
+# of one of them, and would put MORI into every serving image on every
+# architecture including the ones upstream does not claim to support.
+#
+# So it is its own image, with one entrypoint that selects the role.
+# See docker/mori-entrypoint.sh for the modes and the environment each
+# one reads.
+FROM ${BASE_IMAGE} AS final
+
+ARG MORI_REF
+ARG PYTORCH_ROCM_ARCH
+ARG ROCM_VERSION
+
+LABEL org.opencontainers.image.source="https://github.com/ROCm/mori"
+LABEL org.opencontainers.image.description="MORI ${MORI_REF} UMBP runtime for ROCm ${ROCM_VERSION}, ${PYTORCH_ROCM_ARCH}"
+
+COPY --from=builder /wheels-build.log /wheels-arch.txt /wheels-umbp.txt \
+     /wheels-auditwheel.txt /var/log/mori-build/
+
+# The runtime half of the build dependencies: the shared libraries the
+# UMBP binaries link, with no -dev packages and no compiler.
+#
+# Measured 2026-11-26: auditwheel repairs this wheel, so it carries
+# vendored copies of libgrpc++, libprotobuf and libibverbs and the
+# binaries' RPATHs point at them — which makes these packages
+# redundant for the wheel's own processes. They are installed anyway,
+# for two reasons that cost one apt layer between them. A repair that
+# stops succeeding leaves a linux_x86_64 wheel that needs exactly
+# these, and anything else run in this image against the ROCm stack
+# (a debug shell, a probe, a worker linked another way) finds the
+# system copies where it expects them.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ibverbs-providers \
+    libgrpc++1.51t64 \
+    libibverbs1 \
+    libnuma1 \
+    libpci3 \
+    libprotobuf32t64 \
+    && rm -rf /var/lib/apt/lists/*
+
+# The same loader-path entry the builder stage makes, and for the same
+# reason: the UMBP binaries link ROCm's bundled zlib and libnuma, and
+# that directory is on no loader path in this base. Without this the
+# image builds, `mori-entrypoint check` passes -- it only asks the
+# package where the binaries are -- and `standalone` dies on exec with
+# a missing librocm_sysdeps_z.so.1. See the long note on the builder's
+# copy for why adding the whole directory cannot shadow anything.
+RUN printf '%s\n' /opt/rocm/lib/rocm_sysdeps/lib \
+        > /etc/ld.so.conf.d/rocm-sysdeps.conf && \
+    ldconfig && \
+    ldconfig -p | grep -q librocm_sysdeps_z || \
+        { echo "rocm_sysdeps did not reach the loader path" >&2; exit 1; }
+
+# --no-deps: amd_mori declares no runtime dependencies, so this is
+# belt-and-braces against an upstream that adds one and pulls a CUDA
+# package in behind it. The wheel is mounted rather than copied —
+# mori-wheel publishes it, and a second copy here would weigh down
+# every pull of this image for no gain. Same as Dockerfile.lmcache.
+RUN --mount=type=bind,from=builder,source=/wheels,target=/w/mori \
+    pip install --no-cache-dir --no-deps /w/mori/*.whl && \
+    python -c "import mori; print('MORI', getattr(mori, '__version__', 'unknown'))"
+
+COPY docker/mori-entrypoint.sh /usr/local/bin/mori-entrypoint
+
+# The entrypoint resolves the binaries out of the installed package and
+# must find both. Checking it here means a broken image fails at build
+# time rather than on the first `docker run`.
+RUN mori-entrypoint check
+
+# Where the standalone server puts its gRPC socket by default:
+# unix:///run/umbp/standalone/<node_id>.grpc.sock, with a sibling
+# .fd.sock for the one-time file-descriptor handoff. Create it in the
+# image so a container that mounts nothing still starts; a deployment
+# sharing the pool between containers bind-mounts over it.
+RUN mkdir -p /run/umbp/standalone /tmp/umbp_ssd
+
+# No HSA_OVERRIDE_GFX_VERSION — see the note in Dockerfile.base.
+
+# 15558 is the port UMBP's own documentation uses in its
+# UMBP_MASTER_ADDRESS example, and what mori-entrypoint.sh passes to
+# umbp_master as argv[1]. 9091 is the second port the master was
+# observed listening on (measured 2026-11-26); it carries the
+# ReportMetrics RPC. Documentation, not a binding: change the first
+# with UMBP_MASTER_LISTEN and publish whatever you set.
+EXPOSE 15558 9091
+
+# The parent image sets no ENTRYPOINT, so this is the only one. The
+# role is the first argument:
+#
+#   docker run <img> master        # umbp_master, the control plane
+#   docker run <img> standalone    # umbp_standalone_server, the pool
+#   docker run <img> env           # print the resolved UMBP settings
+#   docker run <img> python -c ... # anything else runs verbatim
+#
+# `standalone` is the default because it is the one a single-node
+# deployment needs; a master is only required once cross-node routing
+# and registration are in play.
+ENTRYPOINT ["mori-entrypoint"]
+CMD ["standalone"]
+
+# ─── Wheel-only image ────────────────────────────────────────────
+# scratch, not the base: this exists to be consumed by COPY --from=,
+# so it carries the wheel and nothing else.
+FROM scratch AS wheel
+
+ARG MORI_REF
+ARG PYTORCH_ROCM_ARCH
+LABEL org.opencontainers.image.source="https://github.com/ROCm/mori"
+LABEL org.opencontainers.image.description="MORI ${MORI_REF} wheel for ${PYTORCH_ROCM_ARCH}"
+
+COPY --from=builder /wheels/ /wheels/
+COPY --from=builder /wheels-build.log /wheels-mori-sccache-stats.txt \
+     /wheels-arch.txt /wheels-umbp.txt /wheels-auditwheel.txt /

@@ -189,6 +189,7 @@ variable "SDE_LMCACHE_CPU" { default = "" }
 variable "SDE_CUPY"    { default = "" }
 variable "SDE_TORCHVISION" { default = "" }
 variable "SDE_ATOM"    { default = "" }
+variable "SDE_MORI"    { default = "" }
 
 EPOCH_ROCM    = SDE_ROCM    != "" ? SDE_ROCM    : SDE_EPOCH
 EPOCH_BASE    = SDE_BASE    != "" ? SDE_BASE    : SDE_EPOCH
@@ -205,6 +206,7 @@ EPOCH_LMCACHE_CPU = SDE_LMCACHE_CPU != "" ? SDE_LMCACHE_CPU : SDE_EPOCH
 EPOCH_CUPY    = SDE_CUPY    != "" ? SDE_CUPY    : SDE_EPOCH
 EPOCH_TORCHVISION = SDE_TORCHVISION != "" ? SDE_TORCHVISION : SDE_EPOCH
 EPOCH_ATOM    = SDE_ATOM    != "" ? SDE_ATOM    : SDE_EPOCH
+EPOCH_MORI    = SDE_MORI    != "" ? SDE_MORI    : SDE_EPOCH
 
 # Empty means each build derives its own job count from the node it
 # lands on, sized by memory rather than cores. Set it to pin one.
@@ -432,6 +434,9 @@ PUB_LMCACHE = "${REGISTRY}/${REGISTRY_NAME}/lmcache-wheel:${LMCACHE_REF}-${ROCM_
 # the wheel has neither.
 PUB_LMCACHE_CPU = "${REGISTRY}/${REGISTRY_NAME}/lmcache-cpu-wheel:${LMCACHE_REF}-cpu"
 PUB_CUPY    = "${REGISTRY}/${REGISTRY_NAME}/cupy-wheel:${CUPY_REF}-${ROCM_VERSION}-${ARCH_TAG}"
+# The MORI client wheel, which Dockerfile.vllm installs. The pool
+# image itself is not an input to anything.
+PUB_MORI_WHEEL = "${REGISTRY}/${REGISTRY_NAME}/mori-wheel:${MORI_REF}-${ROCM_VERSION}-${ARCH_TAG}"
 PUB_TORCHVISION = "${REGISTRY}/${REGISTRY_NAME}/torchvision-wheel:${TORCHVISION_REF}-${ROCM_VERSION}-${ARCH_TAG}"
 PUB_ATOM    = "${REGISTRY}/${REGISTRY_NAME}/atom-wheel:${ATOM_REF}-${ROCM_VERSION}-${ARCH_TAG}"
 # The serving image as an input, for atom-vllm, which layers onto it the
@@ -516,6 +521,27 @@ variable "MANYLINUX_IMAGE" {
 # ships only an sdist. LMCache's MP server imports it unconditionally.
 variable "CUPY_REF" {
   default = "v14.2.0"
+}
+
+# MORI, AMD's GPU communication library, built from source for the same
+# reason CuPy is: PyPI's amd_mori ships cp310 and cp312 wheels only,
+# and this stack is cp314.
+#
+# What it is wanted for here is UMBP — the unified memory buffer pool,
+# whose umbp_master and umbp_standalone_server processes serve memory
+# to workers over gRPC. That is a multi-process deployment, so it gets
+# its own image (target `mori`) rather than being layered into vllm.
+# Dockerfile.mori's BUILD_UMBP note is the part that matters: upstream
+# defaults it off, and with it off the wheel builds, imports and ships
+# without either binary.
+#
+# Everything this repo measured about MORI -- the build fixes, the vLLM
+# round trip, the one-medium-per-node limit -- was first taken against
+# v1.2.3.post1. That tag carried upstream's own .post suffix, which is
+# PEP 440 rather than semver; v1.2.4 and v1.2.5 are plain tags, so
+# versioncheck.py's comparison is unremarkable again.
+variable "MORI_REF" {
+  default = "v1.2.5"
 }
 
 # The floor for serving at VLLM_REF=v0.34.0, and the first of its
@@ -791,6 +817,7 @@ group "default" {
     "torchvision-wheel", "atom-wheel",
     "cupy-wheel", "nixl-wheel", "vllm", "vllm-wheel",
     "lmcache", "lmcache-wheel",
+    "mori", "mori-wheel",
   ]
 }
 
@@ -800,7 +827,7 @@ group "wheels" {
   targets = [
     "pytorch-wheel", "triton-wheel", "aiter-wheel", "nixl-wheel",
     "torchvision-wheel", "atom-wheel", "cupy-wheel", "vllm-wheel",
-    "lmcache-wheel",
+    "lmcache-wheel", "mori-wheel",
   ]
 }
 
@@ -814,8 +841,12 @@ group "wheels" {
 # hours on gfx1201). push-all was already that long.
 #
 # This group stays as a way to build the serving stack on its own.
+# mori-wheel is here because vllm installs the MORI client, so the
+# group cannot build without it. The `mori` image is NOT here: that
+# is the buffer pool, a service of its own that nothing in this
+# group builds FROM. See docs/architecture/mori.md.
 group "serving" {
-  targets = ["torchvision-wheel", "cupy-wheel", "nixl-wheel", "vllm", "vllm-wheel", "lmcache", "lmcache-wheel"]
+  targets = ["torchvision-wheel", "cupy-wheel", "nixl-wheel", "vllm", "vllm-wheel", "lmcache", "lmcache-wheel", "mori-wheel"]
 }
 
 # The arch-free emulator lane. See docker/Dockerfile.vllm-emu.
@@ -1554,6 +1585,107 @@ target "cupy-wheel" {
   output = ["type=image,compression=zstd"]
 }
 
+# ─── MORI: UMBP runtime image ────────────────────────────────────
+# Built FROM the base image rather than pytorch, like cupy-wheel: MORI
+# is compiled with BUILD_TORCH_SYMM=OFF, so nothing in it needs torch
+# and it does not have to queue behind the PyTorch compile.
+#
+# This target is the runnable image — the `final` stage, carrying the
+# wheel installed plus the shared libraries the UMBP binaries link,
+# behind one entrypoint that selects master or standalone mode. The
+# wheel on its own is mori-wheel below.
+#
+# It is deliberately NOT in the `serving` group and nothing in
+# docker/Dockerfile.vllm installs it. UMBP in multi-process mode is a
+# pool shared by workers; putting it inside a worker image ties its
+# lifetime to one of them.
+#
+# It IS in `default`, for every entry in ARCHES, and the RDNA ones were
+# expected to be where this breaks. They are not: measured 2026-11-26
+# on snoc-think, gfx950 and gfx1201 both build clean, each carrying one
+# offload bundle for the arch asked for. Almost nothing in MORI is
+# arch-specific -- one or two of 140 compile requests are HIP -- which
+# is the likely reason. No gate is needed.
+#
+# That is a build result and not a runtime one. Nothing has executed
+# MORI on a card, and upstream still claims only MI300-class hardware.
+# See docs/architecture/mori.md.
+target "mori" {
+  dockerfile = "docker/Dockerfile.mori"
+  platforms  = ["linux/amd64"]
+  target     = "final"
+
+  tags = compact([
+    "${REGISTRY}/${REGISTRY_NAME}/mori:${MORI_REF}-${ROCM_VERSION}-${ARCH_TAG}",
+    "${REGISTRY}/${REGISTRY_NAME}/mori:latest",
+    VCS_REF != "" ? "${REGISTRY}/${REGISTRY_NAME}/mori:${MORI_REF}-${ROCM_VERSION}-${ARCH_TAG}-g${VCS_REF}" : "",
+  ])
+
+  labels = merge(OCI_LABELS, {
+    "org.opencontainers.image.title"       = "mori umbp runtime"
+    "org.opencontainers.image.description" = "MORI ${MORI_REF} UMBP runtime for ROCm ${ROCM_VERSION}, ${PYTORCH_ROCM_ARCH}"
+    "org.opencontainers.image.version"     = "${MORI_REF}-${ROCM_VERSION}-${ARCH_TAG}"
+  })
+
+  cache-from = distinct(concat(cache_own("mori-cache", CACHE_ARCH), [
+    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/mori-cache:latest${CACHE_ARCH},mode=max,registry.insecure=${REGISTRY_INSECURE}",
+    "type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/mori-cache:latest${CACHE_ARCH}-ref,mode=max,registry.insecure=${REGISTRY_INSECURE}",
+  ]))
+  cache-to   = ["type=registry,ref=${REGISTRY}/${REGISTRY_NAME}/mori-cache:latest${CACHE_ARCH}${CACHE_TAG_SUFFIX},mode=max,image-manifest=true,oci-mediatypes=true,registry.insecure=${REGISTRY_INSECURE},ignore-error=true"]
+
+  contexts = USE_PUB ? {} : {
+    base-img = "target:pytorch-base"
+  }
+
+  args = {
+    SOURCE_DATE_EPOCH       = EPOCH_MORI
+    BUILDKIT_BUILD_NAME     = "rocm-pytorch-build/mori/${PYTORCH_ROCM_ARCH}/${RUN_ID}"
+    BASE_IMAGE              = USE_PUB ? PUB_BASE : "base-img"
+    MORI_REF                = MORI_REF
+    PYTORCH_ROCM_ARCH       = PYTORCH_ROCM_ARCH
+    ROCM_VERSION            = ROCM_VERSION
+    SCCACHE_VERSION         = SCCACHE_VERSION
+    SCCACHE_WEBDAV_ENDPOINT = WEBDAV_ENDPOINT
+    SCCACHE_WEBDAV_KEY_PREFIX = SCCACHE_WEBDAV_KEY_PREFIX
+    # Empty on the fleet, which is how WebDAV above stays the backend.
+    SCCACHE_BUCKET       = SCCACHE_BUCKET
+    SCCACHE_REGION       = SCCACHE_REGION
+    SCCACHE_S3_KEY_PREFIX = SCCACHE_S3_KEY_PREFIX
+    MAX_JOBS                = MAX_JOBS
+  }
+
+  output = ["type=image,compression=zstd"]
+}
+
+# ─── MORI wheel ──────────────────────────────────────────────────
+# The scratch wheel image, sharing mori's cache repo the way
+# lmcache-wheel shares lmcache's: the two differ only in which stage
+# they export, so a second cache repo would hold the same layers.
+target "mori-wheel" {
+  # Its own build record name, for the reason spelled out on
+  # lmcache-wheel: buildx history keys on it, and two targets sharing
+  # one give perftrace.py a single record to draw under both names.
+  args = {
+    BUILDKIT_BUILD_NAME = "rocm-pytorch-build/mori-wheel/${PYTORCH_ROCM_ARCH}/${RUN_ID}"
+  }
+
+  inherits   = ["mori"]
+  target     = "wheel"
+  dockerfile = "docker/Dockerfile.mori"
+
+  tags = compact([
+    "${REGISTRY}/${REGISTRY_NAME}/mori-wheel:${MORI_REF}-${ROCM_VERSION}-${ARCH_TAG}",
+    "${REGISTRY}/${REGISTRY_NAME}/mori-wheel:latest",
+    VCS_REF != "" ? "${REGISTRY}/${REGISTRY_NAME}/mori-wheel:${MORI_REF}-${ROCM_VERSION}-${ARCH_TAG}-g${VCS_REF}" : "",
+  ])
+
+  labels = merge(OCI_LABELS, {
+    "org.opencontainers.image.title"       = "mori wheel"
+    "org.opencontainers.image.description" = "MORI ${MORI_REF} wheel for ${PYTORCH_ROCM_ARCH}, ROCm ${ROCM_VERSION}"
+    "org.opencontainers.image.version"     = "${MORI_REF}-${ROCM_VERSION}-${ARCH_TAG}"
+  })
+}
+
 # ─── NIXL wheel ──────────────────────────────────────────────────
 # Builds FROM the pytorch image (NIXL's python bindings compile against
 # torch), and ships as a scratch wheel image consumed by both vllm and
@@ -1649,6 +1781,7 @@ target "vllm" {
     nixl-wheels    = "target:nixl-wheel"
     lmcache-wheels = "target:lmcache-wheel"
     torchvision-wheels = "target:torchvision-wheel"
+    mori-wheels    = "target:mori-wheel"
   }
 
   args = {
@@ -1660,6 +1793,7 @@ target "vllm" {
     NIXL_WHEEL_IMAGE        = USE_PUB ? PUB_NIXL : "nixl-wheels"
     TORCHVISION_WHEEL_IMAGE = USE_PUB ? PUB_TORCHVISION : "torchvision-wheels"
     LMCACHE_WHEEL_IMAGE     = USE_PUB ? PUB_LMCACHE : "lmcache-wheels"
+    MORI_WHEEL_IMAGE        = USE_PUB ? PUB_MORI_WHEEL : "mori-wheels"
     # Dockerfile.vllm has always declared `ARG MAX_JOBS=`, but this
     # target never passed it, so the one knob that bounds the heaviest
     # compile in the graph could not be set — `MAX_JOBS=8 make

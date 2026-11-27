@@ -1,7 +1,7 @@
 # rocm-bake
 
-Reproducible builds of PyTorch, Triton, AITER, CuPy, NIXL, vLLM and
-LMCache against ROCm, on a three-node BuildKit fleet, with every
+Reproducible builds of PyTorch, Triton, AITER, CuPy, NIXL, MORI, vLLM
+and LMCache against ROCm, on a three-node BuildKit fleet, with every
 artifact published to a local OCI registry.
 
 Plus two lanes that are not tied to ROCm at all, so the serving path
@@ -54,6 +54,7 @@ default — `PERF_BIND=` narrows it, `make perf-serve-stop` ends it.
 | vLLM | [vllm-project/vllm](https://github.com/vllm-project/vllm) | `VLLM_REF` | `v0.34.0` |
 | LLM-Emu | [AKafakA/llm-emu](https://github.com/AKafakA/llm-emu) | `LLM_EMU_REF` | `b71c6025b189784cbd4b926d15afa8257738ea39` |
 | CuPy | [cupy/cupy](https://github.com/cupy/cupy) | `CUPY_REF` | `v14.2.0` |
+| MORI | [ROCm/mori](https://github.com/ROCm/mori) | `MORI_REF` | `v1.2.5` |
 | LMCache | [LMCache/LMCache](https://github.com/LMCache/LMCache) | `LMCACHE_REF` | `v0.5.8` |
 
 <!-- END VERSIONS -->
@@ -140,7 +141,8 @@ rocm-runtime ─► pytorch-base ─┬─► triton-wheel ─┬─► pytorch 
                               │                 │            └─► torchvision-wheel
                               │                 ├─► pytorch-wheel
                               │                 └─► pytorch-test
-                              └─► cupy-wheel
+                              ├─► cupy-wheel
+                              └─► mori, mori-wheel
 
 lmcache, lmcache-wheel  ◄─ cupy-wheel, nixl-wheel, pytorch, triton-wheel
 vllm,    vllm-wheel     ◄─ aiter-wheel, lmcache-wheel, nixl-wheel,
@@ -152,12 +154,12 @@ being built for and flattened into a single layer: 8.67 GB becomes
 1.54 GB, and every image downstream inherits the difference. See
 [Image sizes](https://sbates130272.github.io/rocm-bake/reference/image-sizes/).
 
-Sixteen targets, three groups (`default`, `wheels`, `serving`). Bake
+Eighteen targets, three groups (`default`, `wheels`, `serving`). Bake
 derives the DAG from each target's `contexts`, so asking for `vllm`
 alone builds everything it needs.
 
-`pytorch`/`pytorch-wheel`, `lmcache`/`lmcache-wheel` and `vllm`/`vllm-wheel`
-are **siblings, not parent and child** — each pair is two stages over one
+`pytorch`/`pytorch-wheel`, `lmcache`/`lmcache-wheel`, `mori`/`mori-wheel`
+and `vllm`/`vllm-wheel` are **siblings, not parent and child** — each pair is two stages over one
 Dockerfile, with identical dependencies and neither feeding the other.
 They are scheduled one at a time so the second reuses the first's builder
 stage; run concurrently they compile the same objects twice. Full table with tags:

@@ -26,6 +26,7 @@ is authoritative if this page has aged.
 | `VLLM_REF` | `v0.34.0` |
 | `LLM_EMU_REF` | `b71c6025b189784cbd4b926d15afa8257738ea39` |
 | `CUPY_REF` | `v14.2.0` |
+| `MORI_REF` | `v1.2.5` |
 | `LMCACHE_REF` | `v0.5.8` |
 | `RUST_VERSION` | `1.95` |
 | `GIT_REF` | `""` - a specific PyTorch ref to build |
@@ -162,9 +163,10 @@ shred -u /tmp/awscreds
 | `VCS_REF` | `""` | Supplied by the Makefile; gets a `-dirty` suffix |
 | `BUILD_DATE` | `""` | Supplied by the Makefile as the commit's own timestamp |
 
-The eleven per-image variables are `SDE_ROCM`, `SDE_BASE`,
+The twelve per-image variables are `SDE_ROCM`, `SDE_BASE`,
 `SDE_PYTORCH`, `SDE_TRITON`, `SDE_AITER`, `SDE_RUNTIME`, `SDE_NIXL`,
-`SDE_VLLM`, `SDE_LMCACHE`, `SDE_CUPY` and `SDE_TORCHVISION`. See
+`SDE_VLLM`, `SDE_LMCACHE`, `SDE_CUPY`, `SDE_MORI` and
+`SDE_TORCHVISION`. See
 [Reproducibility](../architecture/reproducibility.md) for why the epoch
 is a constant.
 

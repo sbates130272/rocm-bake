@@ -1,6 +1,6 @@
 # Build Targets And Tags
 
-Nineteen targets. Every published repository is under
+Twenty-one targets. Every published repository is under
 `snoc-strix.fold-leaffish.ts.net:8080/rocm-pytorch/`, elided below.
 
 Each target emits **three** tags: a versioned one, `:latest`, and an
@@ -24,6 +24,8 @@ immutable `-g<sha>` tag whenever `VCS_REF` is non-empty.
 | `vllm-wheel` | `vllm-wheel` | `${VLLM_REF}-${ROCM_VERSION}-${ARCH}` |
 | `lmcache` | `lmcache` | `${LMCACHE_REF}-${ROCM_VERSION}-${ARCH}` |
 | `lmcache-wheel` | `lmcache-wheel` | `${LMCACHE_REF}-${ROCM_VERSION}-${ARCH}` |
+| `mori` | `mori` | `${MORI_REF}-${ROCM_VERSION}-${ARCH}` |
+| `mori-wheel` | `mori-wheel` | `${MORI_REF}-${ROCM_VERSION}-${ARCH}` |
 | `vllm-emu` | `vllm-emu` | `${VLLM_REF}-emu` (no arch, no ROCm) |
 | `vllm-emu-wheel` | `vllm-emu-wheel` | `${VLLM_REF}-emu` (no arch, no ROCm) |
 | `vllm-emu-capture` | `vllm-emu-capture` | `${VLLM_REF}-${ROCM_VERSION}-${ARCH}` |
@@ -92,8 +94,8 @@ base would overwrite a `gfx1201` one exactly as `runtime` once did.
 
 | Group | Members |
 | --- | --- |
-| `default` | `rocm-runtime`, `pytorch-src`, `pytorch-base`, `pytorch`, `pytorch-wheel`, `triton-wheel`, `aiter-wheel`, `torchvision-wheel`, `cupy-wheel`, `nixl-wheel`, `vllm`, `vllm-wheel`, `lmcache`, `lmcache-wheel` |
-| `wheels` | `pytorch-wheel`, `triton-wheel`, `aiter-wheel`, `nixl-wheel`, `torchvision-wheel`, `cupy-wheel`, `vllm-wheel`, `lmcache-wheel` |
+| `default` | `rocm-runtime`, `pytorch-src`, `pytorch-base`, `pytorch`, `pytorch-wheel`, `triton-wheel`, `aiter-wheel`, `torchvision-wheel`, `atom-wheel`, `cupy-wheel`, `nixl-wheel`, `vllm`, `vllm-wheel`, `lmcache`, `lmcache-wheel`, `mori`, `mori-wheel` |
+| `wheels` | `pytorch-wheel`, `triton-wheel`, `aiter-wheel`, `nixl-wheel`, `torchvision-wheel`, `atom-wheel`, `cupy-wheel`, `vllm-wheel`, `lmcache-wheel`, `mori-wheel` |
 | `serving` | `torchvision-wheel`, `cupy-wheel`, `nixl-wheel`, `vllm`, `vllm-wheel`, `lmcache`, `lmcache-wheel` |
 
 There is no `all` group. `pytorch-test` and `pytorch-run` are
@@ -121,6 +123,7 @@ repository root.
 | `Dockerfile.nixl` | `nixl-wheel` |
 | `Dockerfile.vllm` | `vllm`, `vllm-wheel` |
 | `Dockerfile.lmcache` | `lmcache`, `lmcache-wheel` |
+| `Dockerfile.mori` | `mori`, `mori-wheel` |
 
 A wheel target is the same Dockerfile built to its `wheel` stage, which
 is why each `*-wheel` inherits from its image target.

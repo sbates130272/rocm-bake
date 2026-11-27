@@ -105,7 +105,8 @@ names do not match their bake target:
 The rest are the obvious ones: `pytorch`, `rocm-runtime`,
 `pytorch-src`, `aiter-wheel`, `torchvision-wheel`, `cupy-wheel`,
 `nixl-wheel`, `vllm`,
-`vllm-wheel`, `lmcache`, `lmcache-wheel`. Group targets are
+`vllm-wheel`, `lmcache`, `lmcache-wheel`, `mori`, `mori-wheel`. Group
+targets are
 `build-serving`/`push-serving`, `build-all`/`push-all` (the `default`
 group) and `push-wheels`.
 
@@ -114,6 +115,10 @@ through `make build-<name>`, and a `push-` target writes to the
 registry, which the credential helper cannot do unattended.
 
 `fetch-<name>-wheel` pulls a published wheel artifact into `./dist`.
+`mori-check` runs the published `mori` image's entrypoint in its
+reporting mode — `MORI_MODE=check` names the two UMBP binaries,
+`MORI_MODE=env` prints the settings a container would start with.
+Neither needs a GPU. See [MORI and UMBP](../architecture/mori.md).
 `build-cold` builds `COLD_TARGET` (default `pytorch`) with neither
 layer cache nor compiler-cache hits.
 
