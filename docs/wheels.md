@@ -150,6 +150,7 @@ A version string says which ROCm the wheel was built against.
 | `lmcache` | `0.5.6+rocm10.1.0` | `manylinux_2_39` |
 | `atom` | `0.1.9+rocm10.1.0` | `manylinux_2_38` |
 | `torchvision` | `0.29.2+rocm10.1.0` | `manylinux_2_39` |
+| `amd_mori` | `1.2.3.post1+rocm10.2.0` | `manylinux_2_39` |
 | `nixl` | `1.5.2+rocm10.1.0` | `py3-none-any` |
 | `nixl_rocm` | `1.5.2+rocm10.1.0` | `manylinux_2_39` |
 | `vllm` | `0.33.0+rocm101` | `linux_x86_64` |
@@ -175,8 +176,8 @@ and taking the newest glibc symbol it references — so the tag depends
 on what the code calls, not on what machine built it. It is measured
 here, never asserted.
 
-- **`cupy`, `lmcache`, `atom`, `torchvision`, `nixl_rocm`** fall inside
-  a policy auditwheel defines. Their non-system dependencies are
+- **`cupy`, `lmcache`, `atom`, `torchvision`, `nixl_rocm`, `amd_mori`**
+  fall inside a policy auditwheel defines. Their non-system dependencies are
   vendored into the wheel and the tag is rewritten to match.
 - **`torch`, `triton`, `vllm` cannot have one.** They reference symbols
   newer than any policy auditwheel knows — torch needs `GLIBC_2.43`,
@@ -192,6 +193,22 @@ Everything ROCm ships is excluded from vendoring, because the consuming
 environment is expected to have the same ROCm these were built against.
 A wheel carrying its own copy of hipBLAS or RCCL would both be enormous
 and shadow the runtime everything else is using.
+
+!!! warning "A `manylinux` tag says nothing about ROCm's bundled libraries"
+    Excluding a soname tells auditwheel both *do not vendor this* and
+    *do not count it against the policy*. So a wheel can be
+    `manylinux_2_39` and still need a library from the ROCm tree.
+
+    `amd_mori` is where this first bit. Its UMBP binaries link
+    `librocm_sysdeps_z.so.1` and `librocm_sysdeps_numa.so.1` — ROCm's
+    renamed copies of zlib and libnuma — and that directory,
+    `/opt/rocm/lib/rocm_sysdeps/lib`, is on no loader path by default:
+    no `ld.so.conf.d` entry, not in `LD_LIBRARY_PATH`, invisible to
+    `ldconfig`. ROCm's own libraries find it through `$ORIGIN` RPATHs;
+    a binary built outside that tree does not. The `mori` image adds
+    the `ld.so.conf.d` entry, so installing *that image* is fine;
+    installing the wheel alone into an arbitrary ROCm environment may
+    not be.
 
 ## Name Collisions With PyPI
 

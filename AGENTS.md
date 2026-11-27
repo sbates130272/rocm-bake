@@ -79,6 +79,41 @@ assumption that it is.
 - **Wheel images are `FROM scratch`.** They carry `/wheels` and, for
   `nixl-wheel`, `/nixl-dev`. They have no shell: inspect them by
   `COPY --from=` or by bind-mounting into another stage.
+- **MORI without `BUILD_UMBP=ON` builds, imports, and is useless.**
+  Upstream defaults it off, and with it off the wheel simply has no
+  `mori/umbp_master` and no `mori/umbp_standalone_server` — the two
+  processes the `mori` image exists to run. Nothing else notices.
+  `Dockerfile.mori` unpacks the wheel and asserts both are there.
+- **MORI's job count is `PYTHON_CPU_COUNT`, not `MAX_JOBS`.** Its
+  `setup.py` runs `cmake --build . -j {os.cpu_count()}`, so the count
+  is baked into the argument before `MAX_JOBS` or
+  `CMAKE_BUILD_PARALLEL_LEVEL` could be read. Python 3.13's
+  `PYTHON_CPU_COUNT` changes what `os.cpu_count()` returns and is the
+  only lever that reaches it.
+- **A binary that links ROCm's `rocm_sysdeps` libraries will not
+  load.** `/opt/rocm/lib/rocm_sysdeps/lib` is on no loader path in our
+  base — no `ld.so.conf.d` entry, not in `LD_LIBRARY_PATH`, invisible
+  to `ldconfig`. ROCm's own libraries reach it through `$ORIGIN`
+  RPATHs; anything built outside the ROCm tree does not. Naming
+  `rocm_sysdeps` in `CMAKE_PREFIX_PATH` is what causes it, because
+  `find_package` then resolves zlib and libnuma to ROCm's renamed
+  copies. `Dockerfile.mori` adds the `ld.so.conf.d` entry in both its
+  stages; adding the whole directory is safe because 36 of its 37
+  sonames carry a `librocm_sysdeps_` prefix and the odd one,
+  `libiberty.so.0`, has no system counterpart here.
+- **A `manylinux` tag does not cover those libraries.**
+  `auditwheel-rocm.sh` excludes every ROCm-only soname from the policy
+  calculation as well as from vendoring, so a wheel can be
+  `manylinux_2_39` and still need `librocm_sysdeps_z.so.1`.
+- **MORI builds on RDNA even though upstream does not claim it.**
+  Measured 2026-11-26 on snoc-think: gfx950 and gfx1201 both produce a
+  wheel with 13 extensions, one offload bundle for the arch asked for,
+  and both UMBP binaries resolving. Only one or two of the 140 compile
+  requests are HIP, so there is very little arch-specific code to go
+  wrong. **This is a build result, not a runtime one** — nothing here
+  has executed MORI on a GPU, upstream still lists only MI300-class
+  hardware, and its RDMA paths want an IBGDA NIC this fleet lacks. No
+  build gate is needed; do not read that as support.
 
 ## The registry (Zot, on snoc-strix)
 

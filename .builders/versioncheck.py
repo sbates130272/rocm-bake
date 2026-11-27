@@ -210,6 +210,15 @@ COMPONENTS = [
          source=("gh", "cupy/cupy"), norm="verbatim",
          wheel_repo="cupy-wheel", label="cupy/cupy",
          url="https://github.com/cupy/cupy"),
+    # MORI. Its tags carry upstream's own .post suffix (v1.2.3.post1),
+    # which is a valid PEP 440 version and not semver — so norm stays
+    # "verbatim" and the repo is deliberately out of
+    # STRICT_SEMVER_REPOS, whose filter would drop every .post tag and
+    # report us ahead of a release that does not exist.
+    dict(name="MORI", var="MORI_REF", readme=True,
+         source=("gh", "ROCm/mori"), norm="verbatim",
+         wheel_repo="mori-wheel", label="ROCm/mori",
+         url="https://github.com/ROCm/mori"),
     dict(name="LMCache", var="LMCACHE_REF", readme=True,
          source=("gh", "LMCache/LMCache"), norm="verbatim",
          wheel_repo="lmcache-wheel", label="LMCache/LMCache",

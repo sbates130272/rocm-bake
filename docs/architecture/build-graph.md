@@ -1,6 +1,6 @@
 # Build Graph
 
-`rocm-bake.hcl` declares sixteen buildable targets. Bake derives the
+`rocm-bake.hcl` declares eighteen buildable targets. Bake derives the
 DAG from the `contexts` each names and orders it itself, so asking for
 `vllm` alone builds everything beneath it in dependency order.
 
@@ -22,6 +22,8 @@ flowchart TD
     lmcw["lmcache-wheel"]
     vllm["vllm"]
     vllmw["vllm-wheel"]
+    mori["mori<br/><i>UMBP runtime image</i>"]
+    moriw["mori-wheel"]
 
     rocm --> base
     src --> pt
@@ -50,9 +52,11 @@ flowchart TD
     lmcw --> vllm
     tv --> vllm
     vllm --> vllmw
+    base --> mori
+    base --> moriw
 ```
 
-Five edges are not obvious from the names.
+Six edges are not obvious from the names.
 
 **`triton-wheel` builds from the base, not from `pytorch`.** Triton
 needs `cmake<4` while PyTorch pulls cmake 4.x, so they cannot share an
@@ -64,6 +68,13 @@ dependency. It is not optional: LMCache's MP server imports cupy at
 module scope, no published wheel fits this stack, and without it the
 server dies on the first request while vLLM waits five minutes before
 reporting a generic engine failure.
+
+**`mori` hangs off the base and nothing consumes it.** MORI is built
+with `BUILD_TORCH_SYMM=OFF`, so it needs no torch and sits beside
+`cupy-wheel` rather than behind the PyTorch compile. Nothing points
+*out* of it either: UMBP runs as its own multi-process service, so the
+image is a leaf rather than an input to `vllm`. See
+[MORI and UMBP](mori.md).
 
 **`vllm` consumes `lmcache-wheel`.** vLLM ships the LMCache MP
 connector but imports `lmcache.utils` from it, so the wheel must exist
@@ -85,8 +96,8 @@ why it cannot be installed into `pytorch` itself.
 
 | Group | Members |
 | --- | --- |
-| `default` | `rocm-runtime`, `pytorch-src`, `pytorch-base`, `pytorch`, `pytorch-wheel`, `triton-wheel`, `aiter-wheel`, `torchvision-wheel`, `cupy-wheel`, `nixl-wheel`, `vllm`, `vllm-wheel`, `lmcache`, `lmcache-wheel` |
-| `wheels` | `pytorch-wheel`, `triton-wheel`, `aiter-wheel`, `nixl-wheel`, `torchvision-wheel`, `cupy-wheel`, `vllm-wheel`, `lmcache-wheel` |
+| `default` | `rocm-runtime`, `pytorch-src`, `pytorch-base`, `pytorch`, `pytorch-wheel`, `triton-wheel`, `aiter-wheel`, `torchvision-wheel`, `atom-wheel`, `cupy-wheel`, `nixl-wheel`, `vllm`, `vllm-wheel`, `lmcache`, `lmcache-wheel`, `mori`, `mori-wheel` |
+| `wheels` | `pytorch-wheel`, `triton-wheel`, `aiter-wheel`, `nixl-wheel`, `torchvision-wheel`, `atom-wheel`, `cupy-wheel`, `vllm-wheel`, `lmcache-wheel`, `mori-wheel` |
 | `serving` | `torchvision-wheel`, `cupy-wheel`, `nixl-wheel`, `vllm`, `vllm-wheel`, `lmcache`, `lmcache-wheel` |
 
 There is no `all` group. Two targets are deliberately outside `default`:

@@ -1,7 +1,7 @@
 # rocm-bake
 
-Reproducible builds of PyTorch, Triton, AITER, CuPy, NIXL, vLLM and
-LMCache against ROCm, on a three-node BuildKit fleet, with every
+Reproducible builds of PyTorch, Triton, AITER, CuPy, NIXL, MORI, vLLM
+and LMCache against ROCm, on a three-node BuildKit fleet, with every
 artifact published to a local OCI registry.
 
 The build is one `docker buildx bake` file and one Makefile. Everything
@@ -11,6 +11,8 @@ else exists to make that build fast, repeatable and measurable.
 
 PyTorch from source against ROCm, with Triton, AITER, CuPy, NIXL, vLLM
 and LMCache on top, for `gfx950` (default), `gfx1201` and `gfx1250`.
+MORI builds alongside them as its own wheel and its own UMBP service
+image — see [MORI and UMBP](architecture/mori.md).
 
 And two lanes that are tied to no architecture and need no GPU. One is
 a vLLM built with no device backend, which serves from a captured

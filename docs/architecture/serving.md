@@ -24,6 +24,13 @@ make fetch-nixl-wheel          # pull a wheel artifact into ./dist
 make push-serving VLLM_REF=v0.31.0 NIXL_REF=v1.5.0
 ```
 
+!!! note "MORI is not in this group, on purpose"
+    `mori` builds from the same base and ships a UMBP buffer pool that
+    serving workloads can use, but it is a multi-process service of its
+    own rather than a layer in the vLLM image — see
+    [MORI and UMBP](mori.md). `make push-serving` does not build it;
+    `make push-mori` does.
+
 Every ref here is a release tag, never a branch: a moving ref would be
 served from the layer cache indefinitely once built, so an "update"
 would silently be a no-op.

@@ -196,7 +196,8 @@ pip install \
     asset by hand is not.
 
     Most wheels carry the ROCm version in their own version string —
-    `torchvision`, `atom`, `cupy` and `lmcache` as `+rocm10.1.0`, and
+    `torchvision`, `atom`, `cupy`, `amd_mori` and `lmcache` as
+    `+rocm10.1.0`, and
     `torch`, `triton` and `amd_aiter` appended to the commit they were
     built from, as in `2.15.0a0+git31a77fc.rocm10.1.0`. `vllm` carries
     upstream's own `+rocm101`.

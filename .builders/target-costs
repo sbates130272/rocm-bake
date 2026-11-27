@@ -179,3 +179,31 @@ cache torchvision-wheel 2595074525
 # Content-Length over every PUT/PATCH/POST to an atom-wheel path in a
 # run's zot.jsonl.
 cache atom-wheel         60000000
+
+# MEASURED 2026-11-26 on snoc-think (32 cores), ROCm 10.2.0, two runs:
+#
+#   gfx950   20261126T174903Z  113.2s  5/32 cached  sccache 140 hits/0
+#   gfx1201  20261126T175415Z  150.0s  2/32 cached  sccache 6 hits/134
+#
+# The gfx1201 run is the cold one and the one this row is sized on:
+# 134 of its 140 compile requests missed. 180 covers it with headroom
+# on a slower node.
+#
+# WHY THE SECOND ARCH WAS COLD despite C++ being nominally
+# architecture-independent: the compile line carries an arch-derived
+# define (-D__GFX9__=1 on gfx950), so every translation unit hashes
+# differently per architecture and no C++ object is shared between
+# them. Only 1-2 of the 140 requests are HIP; this is a C++ build,
+# nothing like aiter-wheel's kernel prebuild.
+#
+# mori-wheel exports the same builder stage and differs only in the
+# final stage it keeps, so its build row is the same work.
+build mori             180
+build mori-wheel       180
+
+# STILL UNMEASURED. Nothing has been pushed, so there is no zot.jsonl
+# to sum Content-Length over, which is how torchvision-wheel's row was
+# taken. 800MB is a guess sized above the wheel (which is small) to
+# cover the builder stage's cache layers, which are what cost_of
+# actually charges. Replace it after the first `make push-mori-wheel`.
+cache mori-wheel       800000000
