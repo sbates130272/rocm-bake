@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="260" viewBox="0 0 760 260" role="img" aria-label="Nightly warm build time per run">
+<style>  .s{fill:#fff} .i{fill:#1f2328} .i2{fill:#656d76}  .g{stroke:#d0d7de;stroke-width:1}  text{font-family:ui-sans-serif,-apple-system,Segoe UI,Helvetica,Arial,sans-serif}  .l{font-size:10px} .t{font-size:12px;font-weight:600}  @media (prefers-color-scheme: dark){    .s{fill:#0d1117} .i{fill:#e6edf3} .i2{fill:#8b949e}    .g{stroke:#30363d} }</style>
+<rect class="s" width="760" height="260"/>
+<text class="i t" x="12" y="18">Warm build time per night</text>
+<line class="g" x1="54" y1="214.0" x2="744" y2="214.0"/>
+<text class="i2 l" x="48" y="217.0" text-anchor="end">0m</text>
+<line class="g" x1="54" y1="167.5" x2="744" y2="167.5"/>
+<text class="i2 l" x="48" y="170.5" text-anchor="end">27m</text>
+<line class="g" x1="54" y1="121.0" x2="744" y2="121.0"/>
+<text class="i2 l" x="48" y="124.0" text-anchor="end">55m</text>
+<line class="g" x1="54" y1="74.5" x2="744" y2="74.5"/>
+<text class="i2 l" x="48" y="77.5" text-anchor="end">82m</text>
+<line class="g" x1="54" y1="28.0" x2="744" y2="28.0"/>
+<text class="i2 l" x="48" y="31.0" text-anchor="end">110m</text>
+<rect x="61.1" y="101.3" width="1.8" height="112.7" rx="2" fill="#2a78d6"/>
+<text class="i2 l" x="65.9" y="230" text-anchor="middle">20261104</text>
+<rect x="84.9" y="141.2" width="1.8" height="72.8" rx="2" fill="#2a78d6"/>
+<text class="i2 l" x="89.7" y="230" text-anchor="middle">20261105</text>
+<rect x="108.7" y="125.3" width="1.8" height="88.7" rx="2" fill="#2a78d6"/>
+<text class="i2 l" x="113.5" y="230" text-anchor="middle">20261106</text>
+<rect x="132.5" y="141.2" width="1.8" height="72.8" rx="2" fill="#2a78d6"/>
+<text class="i2 l" x="137.3" y="230" text-anchor="middle">20261107</text>
+<rect x="156.3" y="140.5" width="1.8" height="73.5" rx="2" fill="#2a78d6"/>
+<text class="i2 l" x="161.1" y="230" text-anchor="middle">20261110</text>
+<rect x="180.1" y="190.1" width="1.8" height="23.9" rx="2" fill="#2a78d6"/>
+<text class="i2 l" x="184.9" y="230" text-anchor="middle">20261111</text>
+<rect x="203.9" y="155.2" width="1.8" height="58.8" rx="2" fill="#2a78d6"/>
+<text class="i2 l" x="208.7" y="230" text-anchor="middle">20261112</text>
+<rect x="232.4" y="130.3" width="1.8" height="83.7" rx="2" fill="#1baf7a"/>
+<text class="i2 l" x="232.4" y="230" text-anchor="middle">20261112</text>
+<rect x="251.5" y="156.8" width="1.8" height="57.2" rx="2" fill="#2a78d6"/>
+<text class="i2 l" x="256.2" y="230" text-anchor="middle">20261112</text>
+<rect x="270.5" y="213.9" width="1.8" height="0.1" rx="2" fill="#eb6834"/>
+<text class="i2 l" x="280.0" y="230" text-anchor="middle">20261112</text>
+<rect x="294.3" y="213.9" width="1.8" height="0.1" rx="2" fill="#eb6834"/>
+<text class="i2 l" x="303.8" y="230" text-anchor="middle">20261112</text>
+<rect x="318.1" y="122.0" width="1.8" height="92.0" rx="2" fill="#eb6834"/>
+<text class="i2 l" x="327.6" y="230" text-anchor="middle">20261112</text>
+<rect x="346.7" y="158.9" width="1.8" height="55.1" rx="2" fill="#2a78d6"/>
+<rect x="351.4" y="156.0" width="1.8" height="58.0" rx="2" fill="#1baf7a"/>
+<text class="i2 l" x="351.4" y="230" text-anchor="middle">20261113</text>
+<rect x="370.4" y="160.3" width="1.8" height="53.7" rx="2" fill="#2a78d6"/>
+<text class="i2 l" x="375.2" y="230" text-anchor="middle">20261113</text>
+<rect x="394.2" y="158.5" width="1.8" height="55.5" rx="2" fill="#2a78d6"/>
+<text class="i2 l" x="399.0" y="230" text-anchor="middle">20261114</text>
+<rect x="418.0" y="191.7" width="1.8" height="22.3" rx="2" fill="#2a78d6"/>
+<text class="i2 l" x="422.8" y="230" text-anchor="middle">20261116</text>
+<rect x="441.8" y="192.1" width="1.8" height="21.9" rx="2" fill="#2a78d6"/>
+<text class="i2 l" x="446.6" y="230" text-anchor="middle">20261116</text>
+<rect x="465.6" y="213.8" width="1.8" height="0.2" rx="2" fill="#2a78d6"/>
+<text class="i2 l" x="470.4" y="230" text-anchor="middle">20261116</text>
+<rect x="489.4" y="169.0" width="1.8" height="45.0" rx="2" fill="#2a78d6"/>
+<text class="i2 l" x="494.2" y="230" text-anchor="middle">20261117</text>
+<rect x="513.2" y="208.3" width="1.8" height="5.7" rx="2" fill="#2a78d6"/>
+<text class="i2 l" x="518.0" y="230" text-anchor="middle">20261118</text>
+<rect x="537.0" y="192.2" width="1.8" height="21.8" rx="2" fill="#2a78d6"/>
+<text class="i2 l" x="541.8" y="230" text-anchor="middle">20261120</text>
+<rect x="560.8" y="111.5" width="1.8" height="102.5" rx="2" fill="#2a78d6"/>
+<text class="i2 l" x="565.6" y="230" text-anchor="middle">20261120</text>
+<rect x="584.6" y="208.9" width="1.8" height="5.1" rx="2" fill="#2a78d6"/>
+<text class="i2 l" x="589.3" y="230" text-anchor="middle">20261121</text>
+<rect x="608.4" y="209.0" width="1.8" height="5.0" rx="2" fill="#2a78d6"/>
+<text class="i2 l" x="613.1" y="230" text-anchor="middle">20261123</text>
+<rect x="632.2" y="187.7" width="1.8" height="26.4" rx="2" fill="#2a78d6"/>
+<text class="i2 l" x="636.9" y="230" text-anchor="middle">20261125</text>
+<rect x="656.0" y="114.1" width="1.8" height="99.9" rx="2" fill="#2a78d6"/>
+<text class="i2 l" x="660.7" y="230" text-anchor="middle">20261126</text>
+<rect x="679.8" y="161.2" width="1.8" height="52.8" rx="2" fill="#2a78d6"/>
+<text class="i2 l" x="684.5" y="230" text-anchor="middle">20261126</text>
+<rect x="698.8" y="101.9" width="1.8" height="112.1" rx="2" fill="#eb6834"/>
+<rect x="703.6" y="187.7" width="1.8" height="26.3" rx="2" fill="#2a78d6"/>
+<rect x="708.3" y="103.4" width="1.8" height="110.6" rx="2" fill="#1baf7a"/>
+<rect x="713.1" y="28.4" width="1.8" height="185.6" rx="2" fill="#9456c9"/>
+<text class="i2 l" x="708.3" y="230" text-anchor="middle">20261126</text>
+<rect x="727.3" y="163.4" width="1.8" height="50.6" rx="2" fill="#2a78d6"/>
+<text class="i2 l" x="732.1" y="230" text-anchor="middle">20261127</text>
+<rect x="54" y="244" width="9" height="9" rx="2" fill="#eb6834"/>
+<text class="i2 l" x="67" y="252">gfx1151</text>
+<rect x="162" y="244" width="9" height="9" rx="2" fill="#2a78d6"/>
+<text class="i2 l" x="175" y="252">gfx1201</text>
+<rect x="270" y="244" width="9" height="9" rx="2" fill="#1baf7a"/>
+<text class="i2 l" x="283" y="252">gfx1250</text>
+<rect x="378" y="244" width="9" height="9" rx="2" fill="#9456c9"/>
+<text class="i2 l" x="391" y="252">gfx950</text>
+</svg>

@@ -1,0 +1,95 @@
+{
+  "arch": "gfx1201",
+  "registry": "472426151104.dkr.ecr.us-west-2.amazonaws.com",
+  "phases": {
+    "warm": {
+      "seconds": 3148,
+      "rc": 0,
+      "cache_errors": 0
+    }
+  },
+  "cost": {
+    "instance": "2xlarge",
+    "usd_per_min": 0.2,
+    "rate_verified": true,
+    "billed_seconds": 3148,
+    "usd": 10.49
+  },
+  "metrics": {
+    "sccache": {
+      "requests": 4494,
+      "executed": 4276,
+      "hits": 2708,
+      "misses": 1537,
+      "hit_rate": 63.8
+    },
+    "layer_cache": {
+      "done": 567,
+      "cached": 0,
+      "import_misses": 40
+    },
+    "targets": {
+      "pytorch-wheel": {
+        "seconds": 5309.1,
+        "steps": 68
+      },
+      "atom-wheel": {
+        "seconds": 1713.0,
+        "steps": 21
+      },
+      "lmcache": {
+        "seconds": 1563.5,
+        "steps": 22
+      },
+      "vllm": {
+        "seconds": 1549.4,
+        "steps": 22
+      },
+      "rocm-runtime": {
+        "seconds": 1493.0,
+        "steps": 86
+      },
+      "pytorch-src": {
+        "seconds": 1311.6,
+        "steps": 34
+      },
+      "triton-wheel": {
+        "seconds": 1187.2,
+        "steps": 81
+      },
+      "cupy-wheel": {
+        "seconds": 1131.8,
+        "steps": 36
+      },
+      "nixl-wheel": {
+        "seconds": 981.1,
+        "steps": 54
+      },
+      "lmcache-wheel": {
+        "seconds": 839.5,
+        "steps": 15
+      },
+      "vllm-wheel": {
+        "seconds": 788.8,
+        "steps": 9
+      },
+      "aiter-wheel": {
+        "seconds": 743.1,
+        "steps": 35
+      },
+      "torchvision-wheel": {
+        "seconds": 619.4,
+        "steps": 34
+      },
+      "pytorch": {
+        "seconds": 583.2,
+        "steps": 17
+      },
+      "pytorch-base": {
+        "seconds": 408.1,
+        "steps": 31
+      }
+    },
+    "vertex_seconds": 20221.8
+  }
+}

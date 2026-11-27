@@ -1,0 +1,121 @@
+{
+  "arch": "gfx1201",
+  "registry": "472426151104.dkr.ecr.us-west-2.amazonaws.com",
+  "phases": {
+    "warm": {
+      "seconds": 1875,
+      "rc": 0,
+      "cache_errors": 0
+    }
+  },
+  "cost": {
+    "instance": "xlarge",
+    "usd_per_min": 0.0798,
+    "rate_verified": true,
+    "billed_seconds": 1875,
+    "usd": 2.49
+  },
+  "metrics": {
+    "sccache": {
+      "requests": 7670,
+      "executed": 7451,
+      "hits": 6721,
+      "misses": 699,
+      "hit_rate": 90.6
+    },
+    "layer_cache": {
+      "done": 525,
+      "cached": 137,
+      "import_misses": 40,
+      "build_steps": 422,
+      "build_steps_cached": 133
+    },
+    "targets": {
+      "lmcache": {
+        "seconds": 1861.9,
+        "steps": 86,
+        "cached": 20
+      },
+      "vllm": {
+        "seconds": 1595.5,
+        "steps": 130,
+        "cached": 22
+      },
+      "atom-wheel": {
+        "seconds": 1401.1,
+        "steps": 45,
+        "cached": 7
+      },
+      "vllm-wheel": {
+        "seconds": 1157.3,
+        "steps": 20,
+        "cached": 0
+      },
+      "pytorch": {
+        "seconds": 807.0,
+        "steps": 39,
+        "cached": 20
+      },
+      "nixl-wheel": {
+        "seconds": 647.4,
+        "steps": 38,
+        "cached": 13
+      },
+      "pytorch-wheel": {
+        "seconds": 480.2,
+        "steps": 28,
+        "cached": 14
+      },
+      "cupy-wheel": {
+        "seconds": 405.1,
+        "steps": 23,
+        "cached": 9
+      },
+      "triton-wheel": {
+        "seconds": 399.0,
+        "steps": 21,
+        "cached": 15
+      },
+      "aiter-wheel": {
+        "seconds": 394.1,
+        "steps": 20,
+        "cached": 0
+      },
+      "lmcache-wheel": {
+        "seconds": 344.8,
+        "steps": 14,
+        "cached": 0
+      },
+      "torchvision-wheel": {
+        "seconds": 322.9,
+        "steps": 23,
+        "cached": 0
+      },
+      "pytorch-base": {
+        "seconds": 58.7,
+        "steps": 9,
+        "cached": 9
+      },
+      "rocm-runtime": {
+        "seconds": 47.2,
+        "steps": 10,
+        "cached": 4
+      },
+      "pytorch-src": {
+        "seconds": 41.6,
+        "steps": 7,
+        "cached": 4
+      }
+    },
+    "vertex_seconds": 9963.8,
+    "unattributed_seconds": 0.0
+  },
+  "footprint": {
+    "docker_root": "/var/lib/docker",
+    "disk_used_bytes": 247595929600,
+    "disk_avail_bytes": 230206578688,
+    "buildkit_store_bytes": 78040000000,
+    "mem_anon_bytes": 201797632,
+    "mem_file_bytes": 1737306112
+  }
+}

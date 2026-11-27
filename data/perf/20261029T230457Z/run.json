@@ -1,0 +1,10 @@
+{
+  "stamp": "20261029T230457Z",
+  "arch": "gfx1201",
+  "mode": "normal",
+  "interval_seconds": 5,
+  "sccache_key_prefix": "",
+  "stages": ["vllm-wheel pytorch-wheel aiter-wheel", "lmcache-wheel nixl-wheel triton-wheel", "cupy-wheel"],
+  "vcs_ref": "15e12d7",
+  "vcs_dirty": true
+}

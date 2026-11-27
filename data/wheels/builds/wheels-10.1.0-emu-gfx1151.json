@@ -1,0 +1,109 @@
+{
+ "arch": "emu-gfx1151",
+ "base_url": "https://github.com/sbates130272/rocm-bake/releases/download/wheels-10.1.0-emu-gfx1151/",
+ "build": "20261116",
+ "files": [
+  {
+   "filename": "llm_emu-0.1.0-py3-none-any.whl",
+   "metadata_sha256": null,
+   "project": "llm-emu",
+   "requires_python": null,
+   "sha256": "89d95509cd31282941e638a8d3bb81e23f08b1b1ac773415bbd68a129836d040",
+   "size": 38215,
+   "version": "0.1.0"
+  },
+  {
+   "filename": "rocm_torch-10.1.0+emu.gfx1151.a11c3b2a-py3-none-any.whl",
+   "metadata_sha256": null,
+   "project": "rocm-torch",
+   "requires_python": null,
+   "sha256": "8b350800e885c8b6302ce60a546a8efcf9060090201cec2de65dd7a23c2c661d",
+   "size": 1228,
+   "version": "10.1.0+emu.gfx1151.a11c3b2a"
+  },
+  {
+   "filename": "vllm-0.33.0+empty-py3-none-any.whl",
+   "metadata_sha256": null,
+   "project": "vllm",
+   "requires_python": null,
+   "sha256": "86e2e444fb736318c46aa9d520ed5379d33d9af6af0a3285470c03db383e7064",
+   "size": 12524897,
+   "version": "0.33.0+empty"
+  },
+  {
+   "filename": "vllm_emu_pack_gfx1151-0.1.0+874d814f-py3-none-any.whl",
+   "metadata_sha256": null,
+   "project": "vllm-emu-pack-gfx1151",
+   "requires_python": null,
+   "sha256": "8b2a8cf241c582835a03009a281969b81f55a4393d6d3cc2c5ab962de7016490",
+   "size": 9744,
+   "version": "0.1.0+874d814f"
+  },
+  {
+   "filename": "vllm_emu_shim-0.1.0-py3-none-any.whl",
+   "metadata_sha256": null,
+   "project": "vllm-emu-shim",
+   "requires_python": null,
+   "sha256": "3a46b25d181acc739a253f4305bb43de409d881f41183f8870062414b16917fe",
+   "size": 26361,
+   "version": "0.1.0"
+  }
+ ],
+ "metapackage": "10.1.0+emu.gfx1151.a11c3b2a",
+ "python": null,
+ "rocm": "10.1.0",
+ "schema": 1,
+ "synthesised": true,
+ "verdicts": [
+  {
+   "best": true,
+   "elf_members": 0,
+   "kind": "pure",
+   "needs_glibc": null,
+   "newest_policy": "manylinux_2_41_x86_64",
+   "project": "llm-emu",
+   "tag": "any",
+   "wheel": "llm_emu-0.1.0-py3-none-any.whl"
+  },
+  {
+   "best": true,
+   "elf_members": 0,
+   "kind": "pure",
+   "needs_glibc": null,
+   "newest_policy": "manylinux_2_41_x86_64",
+   "project": "rocm-torch",
+   "tag": "any",
+   "wheel": "rocm_torch-10.1.0+emu.gfx1151.a11c3b2a-py3-none-any.whl"
+  },
+  {
+   "best": true,
+   "elf_members": 0,
+   "kind": "pure",
+   "needs_glibc": null,
+   "newest_policy": "manylinux_2_41_x86_64",
+   "project": "vllm",
+   "tag": "any",
+   "wheel": "vllm-0.33.0+empty-py3-none-any.whl"
+  },
+  {
+   "best": true,
+   "elf_members": 0,
+   "kind": "pure",
+   "needs_glibc": null,
+   "newest_policy": "manylinux_2_41_x86_64",
+   "project": "vllm-emu-pack-gfx1151",
+   "tag": "any",
+   "wheel": "vllm_emu_pack_gfx1151-0.1.0+874d814f-py3-none-any.whl"
+  },
+  {
+   "best": true,
+   "elf_members": 0,
+   "kind": "pure",
+   "needs_glibc": null,
+   "newest_policy": "manylinux_2_41_x86_64",
+   "project": "vllm-emu-shim",
+   "tag": "any",
+   "wheel": "vllm_emu_shim-0.1.0-py3-none-any.whl"
+  }
+ ]
+}

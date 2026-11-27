@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ROCm wheels — sbates130272/rocm-bake</title>
+<style>
+ body { font-family: system-ui, sans-serif; max-width: 54rem;
+        margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+ table { border-collapse: collapse; margin: 1rem 0; width: 100%; }
+ th, td { text-align: left; padding: .35rem .6rem;
+          border-bottom: 1px solid #ddd; }
+ pre { background: #f6f8fa; padding: .8rem; overflow-x: auto;
+       border-radius: 6px; }
+ code { font-size: .92em; }
+ .note { color: #555; font-size: .92em; }
+</style>
+</head>
+<body>
+<h1>ROCm PyTorch wheels</h1>
+
+<p>One PEP 503 index per ROCm version and GPU architecture. The wheels
+themselves are GitHub release assets; these pages point at them, with a
+<code>#sha256=</code> on every link so pip verifies what it downloads.</p>
+
+<pre>pip install \
+  --index-url https://sbates130272.github.io/rocm-bake/data/wheels/gfx1151/ \
+  --extra-index-url https://pypi.org/simple \
+  "rocm-torch[device-gfx1151]"</pre>
+
+<table>
+<thead><tr><th>ROCm</th><th>index</th><th><code>torch</code></th><th><code>triton</code></th><th><code>vllm</code></th>
+<th><code>rocm-torch</code></th><th>builds</th>
+<th>platform tags</th></tr></thead>
+<tbody>
+<tr><td><code>10.2.0</code></td><td><a href="rocm10.2/gfx1151/"><code>rocm10.2/gfx1151/</code></a> <span class="note">also <a href="gfx1151/"><code>gfx1151/</code></a></span></td><td><code>2.15.0a0+git31a77fc.rocm10.2.0</code></td><td><code>3.9.0+gitaad2a60d.rocm10.2.0</code></td><td><code>0.34.0+rocm102</code></td><td><code>10.2.0.20261126.1+gfx1151.5e6efac7</code></td><td>4</td><td>5 manylinux · 4 linux_x86_64 · 3 pure</td></tr>
+<tr><td><code>10.2.0</code></td><td><a href="rocm10.2/gfx1201/"><code>rocm10.2/gfx1201/</code></a> <span class="note">also <a href="gfx1201/"><code>gfx1201/</code></a></span></td><td><code>2.15.0a0+git31a77fc.rocm10.2.0</code></td><td><code>3.9.0+gitaad2a60d.rocm10.2.0</code></td><td><code>0.34.0+rocm102</code></td><td><code>10.2.0.20261126+gfx1201.5e6efac7</code></td><td>5</td><td>5 manylinux · 4 linux_x86_64 · 3 pure</td></tr>
+<tr><td><code>10.2.0</code></td><td><a href="rocm10.2/gfx1250/"><code>rocm10.2/gfx1250/</code></a> <span class="note">also <a href="gfx1250/"><code>gfx1250/</code></a></span></td><td><code>2.15.0a0+git31a77fc.rocm10.2.0</code></td><td><code>3.9.0+gitaad2a60d.rocm10.2.0</code></td><td><code>0.34.0+rocm102</code></td><td><code>10.2.0.20261126.1+gfx1250.5e6efac7</code></td><td>4</td><td>5 manylinux · 4 linux_x86_64 · 3 pure</td></tr>
+<tr><td><code>10.2.0</code></td><td><a href="rocm10.2/gfx950/"><code>rocm10.2/gfx950/</code></a> <span class="note">also <a href="gfx950/"><code>gfx950/</code></a></span></td><td><code>2.15.0a0+git31a77fc.rocm10.2.0</code></td><td><code>3.9.0+gitaad2a60d.rocm10.2.0</code></td><td><code>0.34.0+rocm102</code></td><td><code>10.2.0.20261126+gfx950.5e6efac7</code></td><td>3</td><td>5 manylinux · 4 linux_x86_64 · 3 pure</td></tr>
+<tr><td><code>10.1.0</code></td><td><a href="rocm10.1/emu-gfx1151/"><code>rocm10.1/emu-gfx1151/</code></a> <span class="note">also <a href="emu-gfx1151/"><code>emu-gfx1151/</code></a></span></td><td><code>—</code></td><td><code>—</code></td><td><code>0.33.0+empty</code></td><td><code>10.1.0+emu.gfx1151.a11c3b2a</code></td><td>1</td><td>5 pure</td></tr>
+<tr><td><code>10.1.0</code></td><td><a href="rocm10.1/emu-gfx1250/"><code>rocm10.1/emu-gfx1250/</code></a> <span class="note">also <a href="emu-gfx1250/"><code>emu-gfx1250/</code></a></span></td><td><code>—</code></td><td><code>—</code></td><td><code>0.33.0+empty</code></td><td><code>10.1.0+emu.gfx1250.92943a3f</code></td><td>1</td><td>5 pure</td></tr>
+<tr><td><code>10.1.0</code></td><td><a href="rocm10.1/gfx1151/"><code>rocm10.1/gfx1151/</code></a></td><td><code>2.15.0a0+git31a77fc.rocm10.1.0</code></td><td><code>3.9.0+gitaad2a60d.rocm10.1.0</code></td><td><code>0.34.0+rocm101</code></td><td><code>10.1.0+gfx1151.6b049405</code></td><td>1</td><td>1 pure</td></tr>
+<tr><td><code>10.1.0</code></td><td><a href="rocm10.1/gfx1201/"><code>rocm10.1/gfx1201/</code></a></td><td><code>2.15.0a0+git31a77fc.rocm10.1.0</code></td><td><code>3.9.0+gitaad2a60d.rocm10.1.0</code></td><td><code>0.34.0+rocm101</code></td><td><code>10.1.0+gfx1201.6b049405</code></td><td>1</td><td>1 pure</td></tr>
+<tr><td><code>10.1.0</code></td><td><a href="rocm10.1/gfx1250/"><code>rocm10.1/gfx1250/</code></a></td><td><code>2.15.0a0+git31a77fc.rocm10.1.0</code></td><td><code>3.9.0+gitaad2a60d.rocm10.1.0</code></td><td><code>0.34.0+rocm101</code></td><td><code>10.1.0+gfx1250.6b049405</code></td><td>1</td><td>1 pure</td></tr>
+<tr><td><code>10.1.0</code></td><td><a href="rocm10.1/gfx950/"><code>rocm10.1/gfx950/</code></a></td><td><code>2.15.0a0+git31a77fc.rocm10.1.0</code></td><td><code>3.9.0+gitaad2a60d.rocm10.1.0</code></td><td><code>0.34.0+rocm101</code></td><td><code>10.1.0+gfx950.6b049405</code></td><td>1</td><td>1 pure</td></tr>
+</tbody>
+</table>
+
+<h2>Choosing a version</h2>
+
+<p><code>data/wheels/&lt;arch&gt;/</code> follows the newest ROCm
+published for that architecture, and an unpinned install from it takes
+the newest build. Both can be held still.</p>
+
+<p><strong>A ROCm version</strong> has its own index, which a newer
+ROCm never changes:</p>
+
+<pre>pip install \
+  --index-url https://sbates130272.github.io/rocm-bake/data/wheels/rocm10.2/gfx1151/ \
+  --extra-index-url https://pypi.org/simple \
+  "rocm-torch[device-gfx1151]"</pre>
+
+<p><strong>A build</strong> is a version of <code>rocm-torch</code>.
+Every build ever published stays in its index, so pinning the
+metapackage pins the version of every wheel in the set:</p>
+
+<pre>pip install \
+  --index-url https://sbates130272.github.io/rocm-bake/data/wheels/rocm10.2/gfx1151/ \
+  --extra-index-url https://pypi.org/simple \
+  "rocm-torch[device-gfx1151]==10.2.0.20261126.1"</pre>
+
+<p class="note">Each index page lists its builds. The part of the
+version after <code>+</code> is not needed to pin one. A build pin
+selects versions, not bytes: where two builds share a filename the
+index offers the newer file. Published files are never replaced, so a
+lockfile that records hashes is what holds the exact ones.</p>
+
+<h2>Reading the versions</h2>
+
+<p>A version says which ROCm a wheel was built against. Nothing in a
+filename says which <em>GPU</em>: <code>torch</code> for two
+architectures is the same filename and differs by tens of MB of device
+code. That is what the per-arch index path and the
+<code>rocm-torch</code> metapackage carry, and why installing through
+the index is the only correct way to get these.</p>
+
+<p class="note">The extra index is not optional — ordinary
+dependencies resolve from PyPI. Our wheels win over same-named PyPI
+projects because the metapackage pins exact versions whose local
+segment (<code>+rocm…</code>) upstream cannot match.</p>
+
+<p class="note">Platform tags differ by wheel and are not a choice: <code>auditwheel</code> grants a <code>manylinux</code> tag only where the compiled code's glibc symbols allow one. Some wheels here reference symbols newer than any defined policy and stay <code>linux_x86_64</code>; some contain no CPU code at all. Each architecture's index lists the measured tag and the glibc behind it, under <em>Platform tags</em>.</p>
+
+<p><a href="../perf/">Build performance</a> ·
+<a href="https://github.com/sbates130272/rocm-bake">Source</a></p>
+</body>
+</html>

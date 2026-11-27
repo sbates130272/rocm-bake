@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Nightly 20261123T105236Z — rocm-bake</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2016%2016'%3E%3Crect%20x='2'%20y='9'%20width='3'%20height='5'%20rx='1'%20fill='%232a78d6'/%3E%3Crect%20x='6.5'%20y='5'%20width='3'%20height='9'%20rx='1'%20fill='%23eb6834'/%3E%3Crect%20x='11'%20y='2'%20width='3'%20height='12'%20rx='1'%20fill='%231baf7a'/%3E%3C/svg%3E">
+<style>
+:root { color-scheme: light dark; }
+body { font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, sans-serif;
+       max-width: 52rem; margin: 3rem auto; padding: 0 1.25rem; }
+h1 { font-size: 1.5rem; margin-bottom: .25rem; }
+.sub { opacity: .7; margin-top: 0; }
+.note { border-left: 3px solid #2a78d6; padding: .6rem 0 .6rem .9rem;
+        margin: 1.5rem 0; opacity: .85; font-size: .93rem; }
+table { border-collapse: collapse; width: 100%; margin-top: 1.5rem;
+        font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: .45rem .7rem;
+         border-bottom: 1px solid color-mix(in srgb, currentColor 15%, transparent); }
+th { font-weight: 600; opacity: .7; font-size: .85rem;
+     text-transform: uppercase; letter-spacing: .03em; }
+code { font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+       padding: .1rem .3rem; border-radius: 3px;
+       background: color-mix(in srgb, currentColor 8%, transparent); }
+a { color: #2a78d6; text-decoration-thickness: 1px; text-underline-offset: 2px; }
+.fail { color: #eb6834; font-weight: 600; }
+.warn { color: #eb6834; }
+.skip { opacity: .45; }
+
+h2 { font-size: 1.15rem; margin: 2.5rem 0 .25rem; }
+h3 { font-size: .85rem; margin: 1.75rem 0 0; opacity: .7;
+     text-transform: uppercase; letter-spacing: .03em; }
+.tiles { display: grid; gap: .75rem; margin-top: 1rem;
+         grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr)); }
+.tile { padding: .7rem .85rem; border-radius: 6px;
+        border: 1px solid color-mix(in srgb, currentColor 15%, transparent); }
+.tile .k { font-size: .78rem; opacity: .7; text-transform: uppercase;
+           letter-spacing: .03em; }
+.tile .v { font-size: 1.35rem; font-weight: 600; margin: .1rem 0;
+           font-variant-numeric: tabular-nums; }
+.tile .d { font-size: .82rem; opacity: .7; }
+td.num, th.num { text-align: right; }
+td.barcell { width: 40%; }
+.track { height: 10px; }
+.bar { height: 10px; min-width: 2px; border-radius: 0 4px 4px 0;
+       background: #2a78d6; }
+</style>
+</head><body>
+<h1>Nightly 20261123T105236Z</h1>
+<p class="sub"><a href="../">All nightly runs</a></p>
+<h2><code>gfx1201</code></h2>
+<div class="tiles"><div class="tile"><div class="k">warm build</div><div class="v ">2m56s</div><div class="d">passed</div></div><div class="tile"><div class="k">cost</div><div class="v ">$0.23</div><div class="d">xlarge at $0.0798/min</div></div><div class="tile"><div class="k">layer cache</div><div class="v ">399/424</div><div class="d">94% of build steps cached</div></div><div class="tile"><div class="k">sccache</div><div class="v ">—</div><div class="d">no compiler ran</div></div><div class="tile"><div class="k">cache imports missed</div><div class="v ">40</div><div class="d">refs that do not exist in this registry</div></div><div class="tile"><div class="k">cache export errors</div><div class="v ">0</div><div class="d">layers that failed to push</div></div><div class="tile"><div class="k">BuildKit store</div><div class="v ">23.3 GB</div><div class="d">what this build materialised</div></div><div class="tile"><div class="k">disk used</div><div class="v ">179.2 GiB</div><div class="d">265.8 GiB free</div></div><div class="tile"><div class="k">memory after build</div><div class="v ">0.2 GiB</div><div class="d">driver process only, not the compilers</div></div></div>
+<h3>Where the time went</h3><table><thead><tr><th>Target</th><th></th><th class="num">Time</th><th class="num">Steps run</th><th class="num">Steps cached</th></tr></thead><tbody><tr><td><code>vllm</code></td><td class="barcell"><div class="track" title="vllm: 2m06s"><div class="bar" style="width:100.0%"></div></div></td><td class="num">2m06s</td><td class="num">15</td><td class="num">117</td></tr><tr><td><code>lmcache-wheel</code></td><td class="barcell"><div class="track" title="lmcache-wheel: 1m52s"><div class="bar" style="width:89.4%"></div></div></td><td class="num">1m52s</td><td class="num">10</td><td class="num">16</td></tr><tr><td><code>vllm-wheel</code></td><td class="barcell"><div class="track" title="vllm-wheel: 1m18s"><div class="bar" style="width:62.1%"></div></div></td><td class="num">1m18s</td><td class="num">11</td><td class="num">27</td></tr><tr><td><code>lmcache</code></td><td class="barcell"><div class="track" title="lmcache: 0m49s"><div class="bar" style="width:39.0%"></div></div></td><td class="num">0m49s</td><td class="num">12</td><td class="num">89</td></tr><tr><td><code>aiter-wheel</code></td><td class="barcell"><div class="track" title="aiter-wheel: 0m16s"><div class="bar" style="width:12.4%"></div></div></td><td class="num">0m16s</td><td class="num">10</td><td class="num">45</td></tr><tr><td><code>pytorch</code></td><td class="barcell"><div class="track" title="pytorch: 0m16s"><div class="bar" style="width:12.3%"></div></div></td><td class="num">0m16s</td><td class="num">14</td><td class="num">45</td></tr><tr><td><code>nixl-wheel</code></td><td class="barcell"><div class="track" title="nixl-wheel: 0m14s"><div class="bar" style="width:11.3%"></div></div></td><td class="num">0m14s</td><td class="num">6</td><td class="num">51</td></tr><tr><td><code>torchvision-wheel</code></td><td class="barcell"><div class="track" title="torchvision-wheel: 0m12s"><div class="bar" style="width:9.9%"></div></div></td><td class="num">0m12s</td><td class="num">4</td><td class="num">14</td></tr><tr><td><code>atom-wheel</code></td><td class="barcell"><div class="track" title="atom-wheel: 0m12s"><div class="bar" style="width:9.4%"></div></div></td><td class="num">0m12s</td><td class="num">7</td><td class="num">21</td></tr><tr><td><code>pytorch-wheel</code></td><td class="barcell"><div class="track" title="pytorch-wheel: 0m11s"><div class="bar" style="width:8.9%"></div></div></td><td class="num">0m11s</td><td class="num">13</td><td class="num">13</td></tr><tr><td><code>triton-wheel</code></td><td class="barcell"><div class="track" title="triton-wheel: 0m11s"><div class="bar" style="width:8.4%"></div></div></td><td class="num">0m11s</td><td class="num">11</td><td class="num">24</td></tr><tr><td><code>cupy-wheel</code></td><td class="barcell"><div class="track" title="cupy-wheel: 0m07s"><div class="bar" style="width:5.5%"></div></div></td><td class="num">0m07s</td><td class="num">8</td><td class="num">24</td></tr><tr><td><code>pytorch-base</code></td><td class="barcell"><div class="track" title="pytorch-base: 0m06s"><div class="bar" style="width:4.5%"></div></div></td><td class="num">0m06s</td><td class="num">9</td><td class="num">9</td></tr><tr><td><code>rocm-runtime</code></td><td class="barcell"><div class="track" title="rocm-runtime: 0m05s"><div class="bar" style="width:3.8%"></div></div></td><td class="num">0m05s</td><td class="num">9</td><td class="num">4</td></tr><tr><td><code>pytorch-src</code></td><td class="barcell"><div class="track" title="pytorch-src: 0m03s"><div class="bar" style="width:2.7%"></div></div></td><td class="num">0m03s</td><td class="num">8</td><td class="num">4</td></tr></tbody></table><p class="sub">Targets build concurrently and a stage shared by two targets is counted under each, so these times overlap and add up to more than the wall clock. The sccache figure covers only the targets that print their statistics.</p>
+<p class="sub"><a href="gfx1201/report.md">report.md</a> · <a href="gfx1201/summary.json">summary.json</a></p>
+</body></html>

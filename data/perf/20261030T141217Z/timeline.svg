@@ -1,0 +1,157 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="236" viewBox="0 0 900 236" role="img" aria-label="Build steps by builder">
+<style>
+  .surface{fill:#fcfcfb} .ink{fill:#0b0b0b}
+  .ink2{fill:#52514e} .grid{stroke:#e4e3df;stroke-width:1}
+  text{font-family:ui-sans-serif,-apple-system,Segoe UI,Helvetica,Arial,sans-serif}
+  .t{font-size:13px;font-weight:600} .l{font-size:11px}
+  .v{font-size:11px;font-weight:600}
+  @media (prefers-color-scheme: dark){
+    .surface{fill:#1a1a19} .ink{fill:#f0efec}
+    .ink2{fill:#c3c2b7} .grid{stroke:#2e2e2c}
+    .s-0{stroke:#3987e5} .d-0{fill:#3987e5}
+    .s-1{stroke:#d95926} .d-1{fill:#d95926}
+    .s-2{stroke:#199e70} .d-2{fill:#199e70}
+  }
+  .s-0,.s-1,.s-2{fill:none;stroke-width:2}
+  .d-0,.d-1,.d-2{stroke:none}
+  .s-0{stroke:#2a78d6} .d-0{fill:#2a78d6}
+  .s-1{stroke:#eb6834} .d-1{fill:#eb6834}
+  .s-2{stroke:#1baf7a} .d-2{fill:#1baf7a}
+</style>
+<rect width="900" height="236" class="surface"/>
+<text x="16" y="24" class="t ink">Build steps by builder</text>
+<text x="16" y="77" class="l ink">snoc-gaming</text>
+<line x1="118" y1="110" x2="880" y2="110" class="grid"/>
+<rect x="120.3" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="120.4" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="120.4" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="120.8" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="120.8" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="121.6" y="42" width="5.2" height="18" rx="3" class="d-2"/>
+<rect x="126.8" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="126.8" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="126.9" y="42" width="66.9" height="18" rx="3" class="d-2"/>
+<text x="131.9" y="55" class="l" fill="#fcfcfb" stroke="none">cupy-whee</text>
+<rect x="193.7" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="194.0" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="194.7" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="194.7" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="195.4" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="195.6" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="195.7" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="195.7" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="196.1" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="196.1" y="42" width="4.6" height="18" rx="3" class="d-2"/>
+<rect x="200.7" y="42" width="1.7" height="18" rx="3" class="d-2"/>
+<rect x="202.4" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="202.5" y="42" width="27.0" height="18" rx="3" class="d-2"/>
+<rect x="229.4" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="229.5" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="230.1" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="230.1" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="230.1" y="42" width="22.9" height="18" rx="3" class="d-2"/>
+<rect x="253.1" y="42" width="12.1" height="18" rx="3" class="d-2"/>
+<rect x="265.2" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="265.3" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="266.0" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="266.8" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="266.8" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="267.1" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="267.3" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="267.4" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="267.4" y="64" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="267.4" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="267.5" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="267.5" y="42" width="4.3" height="18" rx="3" class="d-2"/>
+<rect x="271.8" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="271.8" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="272.0" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="272.0" y="42" width="5.0" height="18" rx="3" class="d-2"/>
+<rect x="276.9" y="42" width="8.0" height="18" rx="3" class="d-2"/>
+<rect x="285.0" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="285.5" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="285.6" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="285.9" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="286.0" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="286.1" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="286.1" y="64" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="286.1" y="86" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="286.5" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="286.8" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="286.9" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="288.3" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="288.3" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="288.9" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="289.0" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="289.9" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="289.9" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="289.9" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="291.1" y="42" width="26.0" height="18" rx="3" class="d-2"/>
+<rect x="317.2" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="317.2" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="317.7" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="317.7" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<rect x="317.8" y="42" width="1.5" height="18" rx="3" class="d-2"/>
+<text x="16" y="142" class="l ink">snoc-strix</text>
+<line x1="118" y1="164" x2="880" y2="164" class="grid"/>
+<rect x="119.0" y="118" width="1.5" height="18" rx="3" class="d-0"/>
+<rect x="119.2" y="118" width="1.5" height="18" rx="3" class="d-0"/>
+<rect x="119.2" y="118" width="1.5" height="18" rx="3" class="d-0"/>
+<rect x="119.2" y="140" width="69.1" height="18" rx="3" class="d-0"/>
+<text x="124.2" y="153" class="l" fill="#fcfcfb" stroke="none">pytorch-w</text>
+<rect x="188.3" y="118" width="1.5" height="18" rx="3" class="d-0"/>
+<rect x="188.8" y="118" width="1.5" height="18" rx="3" class="d-0"/>
+<rect x="188.8" y="118" width="1.5" height="18" rx="3" class="d-0"/>
+<rect x="188.9" y="118" width="1.5" height="18" rx="3" class="d-0"/>
+<rect x="188.9" y="118" width="1.5" height="18" rx="3" class="d-0"/>
+<rect x="188.9" y="118" width="6.6" height="18" rx="3" class="d-0"/>
+<rect x="195.5" y="118" width="1.5" height="18" rx="3" class="d-0"/>
+<rect x="196.4" y="118" width="679.6" height="18" rx="3" class="d-0"/>
+<text x="201.4" y="131" class="l" fill="#fcfcfb" stroke="none">pytorch-wheel RUN if [ &quot;false&quot; = &quot;true&quot; ] || [ &quot;false&quot; = &quot;1&quot; ]; then         export SCCACHE_RECACHE=1;     </text>
+<rect x="875.9" y="118" width="1.5" height="18" rx="3" class="d-0"/>
+<rect x="879.7" y="118" width="1.5" height="18" rx="3" class="d-0"/>
+<rect x="880.0" y="118" width="1.5" height="18" rx="3" class="d-0"/>
+<text x="16" y="185" class="l ink">snoc-think</text>
+<line x1="118" y1="196" x2="880" y2="196" class="grid"/>
+<rect x="119.1" y="172" width="1.5" height="18" rx="3" class="d-1"/>
+<rect x="119.2" y="172" width="1.5" height="18" rx="3" class="d-1"/>
+<rect x="119.2" y="172" width="1.5" height="18" rx="3" class="d-1"/>
+<rect x="119.3" y="172" width="1.5" height="18" rx="3" class="d-1"/>
+<rect x="119.3" y="172" width="1.5" height="18" rx="3" class="d-1"/>
+<rect x="119.3" y="172" width="2.7" height="18" rx="3" class="d-1"/>
+<rect x="122.1" y="172" width="1.5" height="18" rx="3" class="d-1"/>
+<rect x="123.6" y="172" width="5.2" height="18" rx="3" class="d-1"/>
+<rect x="128.8" y="172" width="1.5" height="18" rx="3" class="d-1"/>
+<rect x="128.8" y="172" width="1.5" height="18" rx="3" class="d-1"/>
+<rect x="128.9" y="172" width="1.5" height="18" rx="3" class="d-1"/>
+<rect x="129.2" y="172" width="1.5" height="18" rx="3" class="d-1"/>
+<rect x="129.2" y="172" width="1.7" height="18" rx="3" class="d-1"/>
+<rect x="130.8" y="172" width="2.2" height="18" rx="3" class="d-1"/>
+<rect x="133.0" y="172" width="2.1" height="18" rx="3" class="d-1"/>
+<rect x="135.1" y="172" width="1.5" height="18" rx="3" class="d-1"/>
+<rect x="135.1" y="172" width="1.5" height="18" rx="3" class="d-1"/>
+<rect x="135.1" y="172" width="1.7" height="18" rx="3" class="d-1"/>
+<rect x="136.8" y="172" width="10.1" height="18" rx="3" class="d-1"/>
+<rect x="146.9" y="172" width="433.0" height="18" rx="3" class="d-1"/>
+<text x="151.9" y="185" class="l" fill="#fcfcfb" stroke="none">vllm-wheel RUN njobs=&quot;&quot;;     if [ -z &quot;${njobs}&quot; ]; then         core</text>
+<rect x="579.9" y="172" width="1.5" height="18" rx="3" class="d-1"/>
+<rect x="580.3" y="172" width="1.5" height="18" rx="3" class="d-1"/>
+<rect x="581.0" y="172" width="1.5" height="18" rx="3" class="d-1"/>
+<rect x="581.0" y="172" width="1.5" height="18" rx="3" class="d-1"/>
+<rect x="581.3" y="172" width="1.5" height="18" rx="3" class="d-1"/>
+<rect x="581.5" y="172" width="1.5" height="18" rx="3" class="d-1"/>
+<rect x="581.5" y="172" width="1.5" height="18" rx="3" class="d-1"/>
+<rect x="581.5" y="172" width="1.5" height="18" rx="3" class="d-1"/>
+<rect x="581.6" y="172" width="1.5" height="18" rx="3" class="d-1"/>
+<rect x="581.6" y="172" width="5.9" height="18" rx="3" class="d-1"/>
+<rect x="587.4" y="172" width="1.5" height="18" rx="3" class="d-1"/>
+<rect x="587.5" y="172" width="1.5" height="18" rx="3" class="d-1"/>
+<rect x="588.2" y="172" width="1.5" height="18" rx="3" class="d-1"/>
+<rect x="588.2" y="172" width="119.7" height="18" rx="3" class="d-1"/>
+<text x="593.2" y="185" class="l" fill="#fcfcfb" stroke="none">triton-wheel RUN </text>
+<rect x="707.9" y="172" width="1.5" height="18" rx="3" class="d-1"/>
+<rect x="708.1" y="172" width="1.5" height="18" rx="3" class="d-1"/>
+<rect x="708.5" y="172" width="1.5" height="18" rx="3" class="d-1"/>
+<rect x="708.5" y="172" width="1.5" height="18" rx="3" class="d-1"/>
+<text x="16" y="228" class="l ink2">elapsed 38m28s · hollow = cached step · stacked rows are concurrent steps</text>
+</svg>
