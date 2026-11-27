@@ -1,6 +1,6 @@
 {
  "arch": "gfx1201",
- "build": "20261126",
+ "build": "20261127",
  "rocm": "10.2.0-full",
  "wheels": [
   {
@@ -12,6 +12,17 @@
    "project": "amd-aiter",
    "tag": "linux_x86_64",
    "wheel": "amd_aiter-0.1.30+rocm10.2.0-cp314-cp314-linux_x86_64.whl"
+  },
+  {
+   "best": true,
+   "elf_members": 100,
+   "kind": "manylinux",
+   "needs_glibc": "2.38",
+   "needs_glibc_from": "amd_mori.libs/libabsl_base-e6c1071d.so.20260107.0.0",
+   "newest_policy": "manylinux_2_41_x86_64",
+   "project": "amd-mori",
+   "tag": "manylinux_2_39_x86_64",
+   "wheel": "amd_mori-1.2.5+rocm10.2.0-cp314-cp314-manylinux_2_39_x86_64.whl"
   },
   {
    "best": true,
@@ -61,7 +72,7 @@
    "elf_members": 74,
    "kind": "manylinux",
    "needs_glibc": "2.38",
-   "needs_glibc_from": ".nixl_rocm.mesonpy.libs/libnixl_common.so",
+   "needs_glibc_from": "nixl_rocm.libs/libabsl_time-6450ae08.so.20260107.0.0",
    "newest_policy": "manylinux_2_41_x86_64",
    "project": "nixl-rocm",
    "tag": "manylinux_2_39_x86_64",
@@ -75,7 +86,7 @@
    "newest_policy": "manylinux_2_41_x86_64",
    "project": "rocm-torch",
    "tag": "any",
-   "wheel": "rocm_torch-10.2.0.20261126+gfx1201.5e6efac7-py3-none-any.whl"
+   "wheel": "rocm_torch-10.2.0.20261127+gfx1201.2e5f1e68-py3-none-any.whl"
   },
   {
    "best": true,
