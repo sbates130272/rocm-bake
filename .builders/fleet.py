@@ -176,6 +176,19 @@ def validate(data):
         if cap not in by_name[host].get("capabilities", []):
             bad(f"{role}.node {host!r} does not declare the {cap!r} capability")
 
+    # No budget is not an error — deploy-webdav.sh then installs no
+    # prune timer and the store grows unbounded, which is what every
+    # fleet did before the key existed. A non-numeric or non-positive
+    # one is, because the prune script would compute a zero ceiling
+    # and evict the entire cache on its first run.
+    budget = data["cache"].get("budget_gb")
+    if budget is not None:
+        try:
+            if float(budget) <= 0:
+                bad(f"cache.budget_gb {budget!r} must be greater than zero")
+        except (TypeError, ValueError):
+            bad(f"cache.budget_gb {budget!r} is not a number")
+
     gpu = data.get("gpu_node")
     if gpu:
         if gpu not in by_name:
@@ -307,6 +320,7 @@ def make_vars(fleet):
         ("FLEET_CACHE_PORT", str(fleet["cache"]["port"])),
         ("FLEET_CACHE_DIR", fleet["cache"].get("dir", "")),
         ("FLEET_CACHE_BIND", fleet["cache"].get("bind", "tailscale")),
+        ("FLEET_CACHE_BUDGET_GB", str(fleet["cache"].get("budget_gb", ""))),
         ("FLEET_BENCH_NODE", fleet.get("bench_node", fleet["default_builder"])),
         ("FLEET_GPU_HOST", gpu_host(fleet)),
         ("FLEET_GPU_NODE", fleet.get("gpu_node", "")),

@@ -558,6 +558,54 @@ def check_cache_repos():
              f"are left behind by `make clean-cache`.")
 
 
+def check_cache_budget():
+    """A manifest budget must reach the deployer, and the prune must bite.
+
+    Three links, none of which fails loudly on its own. fleet.py has to
+    export cache.budget_gb; deploy-webdav.sh has to read that variable;
+    and the prune it installs has to be wired to a timer. Break any one
+    and the store simply keeps growing -- which is the state this whole
+    mechanism exists to end, and which looks identical to working until
+    the disk is full months later.
+
+    The failure is slow and silent, so it gets a contract rather than a
+    comment. Checked here and not in the role because the role only
+    copies the script over and runs it; by the time Ansible could
+    notice, the budget has already been dropped on the floor.
+    """
+    fleet = read(".builders/fleet.py")
+    if "FLEET_CACHE_BUDGET_GB" not in fleet:
+        return fail("cache-budget",
+                    "fleet.py does not export FLEET_CACHE_BUDGET_GB, so "
+                    "cache.budget_gb in a manifest reaches nothing")
+
+    dav = read(".builders/deploy-webdav.sh")
+    if "FLEET_CACHE_BUDGET_GB" not in dav:
+        return fail("cache-budget",
+                    "deploy-webdav.sh never reads FLEET_CACHE_BUDGET_GB; "
+                    "the manifest's budget would be ignored and the store "
+                    "would grow unbounded")
+
+    for unit in ("sccache-prune.service", "sccache-prune.timer"):
+        if unit not in dav:
+            fail("cache-budget",
+                 f"deploy-webdav.sh installs no {unit}; a prune script "
+                 f"nothing schedules never runs")
+
+    if "systemctl enable --now sccache-prune.timer" not in dav:
+        fail("cache-budget",
+             "deploy-webdav.sh writes sccache-prune.timer but never "
+             "enables it; the store keeps growing")
+
+    # An LRU keyed on mtime would evict by compile date rather than by
+    # last use, throwing away objects a current build still reads while
+    # keeping a dead compiler generation that happens to be newer.
+    if "-printf '%A@" not in dav:
+        fail("cache-budget",
+             "the prune in deploy-webdav.sh does not sort by atime "
+             "(%A@); eviction would not be least-recently-used")
+
+
 def nightly_jobs():
     """{job: body} for .github/workflows/nightly.yml, without a parser.
 
@@ -783,6 +831,7 @@ def main():
     check_buildkit_pin()
     check_sccache_sha()
     check_cache_repos()
+    check_cache_budget()
     check_nightly_chain()
     check_flag_branches()
     check_max_jobs_shared()
@@ -796,7 +845,8 @@ def main():
           "shape, perf stages, build-* rules, build-record names, "
           "target-costs, the fleet manifests, versioncheck's wheel "
           "repos, the buildkit pin, the sccache checksum, the cache "
-          "repo list, the nightly's architecture chain, every "
+          "repo list, the sccache store's budget and prune timer, "
+          "the nightly's architecture chain, every "
           "workflow's flag branches and the shared compile-job "
           "derivation all agree")
     return 0

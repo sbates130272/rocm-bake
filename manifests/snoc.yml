@@ -61,6 +61,20 @@ cache:
   # nginx binds the node's tailnet address rather than 0.0.0.0, to keep
   # the store off any public interface.
   bind: tailscale
+  # Ceiling for the object store, enforced by a daily LRU sweep that
+  # deploy-webdav.sh installs. There is no other bound: nginx DAV only
+  # writes, and sccache's own SCCACHE_CACHE_SIZE governs its *local*
+  # disk cache and is ignored entirely for a WebDAV backend — so
+  # without this the store grows until the filesystem is full. It did:
+  # 12 GB and 134k objects in the first month, 45% of it written
+  # against ROCm 10.1 and unreachable since the 10.2 bump, because a
+  # compiler change invalidates every object keyed to it.
+  #
+  # 40 GB is about three months of working set at that rate. Evicting
+  # is always safe — the store is content-addressed, so a removed
+  # object is a cache miss and a recompile, never a wrong answer — and
+  # the cost of setting this too low is build time, not correctness.
+  budget_gb: 40
 
 network:
   # The tailnet must never go through the corporate proxy.

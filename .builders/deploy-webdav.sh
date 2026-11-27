@@ -13,8 +13,10 @@
 #
 # Usage: sudo ./deploy-webdav.sh [port]
 #
-# Storage is a plain directory tree, so it survives reboots, can be
-# backed up with rsync, and is bounded only by the filesystem.
+# Storage is a plain directory tree, so it survives reboots and can be
+# backed up with rsync. It is bounded by the daily LRU prune this
+# script installs from `cache.budget_gb:` — nothing in nginx or sccache
+# bounds it otherwise. See the Eviction section below.
 
 set -euo pipefail
 
@@ -27,11 +29,16 @@ PORT="${1:-$(_fleet FLEET_CACHE_PORT)}"
 PORT="${PORT:-8081}"
 DATA_DIR="${DATA_DIR:-$(_fleet FLEET_CACHE_DIR)}"
 DATA_DIR="${DATA_DIR:-/var/cache/sccache-webdav}"
+# Empty means no ceiling and no timer — see `cache.budget_gb:` in the
+# manifest for why a store with no ceiling is a bug and not a default.
+BUDGET_GB="${BUDGET_GB:-$(_fleet FLEET_CACHE_BUDGET_GB)}"
 SITE=/etc/nginx/sites-available/sccache-webdav
+PRUNE_BIN=/usr/local/sbin/sccache-prune.sh
 
 echo "=== sccache WebDAV store deployer ==="
 echo "Port:    ${PORT}"
 echo "Storage: ${DATA_DIR}"
+echo "Budget:  ${BUDGET_GB:-none (store grows unbounded)}${BUDGET_GB:+ GB}"
 
 if [[ $EUID -ne 0 ]]; then
    echo "❌ This script must be run as root (sudo)"
@@ -109,7 +116,7 @@ EOF
 fi
 systemctl daemon-reload
 
-cat > "${SITE}" << EOF
+cat > "${SITE}.new" << EOF
 # Managed by .builders/deploy-webdav.sh — edits here are overwritten.
 #
 # sccache PUTs objects under a key prefix and GETs them back. It does
@@ -158,15 +165,37 @@ server {
 }
 EOF
 
+# Only touch nginx when the site actually changed. This script is
+# re-run by the Ansible role on every converge, and it used to
+# `systemctl restart nginx` unconditionally — which drops every
+# in-flight sccache PUT, so converging the fleet during a build cost
+# that build its uploads. A reload is graceful (in-flight requests
+# finish on the old worker) and is all a site change needs; a restart
+# is only correct when nginx is not running at all.
+if cmp -s "${SITE}.new" "${SITE}" 2>/dev/null; then
+    SITE_CHANGED=false
+    rm -f "${SITE}.new"
+else
+    SITE_CHANGED=true
+    mv "${SITE}.new" "${SITE}"
+fi
+
 ln -sf "${SITE}" /etc/nginx/sites-enabled/sccache-webdav
 rm -f /etc/nginx/sites-enabled/default
 
 echo "🔧 Checking nginx config..."
 nginx -t
 
-echo "🚀 Restarting nginx..."
 systemctl enable nginx > /dev/null 2>&1
-systemctl restart nginx
+if ! systemctl is-active --quiet nginx; then
+    echo "🚀 Starting nginx..."
+    systemctl start nginx
+elif [ "${SITE_CHANGED}" = true ]; then
+    echo "🚀 Reloading nginx (site changed)..."
+    systemctl reload nginx
+else
+    echo "🚀 nginx already serving this site unchanged — not reloading"
+fi
 
 sleep 2
 if ! systemctl is-active --quiet nginx; then
@@ -185,10 +214,151 @@ else
     exit 1
 fi
 
+# ── Eviction ─────────────────────────────────────────────────────
+#
+# nginx DAV only ever writes. Nothing in the serving path removes an
+# object, and sccache cannot help: SCCACHE_CACHE_SIZE bounds its local
+# disk cache and is not consulted at all for a WebDAV backend, where
+# the server owns eviction. So the store grows monotonically until the
+# filesystem fills, which on the registry node means taking Zot down
+# with it.
+#
+# LRU by atime, not mtime. mtime is when an object was compiled, which
+# says nothing about whether anything still needs it — and the store's
+# dead weight is precisely the objects that are old *and* unread (a
+# compiler bump orphans every object keyed to the old one in a single
+# day). / is mounted relatime, so atime advances at most once a day
+# per file: coarse, but a day's resolution is far finer than the
+# months this policy works in.
+PRUNE_CHANGED=false
+if [ -n "${BUDGET_GB}" ]; then
+    echo "🧹 Installing the LRU prune (${BUDGET_GB} GB ceiling)..."
+    cat > "${PRUNE_BIN}" << EOF
+#!/bin/bash
+# Managed by .builders/deploy-webdav.sh — edits here are overwritten.
+#
+# Evict least-recently-read objects until the store is under budget.
+# Safe by construction: the store is content-addressed, so a deleted
+# object is a cache miss and a recompile, never a wrong answer, and
+# unlinking a file nginx has open is fine on POSIX — an in-flight GET
+# finishes from the open descriptor, a later one 404s and sccache
+# treats that as a miss.
+#
+# --dry-run reports what it would remove and removes nothing.
+set -euo pipefail
+
+DATA_DIR="\${DATA_DIR:-${DATA_DIR}}"
+BUDGET_GB="\${BUDGET_GB:-${BUDGET_GB}}"
+DRY_RUN=false
+[ "\${1:-}" = --dry-run ] && DRY_RUN=true
+
+# A prune that computed an empty or absurd root would delete the
+# machine. Refuse rather than guess.
+case "\${DATA_DIR}" in
+    ""|/|/usr|/var|/etc|/home)
+        echo "refusing to prune \${DATA_DIR:-<empty>}" >&2; exit 1 ;;
+esac
+[ -d "\${DATA_DIR}" ] || { echo "no store at \${DATA_DIR}" >&2; exit 0; }
+
+budget=\$(( BUDGET_GB * 1024 * 1024 * 1024 ))
+used=\$(du -sb "\${DATA_DIR}" | cut -f1)
+
+if [ "\${used}" -le "\${budget}" ]; then
+    printf 'sccache-prune: %.1f GB of %s GB budget, nothing to do\n' \\
+        "\$(echo "\${used} 1073741824" | awk '{print \$1/\$2}')" "\${BUDGET_GB}"
+    exit 0
+fi
+
+# Oldest read first. The subshell the pipe creates cannot export its
+# running total back, so it prints the summary itself.
+find "\${DATA_DIR}" -type f -printf '%A@ %s %p\0' \\
+  | sort -zn \\
+  | { freed=0; n=0; u=\${used}; \\
+      while IFS=' ' read -r -d '' _atime size path; do
+          [ "\${u}" -le "\${budget}" ] && break
+          if [ "\${DRY_RUN}" = true ] || rm -f -- "\${path}"; then
+              u=\$(( u - size )); freed=\$(( freed + size )); n=\$(( n + 1 ))
+          fi
+      done
+      printf 'sccache-prune: %s %d objects, %.1f GB; store %.1f GB -> %.1f GB (budget %s GB)\n' \\
+        "\$([ "\${DRY_RUN}" = true ] && echo would-remove || echo removed)" \\
+        "\${n}" \\
+        "\$(awk -v b=\${freed} 'BEGIN{print b/1073741824}')" \\
+        "\$(awk -v b=\${used}  'BEGIN{print b/1073741824}')" \\
+        "\$(awk -v b=\${u}     'BEGIN{print b/1073741824}')" \\
+        "\${BUDGET_GB}"; }
+
+# sccache nests keys ab/cd/<hash> and never MKCOLs, so the tree grows
+# a leaf directory per prefix and eviction leaves them behind empty.
+# Without this they accumulate faster than the objects do.
+[ "\${DRY_RUN}" = true ] || find "\${DATA_DIR}" -mindepth 1 -type d -empty -delete
+EOF
+    chmod 755 "${PRUNE_BIN}"
+
+    cat > /etc/systemd/system/sccache-prune.service << EOF
+# Managed by .builders/deploy-webdav.sh
+[Unit]
+Description=Evict least-recently-used objects from the sccache store
+# The store is nginx's to serve; pruning it while nginx is down is
+# harmless but pointless, and ordering keeps the journal readable.
+After=nginx.service
+
+[Service]
+Type=oneshot
+ExecStart=${PRUNE_BIN}
+# du and find over ~10^5 files; nice it so a prune landing mid-build
+# costs the compile nothing it would notice.
+Nice=10
+IOSchedulingClass=idle
+EOF
+
+    cat > /etc/systemd/system/sccache-prune.timer << 'EOF'
+# Managed by .builders/deploy-webdav.sh
+[Unit]
+Description=Daily LRU prune of the sccache store
+
+[Timer]
+# 04:20 rather than a round hour: nothing else on this node should be
+# running then, and the offset keeps it clear of every other daily
+# timer that defaults to midnight.
+OnCalendar=*-*-* 04:20:00
+# A node that was off at 04:20 still prunes once it is back, rather
+# than skipping a day and letting the store drift over budget.
+Persistent=true
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target
+EOF
+
+    systemctl daemon-reload
+    if ! systemctl is-enabled --quiet sccache-prune.timer 2>/dev/null; then
+        PRUNE_CHANGED=true
+    fi
+    systemctl enable --now sccache-prune.timer > /dev/null 2>&1
+    echo "   next run: $(systemctl show sccache-prune.timer -p NextElapseUSecRealtime --value)"
+else
+    echo "⚠️  No cache.budget_gb in the manifest — the store has no ceiling."
+    echo "   nginx DAV never deletes and sccache's own size limit does not"
+    echo "   apply to a WebDAV backend, so it will grow until the disk fills."
+fi
+
 echo ""
 echo "=== Deployment Complete ==="
 echo "Store:   http://${TAILNET_IP}:${PORT}"
 echo "Data:    ${DATA_DIR} (durable; survives reboot)"
+if [ -n "${BUDGET_GB}" ]; then
+echo "Prune:   ${BUDGET_GB} GB ceiling, daily; ${PRUNE_BIN} --dry-run to preview"
+fi
 echo ""
 echo "Builds use it via SCCACHE_WEBDAV_ENDPOINT, already the default in"
 echo "rocm-bake.hcl. Inspect it with: make cache-summary"
+
+# The Ansible role keys `changed_when` off this line. Before it
+# existed the role matched on "Store:", which every run prints, so
+# every converge reported a change and nobody could see a real one.
+if [ "${SITE_CHANGED}" = true ] || [ "${PRUNE_CHANGED}" = true ]; then
+    echo "Changed: yes"
+else
+    echo "Changed: no"
+fi
