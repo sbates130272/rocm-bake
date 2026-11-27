@@ -87,6 +87,48 @@ WHEEL_RE = re.compile(
 
 METAPACKAGE = "rocm-torch"
 
+# Wheels the index publishes but the metapackage's device-<arch> extra
+# does NOT pull in.
+#
+# atom registers a vLLM V1 platform plugin through an entry point, so
+# merely being installed changes how vLLM starts. At this repo's pins
+# it does not merely change it, it stops it: vLLM 0.34.0 against ATOM
+# v0.1.10 dies during platform detection with
+#
+#   atom/plugin/vllm/register.py:206
+#   ImportError: cannot import name 'register_quantization_config'
+#     ... (most likely due to a circular import)
+#
+# measured 2026-11-27 by installing rocm-torch[device-gfx1201] from the
+# published index on snoc-thinkstation. docs/architecture/atom-vllm-skew.md
+# has the version arithmetic and already warned that "pip installs any
+# pairing happily"; this is what stops it doing so.
+#
+# No image in this repo ships that pairing either: the vllm image does
+# not install atom at all, and atom-vllm sets ATOM_DISABLE_VLLM_PLUGIN=1
+# so the plugin is off unless someone opts in. A wheel cannot set an
+# environment variable, so keeping atom out of the extra is the only
+# equivalent. The wheel is still in the index and still installable by
+# name for anyone who wants it.
+EXCLUDED_FROM_EXTRA = {"atom"}
+
+# amdsmi is how vLLM identifies the device on ROCm, and without it
+# `vllm serve` fails with "Failed to infer device type" -- measured,
+# not inferred: an install from the published index could not start at
+# all until this was in place.
+#
+# It cannot be a Requires-Dist. ROCm ships the bindings inside the
+# install tree at /opt/rocm/share/amd_smi with no setup.py or
+# pyproject.toml, so there is nothing for pip to install; the
+# directory just has to be on sys.path. Dockerfile.vllm writes exactly
+# this .pth for the image, and a wheel install had no equivalent.
+#
+# Harmless when wrong: Python silently ignores a .pth line naming a
+# directory that does not exist, so a consumer whose ROCm lives
+# elsewhere is no worse off than before.
+AMDSMI_DIR = "/opt/rocm/share/amd_smi"
+AMDSMI_PTH = "rocm-amdsmi.pth"
+
 
 def normalize(name):
     """PEP 503 normalised project name."""
@@ -228,10 +270,12 @@ def metapackage_wheel(arch, version, pins, out_dir, python):
     for name, ver in pins:
         if name == METAPACKAGE:
             continue
+        if name in EXCLUDED_FROM_EXTRA:
+            continue
         metadata.append(f'Requires-Dist: {name}=={ver}; extra == "{extra}"')
     metadata += [
         "",
-        f"Pins every wheel in the {arch} index at the exact version built",
+        f"Pins the {arch} index's wheels at the exact versions built",
         "against this ROCm and this torch. Install the set with:",
         "",
         f"    pip install --index-url <index>/{arch}/ "
@@ -240,8 +284,15 @@ def metapackage_wheel(arch, version, pins, out_dir, python):
         "The extra is named for the arch so that pointing at the wrong",
         "index fails rather than installing mismatched binaries.",
         "",
+        "Not every wheel in the index is pinned here. "
+        + (", ".join(sorted(EXCLUDED_FROM_EXTRA)) or "none")
+        + " is published but left out, because installing it",
+        "alongside vLLM changes how vLLM starts. Install it by name if",
+        "you want it.",
+        "",
     ]
     files = {
+        AMDSMI_PTH: f"{AMDSMI_DIR}\n",
         f"{dist_info}/METADATA": "\n".join(metadata),
         f"{dist_info}/WHEEL": (
             "Wheel-Version: 1.0\n"
