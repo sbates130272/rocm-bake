@@ -1,0 +1,65 @@
+# What NOT to ship to the builder as build context.
+#
+# WHY THIS EXISTS. There was no .dockerignore, so every build sent the
+# whole repository root. That is 33GB, and almost none of it is a
+# build input:
+#
+#   dist/vm        28G   qemu VM images
+#   dist/wheels   5.1G   fetched wheels and generated pip indexes
+#   dist/*         ~1G   docs venv, gh-pages worktree, extracted images
+#   .git/         444M
+#
+# On a local builder the transfer is free and the omission was
+# invisible for months. On a remote one it is the entire build:
+#
+#   cupy-wheel on snoc-gaming, gfx950 run 20261127T155149Z
+#     [internal] load build context   2467s
+#     the RUN step that builds it      156s
+#     sccache                          100% hit, 0 misses
+#
+#   45m47s wall, of which 41 minutes was context transfer and not one
+#   line was compiled. gfx1201 reproduced it at 2425s against a 160s
+#   RUN step -- the cost is a fixed transfer, so it does not vary with
+#   the architecture or the work.
+#
+# Measured after this file: the context BuildKit sends goes from
+# 33GB to 4.4MB, checked by building a throwaway
+# `FROM busybox / COPY . /ctx / RUN du -sh /ctx`.
+#
+# WHAT THE BUILD ACTUALLY NEEDS from the context is docker/ and
+# nothing else: every COPY and every --mount=type=bind,source= in
+# docker/Dockerfile.* names a path under it (max-jobs.sh,
+# auditwheel-rocm.sh, wheel-verdict.py, rocm-prune.sh,
+# atom-topk-fallback.py, emu-profile-pack.py, mori-entrypoint.sh,
+# packs/, vllm-emu-shim/). The `dist/` strings in those Dockerfiles
+# are /opt/pytorch/dist/ inside the image, not host paths.
+#
+# This file is a deny-list rather than an allow-list on purpose: a
+# `*` + `!docker/` pair would silently drop a new context path the day
+# someone adds one, and the failure would look like a missing file
+# inside a RUN step rather than a dockerignore problem.
+
+# 33GB: VM images, fetched wheels, generated indexes, the gh-pages
+# worktree, extracted images. Nothing in a build reads any of it.
+dist/
+
+# Not a build input, and the largest thing after dist/.
+.git/
+.gitignore
+
+# Agent worktrees: whole second checkouts of this repo, one per
+# branch, each as large as the repo itself.
+.claude/
+
+# Scraped metrics and run artefacts.
+telemetry/out/
+*.prom
+
+# Local build logs, caches and editor droppings.
+*.log
+**/__pycache__/
+.cache/
+.docker/
+.builders/generated/
+*.swp
+*~

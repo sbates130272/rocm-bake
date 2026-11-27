@@ -199,6 +199,10 @@ WEBDAV_IP   ?= $(shell getent hosts $(WEBDAV_HOST) 2>/dev/null | awk '{print $$1
 SCCACHE_WEBDAV_ENDPOINT ?= http://$(or $(WEBDAV_IP),$(WEBDAV_HOST)):$(WEBDAV_PORT)
 export SCCACHE_WEBDAV_ENDPOINT
 WEBDAV_DIR  ?= $(call fleet_var,FLEET_CACHE_DIR)
+# Empty for a fleet whose manifest sets no cache.budget_gb; then the
+# store has no ceiling and cache-summary says so rather than printing
+# a percentage of nothing.
+WEBDAV_BUDGET_GB ?= $(call fleet_var,FLEET_CACHE_BUDGET_GB)
 
 # A sentinel, not a builder. BUILDER=$(POOL_BUILDER) means "let the
 # balancer choose"; requests for it are routed through
@@ -555,6 +559,18 @@ cache-summary: ## Compiler-cache state: size, disk, deltas and hit rates
 				printf "  interval  +%d objects  +%.0fMB\n", o-po, (b-pb)/1048576; \
 			}'; \
 		mv $(CACHE_STATE).now $(CACHE_STATE); \
+	fi
+	@if [ -z "$(WEBDAV_BUDGET_GB)" ]; then \
+		printf '  budget    none — the store has no ceiling (set cache.budget_gb)\n'; \
+	else \
+		size=$$(sudo du -sb $(WEBDAV_DIR) 2>/dev/null | cut -f1); \
+		[ -n "$$size" ] && awk -v b="$$size" -v g="$(WEBDAV_BUDGET_GB)" 'BEGIN { \
+			pct = b / (g * 1073741824) * 100; \
+			printf "  budget    %.1f of %s GB (%.0f%%)%s\n", \
+				b/1073741824, g, pct, \
+				pct >= 100 ? "  OVER — next prune will evict" : \
+				(pct >= 85 ? "  near ceiling" : ""); \
+		}'; \
 	fi
 	@df -h $(WEBDAV_DIR) 2>/dev/null | tail -1 \
 		| awk '{printf "  disk      %s of %s used, %s free\n", $$3, $$2, $$4}' \

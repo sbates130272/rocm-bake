@@ -42,10 +42,12 @@
   environment:
     FLEET_MANIFEST: /usr/local/sbin/fleet-manifest.yml
   register: sccache_store_deploy
-  # The script is idempotent — it rewrites the site, reloads nginx and
-  # re-runs its own PUT/GET probe — but it is a shell script, so
-  # Ansible cannot tell a no-op run from a real one.
-  changed_when: "'Store:' in sccache_store_deploy.stdout"
+  # The script is idempotent and now says so: it compares the rendered
+  # site against the installed one, reloads nginx only on a real
+  # change, and prints a Changed: line for this task to read. The
+  # previous spelling matched "Store:", which every run prints, so
+  # every converge reported changed and a genuine one was invisible.
+  changed_when: "'Changed: yes' in sccache_store_deploy.stdout"
 
 - name: The store answers
   ansible.builtin.uri:

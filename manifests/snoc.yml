@@ -61,6 +61,20 @@ cache:
   # nginx binds the node's tailnet address rather than 0.0.0.0, to keep
   # the store off any public interface.
   bind: tailscale
+  # Ceiling for the object store, enforced by a daily LRU sweep that
+  # deploy-webdav.sh installs. There is no other bound: nginx DAV only
+  # writes, and sccache's own SCCACHE_CACHE_SIZE governs its *local*
+  # disk cache and is ignored entirely for a WebDAV backend — so
+  # without this the store grows until the filesystem is full. It did:
+  # 12 GB and 134k objects in the first month, 45% of it written
+  # against ROCm 10.1 and unreachable since the 10.2 bump, because a
+  # compiler change invalidates every object keyed to it.
+  #
+  # 40 GB is about three months of working set at that rate. Evicting
+  # is always safe — the store is content-addressed, so a removed
+  # object is a cache miss and a recompile, never a wrong answer — and
+  # the cost of setting this too low is build time, not correctness.
+  budget_gb: 40
 
 network:
   # The tailnet must never go through the corporate proxy.
@@ -105,11 +119,24 @@ nodes:
     arch: gfx1151
     platform: strix-halo
     capabilities: [build, gpu, registry, cache, metrics]
-    # Upload throughput to the compiler-cache store, MB/s. balance.sh
-    # charges a target's cache export against this; the fleet's links
-    # differ by a factor of 25 and scheduling that ignores them sends
-    # the largest export down the slowest wire. Strix hosts the store,
-    # so its "upload" is a local write capped by disk.
+    # Upload throughput to the compiler-cache store, MB/s -- *bytes*,
+    # despite the key's name. fleet.py --netmb passes the number
+    # through unconverted and balance.sh charges a cache export as
+    # c/(n*1048576), so a figure entered in Mbps would make the link
+    # look eight times faster than it is. Scheduling that ignores the
+    # links sends the largest export down the slowest wire. Strix
+    # hosts the store, so its "upload" is a local write capped by
+    # disk rather than a network measurement.
+    #
+    # Remote figures are medians of three HTTP PUTs to the store,
+    # measured 2026-11-27 (200MB from think, 100MB from gaming):
+    #
+    #   snoc-think    105.8 MB/s   (106, 101, 101)
+    #   snoc-gaming    18.9 MB/s   (18.9, 18.0, 17.7)
+    #
+    # Re-measure with `curl -T <file> -w %{speed_upload}` against
+    # ${SCCACHE_WEBDAV_ENDPOINT}, never by reading a link rate off the
+    # NIC: what this models is end-to-end throughput to the store.
     link_mbps: 3000
     colour: ["#2a78d6", "#3987e5"]
 
@@ -121,7 +148,10 @@ nodes:
     arch: gfx1201
     platform: thinkstation
     capabilities: [build, gpu, metrics]
-    link_mbps: 90
+    # 90 was close: gigabit wired (eno2 at 1000 Mb/s, preferred over
+    # the WiFi default route) reaching the store over a direct
+    # Tailscale path, not a DERP relay.
+    link_mbps: 106
     colour: ["#eb6834", "#d95926"]
 
   - name: snoc-gaming
@@ -130,6 +160,11 @@ nodes:
     arch: gfx1201
     platform: gaming
     capabilities: [build, metrics]
-    # WSL2 over WiFi.
-    link_mbps: 3.7
+    # WSL2. 3.7 was measured 2026-10-29 and is now 5x pessimistic --
+    # it is what made a 6.7GB triton-wheel export cost a modelled 29
+    # minutes here, and why export-heavy targets were never scheduled
+    # on this node. The interface WSL2 presents (eth1, nominal
+    # 10000 Mb/s) says nothing about the physical link, so this has to
+    # be measured end to end.
+    link_mbps: 19
     colour: ["#1baf7a", "#199e70"]

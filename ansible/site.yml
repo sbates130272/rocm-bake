@@ -6,46 +6,61 @@
 #   FLEET=<profile> ansible-playbook site.yml   another manifest
 #   ansible-playbook site.yml --check          what would change
 #   ansible-playbook site.yml --limit snoc-gaming
+#   ansible-playbook site.yml --tags sccache_store   one role
 #
 # Plays are grouped by capability rather than by machine, which is the
 # whole point of the manifest: a node is configured for what it is
 # declared to be for.
+#
+# Every role carries a tag named after itself, so a single one can be
+# converged without running the rest. They are written out because a
+# tag that matches nothing is not an error: Ansible runs the fact
+# gathering, skips every task and reports `ok=2 changed=0`, which is
+# indistinguishable from a converge that found nothing to do. A
+# typo'd --tags therefore reads as success and changes nothing.
+# `ansible-playbook site.yml --list-tags` prints the real list.
 
 - name: Every node
   hosts: all_nodes
   gather_facts: true
   roles:
-    - common
+    - role: common
+      tags: [common]
 
 - name: Build nodes
   hosts: builders
   gather_facts: false
   roles:
-    - docker
+    - role: docker
+      tags: [docker]
 
 - name: The node hosting the registry
   hosts: registry_nodes
   gather_facts: false
   roles:
-    - registry
+    - role: registry
+      tags: [registry]
 
 - name: The node hosting the compiler cache
   hosts: cache_nodes
   gather_facts: false
   roles:
-    - sccache_store
+    - role: sccache_store
+      tags: [sccache_store]
 
 - name: Nodes that are sampled during a perf run
   hosts: metrics_nodes
   gather_facts: false
   roles:
-    - node_exporter
+    - role: node_exporter
+      tags: [node_exporter]
 
 - name: Nodes that run what was built
   hosts: gpu_nodes
   gather_facts: true
   roles:
-    - gpu
+    - role: gpu
+      tags: [gpu]
 
 # Last, and on this machine: the builders are created over the Docker
 # API of nodes the plays above have just configured, so the daemon
@@ -58,4 +73,5 @@
   vars:
     fleet_manifest_path: "{{ hostvars[groups['builders'][0]].fleet_manifest_path }}"
   roles:
-    - buildkit
+    - role: buildkit
+      tags: [buildkit]
