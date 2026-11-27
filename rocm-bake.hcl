@@ -535,10 +535,13 @@ variable "CUPY_REF" {
 # defaults it off, and with it off the wheel builds, imports and ships
 # without either binary.
 #
-# .post1 is upstream's own suffix on this tag. versioncheck.py compares
-# it verbatim; it is not semver and the strict filter would drop it.
+# Everything this repo measured about MORI -- the build fixes, the vLLM
+# round trip, the one-medium-per-node limit -- was first taken against
+# v1.2.3.post1. That tag carried upstream's own .post suffix, which is
+# PEP 440 rather than semver; v1.2.4 and v1.2.5 are plain tags, so
+# versioncheck.py's comparison is unremarkable again.
 variable "MORI_REF" {
-  default = "v1.2.3.post1"
+  default = "v1.2.5"
 }
 
 # The floor for serving at VLLM_REF=v0.34.0, and the first of its

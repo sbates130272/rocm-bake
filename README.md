@@ -54,7 +54,7 @@ default — `PERF_BIND=` narrows it, `make perf-serve-stop` ends it.
 | vLLM | [vllm-project/vllm](https://github.com/vllm-project/vllm) | `VLLM_REF` | `v0.34.0` |
 | LLM-Emu | [AKafakA/llm-emu](https://github.com/AKafakA/llm-emu) | `LLM_EMU_REF` | `b71c6025b189784cbd4b926d15afa8257738ea39` |
 | CuPy | [cupy/cupy](https://github.com/cupy/cupy) | `CUPY_REF` | `v14.2.0` |
-| MORI | [ROCm/mori](https://github.com/ROCm/mori) | `MORI_REF` | `v1.2.3.post1` |
+| MORI | [ROCm/mori](https://github.com/ROCm/mori) | `MORI_REF` | `v1.2.5` |
 | LMCache | [LMCache/LMCache](https://github.com/LMCache/LMCache) | `LMCACHE_REF` | `v0.5.8` |
 
 <!-- END VERSIONS -->
