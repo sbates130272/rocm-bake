@@ -6,6 +6,7 @@ Cold and warm bake invocations on a rented CodeBuild machine, one job per archit
 
 | run | arch | cold | warm | cost | sccache | layer cache |
 | --- | --- | --- | --- | --- | --- | --- |
+| [20261128T103920Z](20261128T103920Z/) | `gfx1201` | — | 8m33s | $0.68 | 0% | 324/440 |
 | [20261127T112601Z](20261127T112601Z/) | `gfx1201` | — | 29m57s | $2.39 | 99% | 160/424 |
 | [20261126T205735Z](20261126T205735Z/) | `gfx1151` | — | 66m18s | $5.29 | 59% | 23/399 |
 | [20261126T205735Z](20261126T205735Z/) | `gfx1201` | — | 15m34s | $1.24 | 100% | 361/405 |
